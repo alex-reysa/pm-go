@@ -19,7 +19,7 @@ import type {
   TaskFixWorkflowResult,
   TaskReviewWorkflowInput,
   TaskReviewWorkflowResult
-} from "../../contracts/src/index.js";
+} from "@pm-go/contracts";
 
 export interface WorkflowDefinition<Input, Output> {
   name: string;

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
@@ -10,13 +10,7 @@ Contracts in `packages/contracts` must validate at runtime at every trust bounda
 
 ## Decision
 
-Pending. Candidates under review:
-
-- `Zod` 3.x with `zod-to-json-schema`: most mature TypeScript ecosystem fit and an ergonomic DSL, but imposes runtime overhead on hot paths and treats JSON Schema emission as a secondary transform that is lossy on some refinements. Pairs well with `@hono/zod-openapi` if REST OpenAPI is added later.
-- `TypeBox`: produces JSON Schema as its native representation with no lossy transform, excellent runtime performance, and infers types from schemas via `Static<>`. DSL is less ergonomic than Zod for complex refinements. Battle-tested in the Fastify ecosystem.
-- `Valibot`: modular and bundle-size friendly, with JSON Schema emission via `@valibot/to-json-schema`. Emission path is newer and less proven. Bundle size is less relevant for server-side `pm-go`.
-
-Recommendation: `TypeBox`. JSON Schema is a first-class concern for the executor adapter, not a bolt-on, and a single artifact should serve HTTP validation, Postgres parsing, and Agent SDK structured output. The counter-argument is Zod's broader ecosystem momentum and better ergonomics for refined types; the decision is defensible either way and should be confirmed by the benchmark called out below.
+We adopt **`@sinclair/typebox`** (installed at `^0.34.0` in `packages/contracts`) as the single schema validation library for the entire `pm-go` monorepo. JSON Schema is TypeBox's native representation, so the same schema artifact feeds HTTP validation, Postgres parsing, and the Claude Agent SDK `outputFormat: { type: 'json_schema', schema }` integration without any lossy transform. Contract types in `packages/contracts/src/*.ts` will be derived from schemas via `Static<typeof Schema>` once the per-contract lanes land, keeping a single source of truth.
 
 ## Consequences
 
@@ -24,13 +18,14 @@ Positive:
 
 - structured-output payloads from the Agent SDK validate against the same artifact used in Postgres and HTTP layers
 - no divergence between runtime validation and emitted JSON Schema
-- types are inferred from schemas, removing a duplicate source of truth
+- types can be inferred from schemas via `Static<>`, removing a duplicate source of truth
+- TypeBox has strong runtime performance on hot paths between HTTP ingress and Temporal activities
 
 Tradeoffs:
 
-- TypeBox DSL is less ergonomic than Zod for complex refinements
+- TypeBox DSL is less ergonomic than Zod for complex refinements; contributors may need to reach for `Type.Unsafe` or custom format validators
 - smaller community and fewer third-party integrations than Zod
-- `exactOptionalPropertyTypes` interaction requires care; TypeBox `Optional` needs explicit `undefined` unions or the `ExactOptionalPropertyTypes` option
+- `exactOptionalPropertyTypes` interaction requires care; TypeBox `Optional` needs explicit `undefined` unions or the `ExactOptionalPropertyTypes` option on the type builder
 
 ## Follow-On Decisions
 

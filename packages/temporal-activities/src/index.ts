@@ -8,7 +8,7 @@ import type {
   SpecDocument,
   Task,
   UUID
-} from "../../contracts/src/index.js";
+} from "@pm-go/contracts";
 
 export interface SpecIntakeActivities {
   persistSpecDocument(input: SpecDocument): Promise<UUID>;

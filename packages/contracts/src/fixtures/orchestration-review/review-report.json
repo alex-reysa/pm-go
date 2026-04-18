@@ -1,0 +1,31 @@
+{
+  "id": "d4e5f6a7-b8c9-4a0b-8c1d-2e3f4a5b6c7d",
+  "taskId": "cccccccc-dddd-4eee-8fff-000000000000",
+  "reviewerRunId": "e5f6a7b8-c9d0-4e1f-8a2b-3c4d5e6f7a8b",
+  "outcome": "changes_requested",
+  "findings": [
+    {
+      "id": "finding-retry-1",
+      "severity": "high",
+      "title": "Unbounded retry on 401 response",
+      "summary": "The adapter currently retries on HTTP 401 responses, which will never succeed without credentials refresh and burns the budget.",
+      "filePath": "packages/executor/src/retry.ts",
+      "startLine": 42,
+      "endLine": 58,
+      "confidence": 0.92,
+      "suggestedFixDirection": "Classify 401 as non-retryable in isTransientError and add a regression test that asserts a single attempt."
+    },
+    {
+      "id": "finding-retry-2",
+      "severity": "medium",
+      "title": "Backoff jitter uses Math.random without a seedable RNG",
+      "summary": "The backoff implementation pulls entropy directly from Math.random, making retry tests flaky.",
+      "filePath": "packages/executor/src/retry.ts",
+      "startLine": 74,
+      "endLine": 80,
+      "confidence": 0.81,
+      "suggestedFixDirection": "Accept an optional rng: () => number parameter on the adapter constructor and default to Math.random in production."
+    }
+  ],
+  "createdAt": "2026-04-17T16:45:00.000Z"
+}

@@ -1,0 +1,40 @@
+{
+  "id": "9f8e7d6c-5b4a-4938-8271-605f4e3d2c1b",
+  "planId": "6d1f4c3a-5f2b-4e27-9d8c-9a7f1b2c3d4e",
+  "finalPhaseId": "22222222-3333-4444-8555-666666666666",
+  "mergeRunId": "7a6b5c4d-3e2f-4a1b-8c0d-9e8f7a6b5c4d",
+  "auditorRunId": "8b7c6d5e-4f3a-4b2c-8d1e-0f9e8d7c6b5a",
+  "auditedHeadSha": "5f02c30a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e",
+  "outcome": "pass",
+  "checklist": [
+    {
+      "id": "check-acceptance-criteria",
+      "title": "All required acceptance criteria verified",
+      "status": "passed",
+      "evidenceArtifactIds": ["11112222-3333-4444-8555-666677778888"],
+      "relatedTaskIds": ["cccccccc-dddd-4eee-8fff-000000000000"],
+      "notes": "pnpm --filter @pm-go/contracts test exited zero on the merged SHA."
+    },
+    {
+      "id": "check-risk-mitigations",
+      "title": "Identified risks have active mitigations",
+      "status": "passed",
+      "evidenceArtifactIds": ["22223333-4444-4555-8666-777788889999"]
+    },
+    {
+      "id": "check-performance-smoke",
+      "title": "Smoke performance baseline recorded",
+      "status": "not_verified",
+      "evidenceArtifactIds": [],
+      "notes": "Performance harness is not yet in scope for Phase 1a; deferred to Phase 2."
+    }
+  ],
+  "findings": [],
+  "summary": {
+    "acceptanceCriteriaPassed": ["ac-lane-1", "ac-lane-2"],
+    "acceptanceCriteriaMissing": [],
+    "openFindingIds": [],
+    "unresolvedPolicyDecisionIds": []
+  },
+  "createdAt": "2026-04-18T12:00:00.000Z"
+}
