@@ -4,10 +4,19 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@pm-go/contracts": "workspace:*"
+    "@pm-go/contracts": "workspace:*",
+    "@pm-go/db": "workspace:*",
+    "@pm-go/temporal-activities": "workspace:*",
+    "@pm-go/temporal-workflows": "workspace:*",
+    "@temporalio/activity": "^1.11.0",
+    "@temporalio/worker": "^1.11.0",
+    "@temporalio/workflow": "^1.11.0"
   }
 }
