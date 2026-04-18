@@ -1,1 +1,1 @@
-export { specToPlanWorkflow } from "./spec-intake.js";
+export { SpecToPlanWorkflow } from "./spec-intake.js";

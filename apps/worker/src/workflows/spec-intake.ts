@@ -9,7 +9,7 @@ const { persistSpecDocument } = proxyActivities<SpecIntakeActivityInterface>({
   startToCloseTimeout: "30s",
 });
 
-export async function specToPlanWorkflow(
+export async function SpecToPlanWorkflow(
   input: SpecToPlanWorkflowInput,
 ): Promise<{ persistedSpecDocumentId: string }> {
   const persistedSpecDocumentId = await persistSpecDocument(input.specDocument);
