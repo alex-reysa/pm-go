@@ -70,6 +70,16 @@ importers:
       '@temporalio/workflow':
         specifier: ^1.11.0
         version: 1.16.0
+      drizzle-orm:
+        specifier: ^0.38.0
+        version: 0.38.4(@types/pg@8.20.0)(pg@8.20.0)
+      pg:
+        specifier: ^8.13.0
+        version: 8.20.0
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.11.0
+        version: 8.20.0
 
   packages/contracts:
     dependencies:
