@@ -18,6 +18,8 @@
     "docker:down": "docker compose down",
     "dev:worker": "pnpm --filter @pm-go/worker dev",
     "dev:api": "pnpm --filter @pm-go/api dev",
+    "start:worker": "pnpm --filter @pm-go/worker start",
+    "start:api": "pnpm --filter @pm-go/api start",
     "smoke:phase1b": "bash scripts/phase1b-smoke.sh"
   },
   "pnpm": {

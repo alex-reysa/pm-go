@@ -35,12 +35,15 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+echo "[smoke] building workspace packages and apps"
+pnpm build >/dev/null
+
 echo "[smoke] starting worker (logs: $WORKER_LOG)"
-pnpm dev:worker >"$WORKER_LOG" 2>&1 &
+pnpm start:worker >"$WORKER_LOG" 2>&1 &
 WORKER_PID=$!
 
 echo "[smoke] starting api (logs: $API_LOG)"
-pnpm dev:api >"$API_LOG" 2>&1 &
+pnpm start:api >"$API_LOG" 2>&1 &
 API_PID=$!
 
 echo "[smoke] waiting for api on :$API_PORT"

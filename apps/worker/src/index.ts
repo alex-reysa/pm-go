@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { NativeConnection, Worker } from "@temporalio/worker";
 import { createDb } from "@pm-go/db";
 import { createSpecIntakeActivities } from "./activities/spec-intake.js";
@@ -18,7 +19,7 @@ async function main() {
     connection,
     namespace: process.env.TEMPORAL_NAMESPACE ?? "default",
     taskQueue,
-    workflowsPath: new URL("./workflows/index.js", import.meta.url).pathname,
+    workflowsPath: fileURLToPath(new URL("./workflows/index.js", import.meta.url)),
     activities: createSpecIntakeActivities({ db }),
   });
 
