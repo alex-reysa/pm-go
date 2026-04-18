@@ -13,10 +13,18 @@
   "dependencies": {
     "@pm-go/contracts": "workspace:*",
     "@pm-go/db": "workspace:*",
+    "@pm-go/executor-claude": "workspace:*",
+    "@pm-go/planner": "workspace:*",
+    "@pm-go/repo-intelligence": "workspace:*",
     "@pm-go/temporal-activities": "workspace:*",
     "@pm-go/temporal-workflows": "workspace:*",
     "@temporalio/activity": "^1.11.0",
     "@temporalio/worker": "^1.11.0",
-    "@temporalio/workflow": "^1.11.0"
+    "@temporalio/workflow": "^1.11.0",
+    "drizzle-orm": "^0.38.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.0"
   }
 }
