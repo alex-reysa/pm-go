@@ -11,16 +11,17 @@
     "lint": "pnpm -r --if-present lint",
     "test": "pnpm -r --if-present test",
     "typecheck": "pnpm -r --if-present typecheck",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
-    "db:studio": "drizzle-kit studio",
+    "db:generate": "tsx node_modules/drizzle-kit/bin.cjs generate",
+    "db:migrate": "tsx node_modules/drizzle-kit/bin.cjs migrate",
+    "db:studio": "tsx node_modules/drizzle-kit/bin.cjs studio",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "dev:worker": "pnpm --filter @pm-go/worker dev",
     "dev:api": "pnpm --filter @pm-go/api dev",
     "start:worker": "pnpm --filter @pm-go/worker start",
     "start:api": "pnpm --filter @pm-go/api start",
-    "smoke:phase1b": "bash scripts/phase1b-smoke.sh"
+    "smoke:phase1b": "bash scripts/phase1b-smoke.sh",
+    "smoke:phase2": "bash scripts/phase2-smoke.sh"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

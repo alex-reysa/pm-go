@@ -15,6 +15,13 @@
       "when": 1776542688319,
       "tag": "0001_vengeful_blackheart",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1776544888696,
+      "tag": "0002_graceful_gunslinger",
+      "breakpoints": true
     }
   ]
 }

@@ -22,23 +22,12 @@ export function createSpecDocumentsRoute(deps: SpecDocumentsRouteDeps) {
     }
     const specDocument = body as SpecDocument;
 
+    // Phase 2 contract: SpecToPlanWorkflowInput carries UUID references, not
+    // inline SpecDocument / RepoSnapshot objects. The API+Smoke lane replaces
+    // this placeholder snapshot id with a real repo-snapshot lookup/ingest.
     const workflowInput: SpecToPlanWorkflowInput = {
-      specDocument,
-      // repoSnapshot and requestedBy are required by SpecToPlanWorkflowInput but
-      // Phase 1b stub workflow only touches specDocument. Pass minimal
-      // placeholders so the type contract is satisfied end-to-end.
-      repoSnapshot: {
-        id: "00000000-0000-0000-0000-000000000000",
-        repoRoot: "/",
-        defaultBranch: "main",
-        headSha: "0000000000000000000000000000000000000000",
-        languageHints: [],
-        frameworkHints: [],
-        buildCommands: [],
-        testCommands: [],
-        ciConfigPaths: [],
-        capturedAt: new Date().toISOString()
-      },
+      specDocumentId: specDocument.id,
+      repoSnapshotId: "00000000-0000-0000-0000-000000000000",
       requestedBy: "api"
     };
 
