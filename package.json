@@ -17,7 +17,14 @@
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "dev:worker": "pnpm --filter @pm-go/worker dev",
-    "dev:api": "pnpm --filter @pm-go/api dev"
+    "dev:api": "pnpm --filter @pm-go/api dev",
+    "smoke:phase1b": "bash scripts/phase1b-smoke.sh"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@swc/core",
+      "protobufjs"
+    ]
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

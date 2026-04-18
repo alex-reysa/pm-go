@@ -48,3 +48,25 @@ Start with:
 
 - `docs/roadmap/action-plan.md` for the working delivery sequence
 - `docs/roadmap/milestones.md` for the higher-level milestone view
+
+## Local Runtime (Phase 1b)
+
+Phase 1b landed the local substrate: Postgres plus Temporal via
+`docker-compose.yml`, Drizzle ORM (ADR 0003), an `@pm-go/db` workspace
+package with initial migrations for `spec_documents` and `repo_snapshots`,
+a Temporal worker with a `persistSpecDocument` activity, and a Hono API
+with `POST /spec-documents` that starts a stub `SpecToPlanWorkflow`.
+
+To run the end-to-end smoke test:
+
+```bash
+cp .env.example .env
+pnpm install
+pnpm docker:up
+pnpm db:migrate
+pnpm smoke:phase1b
+```
+
+`pnpm smoke:phase1b` runs `scripts/phase1b-smoke.sh`, which starts the
+worker and API, posts a sample spec, and verifies the row appears in
+Postgres.
