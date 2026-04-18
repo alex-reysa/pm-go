@@ -20,6 +20,15 @@ export default defineConfig({
           import.meta.url,
         ),
       ),
+      "@pm-go/planner": fileURLToPath(
+        new URL("../../packages/planner/src/index.ts", import.meta.url),
+      ),
+      "@pm-go/executor-claude": fileURLToPath(
+        new URL(
+          "../../packages/executor-claude/src/index.ts",
+          import.meta.url,
+        ),
+      ),
     },
   },
   test: {

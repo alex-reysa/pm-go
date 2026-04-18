@@ -80,3 +80,39 @@ against the existing volume; create the database manually:
 ```bash
 docker exec pm-go-postgres-1 createdb -U pmgo pm_go_test
 ```
+
+### Phase 2: Planner Vertical Slice
+
+Phase 2 adds the planner package, six orchestration-review DB tables
+(`plans`, `phases`, `plan_tasks`, `task_dependencies`, `agent_runs`,
+`artifacts`), and end-to-end `/spec-documents` + `/plans` endpoints.
+`POST /spec-documents` now persists the spec and captures a
+`RepoSnapshot` from `repoRoot` inline. `POST /plans` starts the
+`SpecToPlanWorkflow`, which runs the planner (stub or Claude), audits
+the resulting Plan deterministically, persists the Plan, and — if the
+audit approves — renders a Markdown artifact to
+`./artifacts/plans/<planId>.md`.
+
+```bash
+cp .env.example .env  # if not already done
+pnpm install
+pnpm docker:up
+pnpm db:migrate
+pnpm smoke:phase2
+```
+
+By default the smoke runs in `PLANNER_EXECUTOR_MODE=stub` — no
+Anthropic API key required. The stub planner returns a canned Plan
+fixture (with ids rebased to the live spec/snapshot) so the full
+workflow, persistence, and artifact emission are exercised without a
+key. To run against the real Claude planner:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+export PLANNER_EXECUTOR_MODE=live
+pnpm smoke:phase2
+```
+
+See `examples/golden-path/README.md` for the spec the smoke feeds in
+and a walk-through of the durable rows and on-disk artifact the run
+produces.
