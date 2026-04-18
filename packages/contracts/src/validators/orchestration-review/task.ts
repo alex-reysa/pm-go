@@ -59,7 +59,7 @@ export const TaskSchema = Type.Object({
   maxReviewFixCycles: Type.Integer({ minimum: 0 }),
   branchName: Type.Optional(Type.String()),
   worktreePath: Type.Optional(Type.String())
-});
+}, { $id: "Task", additionalProperties: false });
 
 export type TaskSchemaType = Static<typeof TaskSchema>;
 

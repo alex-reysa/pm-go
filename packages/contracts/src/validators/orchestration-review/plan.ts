@@ -39,7 +39,7 @@ export const PlanSchema = Type.Object({
   risks: Type.Array(RiskSchema),
   createdAt: Iso8601Schema,
   updatedAt: Iso8601Schema
-});
+}, { $id: "Plan", additionalProperties: false });
 
 export type PlanSchemaType = Static<typeof PlanSchema>;
 

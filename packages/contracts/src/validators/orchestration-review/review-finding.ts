@@ -25,7 +25,7 @@ export const ReviewFindingSchema = Type.Object({
   endLine: Type.Optional(Type.Integer({ minimum: 1 })),
   confidence: Type.Number({ minimum: 0, maximum: 1 }),
   suggestedFixDirection: Type.String()
-});
+}, { $id: "ReviewFinding", additionalProperties: false });
 
 export type ReviewFindingSchemaType = Static<typeof ReviewFindingSchema>;
 

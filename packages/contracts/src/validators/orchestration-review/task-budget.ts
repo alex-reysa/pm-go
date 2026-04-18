@@ -9,7 +9,7 @@ export const TaskBudgetSchema = Type.Object({
   maxWallClockMinutes: Type.Number({ minimum: 0 }),
   maxModelCostUsd: Type.Optional(Type.Number({ minimum: 0 })),
   maxPromptTokens: Type.Optional(Type.Integer({ minimum: 0 }))
-});
+}, { $id: "TaskBudget", additionalProperties: false });
 
 export type TaskBudgetSchemaType = Static<typeof TaskBudgetSchema>;
 

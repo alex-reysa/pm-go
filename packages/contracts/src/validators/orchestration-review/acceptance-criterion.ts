@@ -10,7 +10,7 @@ export const AcceptanceCriterionSchema = Type.Object({
   description: Type.String(),
   verificationCommands: Type.Array(Type.String()),
   required: Type.Boolean()
-});
+}, { $id: "AcceptanceCriterion", additionalProperties: false });
 
 export type AcceptanceCriterionSchemaType = Static<typeof AcceptanceCriterionSchema>;
 

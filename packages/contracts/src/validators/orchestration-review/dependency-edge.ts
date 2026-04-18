@@ -11,7 +11,7 @@ export const DependencyEdgeSchema = Type.Object({
   toTaskId: UuidSchema,
   reason: Type.String(),
   required: Type.Boolean()
-});
+}, { $id: "DependencyEdge", additionalProperties: false });
 
 export type DependencyEdgeSchemaType = Static<typeof DependencyEdgeSchema>;
 

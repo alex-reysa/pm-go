@@ -44,4 +44,12 @@ describe("validateReviewReport", () => {
     void _findings;
     expect(validateReviewReport(rest)).toBe(false);
   });
+
+  it("rejects a report with an unexpected top-level field", () => {
+    const extra = {
+      ...(fixture as Record<string, unknown>),
+      unexpected: "field"
+    };
+    expect(validateReviewReport(extra)).toBe(false);
+  });
 });

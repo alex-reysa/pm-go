@@ -23,7 +23,7 @@ export const CompletionChecklistItemSchema = Type.Object({
   evidenceArtifactIds: Type.Array(UuidSchema),
   relatedTaskIds: Type.Optional(Type.Array(UuidSchema)),
   notes: Type.Optional(Type.String())
-});
+}, { $id: "CompletionChecklistItem", additionalProperties: false });
 
 export type CompletionChecklistItemSchemaType = Static<
   typeof CompletionChecklistItemSchema
