@@ -70,3 +70,13 @@ pnpm smoke:phase1b
 `pnpm smoke:phase1b` runs `scripts/phase1b-smoke.sh`, which starts the
 worker and API, posts a sample spec, and verifies the row appears in
 Postgres.
+
+The integration-test database (`pm_go_test`, referenced by
+`DATABASE_URL_TEST`) is provisioned automatically on fresh Postgres volume
+creation via `db/init/00-create-test-db.sql`. If you already ran
+`pnpm docker:up` before this was added, the init script will not re-run
+against the existing volume; create the database manually:
+
+```bash
+docker exec pm-go-postgres-1 createdb -U pmgo pm_go_test
+```
