@@ -1,0 +1,200 @@
+{
+  "id": "6d1f4c3a-5f2b-4e27-9d8c-9a7f1b2c3d4e",
+  "specDocumentId": "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+  "repoSnapshotId": "f0e1d2c3-b4a5-4768-99aa-bbccddeeff00",
+  "title": "Phase 1a orchestration and review contracts",
+  "summary": "Deliver runtime validators, JSON Schemas, fixtures, and tests for the Plan, Task, ReviewReport, and CompletionAuditReport contracts.",
+  "status": "approved",
+  "phases": [
+    {
+      "id": "11111111-2222-4333-8444-555555555555",
+      "planId": "6d1f4c3a-5f2b-4e27-9d8c-9a7f1b2c3d4e",
+      "index": 0,
+      "title": "Foundation lane",
+      "summary": "Compile-safe workspace, TypeBox validator, shared helpers.",
+      "status": "completed",
+      "integrationBranch": "codex/pm-go-phase1a-foundation",
+      "baseSnapshotId": "f0e1d2c3-b4a5-4768-99aa-bbccddeeff00",
+      "taskIds": [
+        "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+      ],
+      "dependencyEdges": [
+        {
+          "fromTaskId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+          "toTaskId": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+          "reason": "Shared schema helpers must exist before validator scaffolding references them.",
+          "required": true
+        }
+      ],
+      "mergeOrder": [
+        "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+      ],
+      "startedAt": "2026-04-15T10:00:00.000Z",
+      "completedAt": "2026-04-16T18:30:00.000Z"
+    },
+    {
+      "id": "22222222-3333-4444-8555-666666666666",
+      "planId": "6d1f4c3a-5f2b-4e27-9d8c-9a7f1b2c3d4e",
+      "index": 1,
+      "title": "Parallel contract lanes",
+      "summary": "Orchestration-review and core contract lanes run in parallel worktrees.",
+      "status": "executing",
+      "integrationBranch": "codex/pm-go-phase1a-orchestrator",
+      "baseSnapshotId": "f0e1d2c3-b4a5-4768-99aa-bbccddeeff00",
+      "taskIds": ["cccccccc-dddd-4eee-8fff-000000000000"],
+      "dependencyEdges": [],
+      "mergeOrder": ["cccccccc-dddd-4eee-8fff-000000000000"],
+      "startedAt": "2026-04-17T09:00:00.000Z"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      "planId": "6d1f4c3a-5f2b-4e27-9d8c-9a7f1b2c3d4e",
+      "phaseId": "11111111-2222-4333-8444-555555555555",
+      "slug": "shared-schema-helpers",
+      "title": "Shared schema helpers",
+      "summary": "Introduce UuidSchema, Iso8601Schema, and ContractSchemaRef in shared/schema.ts.",
+      "kind": "foundation",
+      "status": "merged",
+      "riskLevel": "low",
+      "fileScope": {
+        "includes": ["packages/contracts/src/shared/schema.ts"],
+        "excludes": ["packages/contracts/src/shared/**/*.test.ts"],
+        "packageScopes": ["@pm-go/contracts"],
+        "maxFiles": 2
+      },
+      "acceptanceCriteria": [
+        {
+          "id": "ac-foundation-1",
+          "description": "UuidSchema and Iso8601Schema are exported from shared/schema.ts.",
+          "verificationCommands": ["pnpm --filter @pm-go/contracts typecheck"],
+          "required": true
+        }
+      ],
+      "testCommands": ["pnpm --filter @pm-go/contracts test"],
+      "budget": {
+        "maxWallClockMinutes": 30,
+        "maxModelCostUsd": 2.5,
+        "maxPromptTokens": 200000
+      },
+      "reviewerPolicy": {
+        "required": true,
+        "strictness": "standard",
+        "maxCycles": 2,
+        "reviewerWriteAccess": false,
+        "stopOnHighSeverityCount": 1
+      },
+      "requiresHumanApproval": false,
+      "maxReviewFixCycles": 2,
+      "branchName": "codex/pm-go-phase1a-foundation",
+      "worktreePath": "../pm-go-phase1a-foundation"
+    },
+    {
+      "id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+      "planId": "6d1f4c3a-5f2b-4e27-9d8c-9a7f1b2c3d4e",
+      "phaseId": "11111111-2222-4333-8444-555555555555",
+      "slug": "validator-scaffolding",
+      "title": "Validator directory scaffolding",
+      "summary": "Create validators/, json-schema/, fixtures/, and test/ directories under packages/contracts.",
+      "kind": "foundation",
+      "status": "merged",
+      "riskLevel": "low",
+      "fileScope": {
+        "includes": [
+          "packages/contracts/src/validators/**",
+          "packages/contracts/src/json-schema/**",
+          "packages/contracts/src/fixtures/**",
+          "packages/contracts/test/**"
+        ]
+      },
+      "acceptanceCriteria": [
+        {
+          "id": "ac-foundation-2",
+          "description": "Top-level validator directories compile with no sources.",
+          "verificationCommands": ["pnpm --filter @pm-go/contracts typecheck"],
+          "required": true
+        }
+      ],
+      "testCommands": ["pnpm --filter @pm-go/contracts test"],
+      "budget": {
+        "maxWallClockMinutes": 15
+      },
+      "reviewerPolicy": {
+        "required": false,
+        "strictness": "standard",
+        "maxCycles": 1,
+        "reviewerWriteAccess": false,
+        "stopOnHighSeverityCount": 1
+      },
+      "requiresHumanApproval": false,
+      "maxReviewFixCycles": 1
+    },
+    {
+      "id": "cccccccc-dddd-4eee-8fff-000000000000",
+      "planId": "6d1f4c3a-5f2b-4e27-9d8c-9a7f1b2c3d4e",
+      "phaseId": "22222222-3333-4444-8555-666666666666",
+      "slug": "orchestration-review-contracts",
+      "title": "Orchestration and review contract validators",
+      "summary": "Implement runtime validators, JSON Schemas, and fixtures for Plan, Task, ReviewReport, CompletionAuditReport.",
+      "kind": "implementation",
+      "status": "running",
+      "riskLevel": "medium",
+      "fileScope": {
+        "includes": [
+          "packages/contracts/src/validators/orchestration-review/**",
+          "packages/contracts/src/json-schema/orchestration-review/**",
+          "packages/contracts/src/fixtures/orchestration-review/**",
+          "packages/contracts/test/orchestration-review/**"
+        ],
+        "packageScopes": ["@pm-go/contracts"],
+        "maxFiles": 30
+      },
+      "acceptanceCriteria": [
+        {
+          "id": "ac-lane-1",
+          "description": "validatePlan, validateTask, validateReviewReport, validateCompletionAuditReport accept their fixtures.",
+          "verificationCommands": ["pnpm --filter @pm-go/contracts test"],
+          "required": true
+        },
+        {
+          "id": "ac-lane-2",
+          "description": "Validators reject mutations that drop required fields.",
+          "verificationCommands": ["pnpm --filter @pm-go/contracts test"],
+          "required": true
+        }
+      ],
+      "testCommands": ["pnpm --filter @pm-go/contracts test"],
+      "budget": {
+        "maxWallClockMinutes": 90,
+        "maxModelCostUsd": 7.5,
+        "maxPromptTokens": 600000
+      },
+      "reviewerPolicy": {
+        "required": true,
+        "strictness": "elevated",
+        "maxCycles": 3,
+        "reviewerWriteAccess": false,
+        "stopOnHighSeverityCount": 1
+      },
+      "requiresHumanApproval": false,
+      "maxReviewFixCycles": 3,
+      "branchName": "codex/pm-go-phase1a-orchestration-contracts",
+      "worktreePath": "../pm-go-phase1a-orchestration-contracts"
+    }
+  ],
+  "risks": [
+    {
+      "id": "risk-lane-drift",
+      "level": "medium",
+      "title": "Parallel lanes drift on shared helper semantics",
+      "description": "Both parallel contract lanes reuse UuidSchema and Iso8601Schema; divergent interpretations could leak into JSON Schema consumers.",
+      "mitigation": "Orchestrator merges both lanes with a post-merge compile check and a schema-equivalence spot check before Phase 1a closes.",
+      "humanApprovalRequired": false
+    }
+  ],
+  "createdAt": "2026-04-15T09:00:00.000Z",
+  "updatedAt": "2026-04-17T14:25:00.000Z"
+}
