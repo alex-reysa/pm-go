@@ -1,0 +1,7 @@
+{
+  "id": "8c7a1f16-1f4a-4e3c-9a6f-3b9d5d2a7f10",
+  "title": "Add promoter confidence scorer",
+  "source": "manual",
+  "body": "Implement a scorer that ranks promoter outreach candidates by historical response rate, recency, and booked-show lift. The scorer should return a 0-1 confidence and an explanation payload usable by the planner UI.",
+  "createdAt": "2026-04-18T10:30:00.000Z"
+}
