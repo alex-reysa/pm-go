@@ -1,2 +1,2 @@
 CREATE TYPE "public"."spec_document_source" AS ENUM('manual', 'imported');--> statement-breakpoint
-ALTER TABLE "spec_documents" ALTER COLUMN "source" SET DATA TYPE spec_document_source;
+ALTER TABLE "spec_documents" ALTER COLUMN "source" SET DATA TYPE spec_document_source USING "source"::spec_document_source;
