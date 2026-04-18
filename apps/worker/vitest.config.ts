@@ -14,6 +14,12 @@ export default defineConfig({
       "@pm-go/contracts": fileURLToPath(
         new URL("../../packages/contracts/src/index.ts", import.meta.url),
       ),
+      "@pm-go/repo-intelligence": fileURLToPath(
+        new URL(
+          "../../packages/repo-intelligence/src/index.ts",
+          import.meta.url,
+        ),
+      ),
     },
   },
   test: {
