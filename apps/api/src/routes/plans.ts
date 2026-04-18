@@ -22,6 +22,8 @@ import {
   type PmGoDb,
 } from "@pm-go/db";
 
+import { toIso } from "../lib/timestamps.js";
+
 /**
  * Dependencies for the /plans route group.
  *
@@ -265,12 +267,3 @@ async function loadPlanById(
   return plan;
 }
 
-/**
- * Postgres `timestamptz` with Drizzle's `mode: "string"` returns values in
- * the Postgres display format (e.g. `"2026-04-15 09:00:00+00"`), which is
- * not valid RFC 3339 / ISO 8601. `Iso8601Schema` in `@pm-go/contracts`
- * expects the ISO form. Normalise on read.
- */
-function toIso(dbTimestamp: string): string {
-  return new Date(dbTimestamp).toISOString();
-}

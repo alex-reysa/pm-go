@@ -20,7 +20,13 @@ async function main() {
   const temporalAddress = process.env.TEMPORAL_ADDRESS ?? "localhost:7233";
   const taskQueue = process.env.TEMPORAL_TASK_QUEUE ?? "pm-go-worker";
   const plannerMode = process.env.PLANNER_EXECUTOR_MODE ?? "stub";
-  const artifactDir = process.env.PLAN_ARTIFACT_DIR ?? "./artifacts/plans";
+  // Resolve PLAN_ARTIFACT_DIR relative to the repo root, not the worker's
+  // cwd. `pnpm --filter @pm-go/worker start` spawns the child with
+  // cwd=apps/worker/, so a relative "./artifacts/plans" would otherwise
+  // land under apps/worker/ rather than the user's expected location.
+  const artifactDir = resolveArtifactDir(
+    process.env.PLAN_ARTIFACT_DIR ?? "./artifacts/plans",
+  );
 
   if (!databaseUrl) {
     throw new Error("DATABASE_URL is required");
@@ -83,6 +89,18 @@ function resolveFixturePath(): string {
       import.meta.url,
     ),
   );
+}
+
+/**
+ * Resolve a user-provided artifact directory path. Absolute paths are
+ * used verbatim; relative paths resolve against the repo root (two
+ * levels above the worker package), not the worker process cwd.
+ */
+function resolveArtifactDir(input: string): string {
+  if (path.isAbsolute(input)) return input;
+  // apps/worker/{dist|src}/index.{js|ts} -> repo root is three levels up.
+  const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
+  return path.resolve(repoRoot, input);
 }
 
 main().catch((err) => {
