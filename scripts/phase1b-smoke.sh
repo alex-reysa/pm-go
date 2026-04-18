@@ -69,8 +69,9 @@ JSON
 echo "[smoke] api response: $RESPONSE"
 
 echo "[smoke] waiting for worker to persist row"
+POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-pm-go-postgres-1}"
 for i in {1..20}; do
-  ROW_COUNT="$(psql "$DATABASE_URL" -tAc "select count(*) from spec_documents where id = '$SPEC_ID'")"
+  ROW_COUNT="$(docker exec "$POSTGRES_CONTAINER" psql -U pmgo -d pm_go -tAc "select count(*) from spec_documents where id = '$SPEC_ID'" 2>/dev/null | tr -d '[:space:]')"
   if [[ "$ROW_COUNT" == "1" ]]; then
     echo "[smoke] PASS: row $SPEC_ID persisted"
     exit 0
