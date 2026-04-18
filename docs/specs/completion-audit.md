@@ -20,6 +20,7 @@ The completion audit should read from durable records, not prompt memory:
 - approved `Plan`
 - all `Task` records and dependency state
 - every phase's `MergeRun` state and the final integration head
+- every `PhaseAuditReport` and the merge run each one audited
 - `ReviewReport` records and any open findings
 - validation and test artifacts
 - `PolicyDecision` records
@@ -42,6 +43,7 @@ At minimum, the audit checklist should verify:
 The workflow should produce:
 
 - a `CompletionAuditReport`
+- the exact final `mergeRunId` used as the terminal integration reference
 - the audited merged head SHA
 - structured findings for gaps or regressions
 - a checklist with evidence artifact references

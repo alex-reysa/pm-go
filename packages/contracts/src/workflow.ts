@@ -79,6 +79,7 @@ export interface PhaseIntegrationWorkflowResult {
 export interface PhaseAuditWorkflowInput {
   planId: UUID;
   phaseId: UUID;
+  mergeRunId: UUID;
   requestedBy: string;
 }
 
@@ -92,6 +93,7 @@ export interface PhaseAuditWorkflowResult {
 export interface CompletionAuditWorkflowInput {
   planId: UUID;
   finalPhaseId: UUID;
+  mergeRunId: UUID;
   requestedBy: string;
 }
 

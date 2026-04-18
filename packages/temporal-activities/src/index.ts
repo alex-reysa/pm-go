@@ -3,6 +3,7 @@ import type {
   Plan,
   RepoSnapshot,
   CompletionAuditReport,
+  PhaseAuditReport,
   ReviewReport,
   SpecDocument,
   Task,
@@ -31,13 +32,18 @@ export interface ReviewActivities {
 }
 
 export interface IntegrationActivities {
-  mergeTask(taskId: UUID): Promise<MergeRun>;
+  mergePhase(phaseId: UUID): Promise<MergeRun>;
   runTargetedValidation(taskId: UUID): Promise<boolean>;
-  runIntegrationValidation(planId: UUID): Promise<boolean>;
+  runPhaseIntegrationValidation(phaseId: UUID): Promise<boolean>;
+}
+
+export interface PhaseAuditActivities {
+  runPhaseAudit(planId: UUID, phaseId: UUID, mergeRunId: UUID): Promise<UUID>;
+  persistPhaseAuditReport(report: PhaseAuditReport): Promise<UUID>;
 }
 
 export interface CompletionAuditActivities {
-  collectCompletionEvidence(planId: UUID, mergeRunId: UUID): Promise<UUID>;
-  runCompletionAudit(planId: UUID, mergeRunId: UUID): Promise<UUID>;
+  collectCompletionEvidence(planId: UUID, finalMergeRunId: UUID): Promise<UUID>;
+  runCompletionAudit(planId: UUID, finalMergeRunId: UUID): Promise<UUID>;
   persistCompletionAuditReport(report: CompletionAuditReport): Promise<UUID>;
 }

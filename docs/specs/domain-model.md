@@ -68,6 +68,8 @@ Notes:
 - `tasks` is the flat projection of all tasks across all phases. It is
   populated lazily as each phase is partitioned and may be empty for phases
   that have not yet started.
+- initial plan audit can validate only phase structure plus phase 1 task detail;
+  later phase task detail is validated lazily as each phase is partitioned
 
 ### `Phase`
 
@@ -164,6 +166,7 @@ Required fields:
 - `id`
 - `phaseId`
 - `planId`
+- `mergeRunId`
 - `auditorRunId`
 - `mergedHeadSha`
 - `outcome`
@@ -187,6 +190,7 @@ Required fields:
 - `id`
 - `planId`
 - `finalPhaseId`
+- `mergeRunId`
 - `auditorRunId`
 - `auditedHeadSha`
 - `outcome`
@@ -261,6 +265,22 @@ Rules:
 
 Record of integration activity across one or more completed tasks.
 
+Rules:
+
+- a merge run is scoped to exactly one phase
+- phase and completion audits should cite the merge run they audited
+- `integrationHeadSha` is the auditable head produced by that integration attempt
+
+Required fields:
+
+- `id`
+- `planId`
+- `phaseId`
+- `integrationBranch`
+- `mergedTaskIds`
+- `integrationHeadSha`
+- `startedAt`
+
 ### `Artifact`
 
 Durable reference to rendered markdown, logs, reports, test results, or PR summary output.
@@ -297,7 +317,7 @@ Recommended initial tables:
 4. If a task exceeds scope, the system re-partitions instead of expanding task bounds.
 5. Rendered markdown never replaces the underlying structured object.
 6. Workflow success does not equal completion until a completion audit passes.
-7. File ownership is enforced by two named checks: `plan_audit.fileScope.disjoint` (pairwise disjointness of `Task.fileScope.includes` across all tasks in a plan, validated during plan audit) and `task_review.fileScope.diff` (worktree diff against base SHA at `ready_for_review`, validated during task review — any changed file outside `fileScope.includes` blocks the task).
+7. File ownership is enforced lazily by phase: `plan_audit.phase1.fileScope.disjoint` validates pairwise disjointness across phase 1 tasks during initial plan audit, `phase_partition.fileScope.disjoint` validates the active phase when later phases are partitioned, and `task_review.fileScope.diff` validates the worktree diff against base SHA at `ready_for_review` for each task. Any changed file outside `fileScope.includes` blocks the task.
 8. Agent runs are resumable only when `AgentRun.sessionId` is persisted. A run without a recorded `sessionId` is treated as non-resumable and must be re-executed from scratch.
 9. Phases execute sequentially. Phase N+1 does not begin until phase N merges and phase N's `PhaseAuditReport` passes.
 10. Inside a phase, the foundational lane (tasks that publish shared contracts for the phase) merges before any parallel feature lane starts. This is a scheduler primitive, not a review-time check.

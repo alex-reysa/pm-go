@@ -39,15 +39,18 @@ Output:
 
 Responsibilities:
 
-- validate task size bounds
-- validate dependency graph
-- validate ownership conflicts
+- validate the ordered phase list and phase boundaries
+- validate that phase 1 is sufficiently partitioned to execute
+- validate phase 1 task size, dependency graph, and ownership conflicts
 - validate risk flags and required approvals
 
 Rules:
 
 - allow at most one automatic plan revision
 - escalate to human after that
+- later phases are validated for task-level size, dependency, and ownership
+  during `PhasePartitionWorkflow` and `PhaseAuditWorkflow`, not during initial
+  plan audit
 
 ### `PhasePartitionWorkflow`
 
@@ -145,6 +148,7 @@ Input:
 
 - `planId`
 - `phaseId`
+- `mergeRunId`
 - request metadata
 
 Output:
@@ -157,6 +161,7 @@ Responsibilities:
 - verify every required task in the phase is merged or explicitly waived
 - verify phase-scope acceptance criteria are satisfied
 - verify no blocking findings remain open within the phase
+- verify the report cites the exact `MergeRun` that produced the audited head
 - verify the phase integration branch matches the audited head SHA
 - gate advancement to phase N+1
 
@@ -196,6 +201,7 @@ Input:
 
 - `planId`
 - `finalPhaseId`
+- `mergeRunId`
 - request metadata
 
 Output:
@@ -272,8 +278,8 @@ Every workflow should be resumable and idempotent with respect to durable identi
 - task review keyed by `taskId` plus cycle number
 - phase partition keyed by `phaseId`
 - phase integration keyed by `phaseId` plus merge attempt number
-- phase audit keyed by `phaseId` plus audit attempt number
-- completion audit keyed by `planId` plus final phase merged head
+- phase audit keyed by `phaseId` plus `mergeRunId`
+- completion audit keyed by `planId` plus final phase merge run and merged head
 
 ## Signals and Queries
 
@@ -285,6 +291,7 @@ Expected control-plane operations:
 - extend worktree lease
 - query task state
 - query merge queue state
+- query phase readiness state
 - request completion re-audit
 - query release readiness state
 
@@ -353,7 +360,8 @@ for "done":
 - approved `Plan` and `Task` records
 - merged task state and final integration head
 - `ReviewReport` records and any still-open findings
-- `PhaseAuditReport` records for every completed phase
+- `PhaseAuditReport` records for every completed phase and the `MergeRun`
+  each one audited
 - validation and test artifacts
 - `PolicyDecision` records
 - generated release artifacts such as PR summaries

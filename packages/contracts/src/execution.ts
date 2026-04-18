@@ -115,6 +115,7 @@ export interface Artifact {
 export interface MergeRun {
   id: UUID;
   planId: UUID;
+  phaseId: UUID;
   integrationBranch: string;
   mergedTaskIds: UUID[];
   failedTaskId?: UUID;

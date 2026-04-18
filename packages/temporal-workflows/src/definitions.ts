@@ -1,10 +1,14 @@
 import type {
-  FinalReleaseWorkflowInput,
-  FinalReleaseWorkflowResult,
-  IntegrationWorkflowInput,
-  IntegrationWorkflowResult,
   CompletionAuditWorkflowInput,
   CompletionAuditWorkflowResult,
+  FinalReleaseWorkflowInput,
+  FinalReleaseWorkflowResult,
+  PhaseAuditWorkflowInput,
+  PhaseAuditWorkflowResult,
+  PhaseIntegrationWorkflowInput,
+  PhaseIntegrationWorkflowResult,
+  PhasePartitionWorkflowInput,
+  PhasePartitionWorkflowResult,
   PlanAuditWorkflowInput,
   PlanAuditWorkflowResult,
   SpecToPlanWorkflowInput,
@@ -13,8 +17,6 @@ import type {
   TaskExecutionWorkflowResult,
   TaskFixWorkflowInput,
   TaskFixWorkflowResult,
-  TaskPartitionWorkflowInput,
-  TaskPartitionWorkflowResult,
   TaskReviewWorkflowInput,
   TaskReviewWorkflowResult
 } from "../../contracts/src/index.js";
@@ -42,12 +44,13 @@ export const PLAN_AUDIT_WORKFLOW: WorkflowDefinition<
   description: "Audit the plan before any write-capable agent work begins."
 };
 
-export const TASK_PARTITION_WORKFLOW: WorkflowDefinition<
-  TaskPartitionWorkflowInput,
-  TaskPartitionWorkflowResult
+export const PHASE_PARTITION_WORKFLOW: WorkflowDefinition<
+  PhasePartitionWorkflowInput,
+  PhasePartitionWorkflowResult
 > = {
-  name: "TaskPartitionWorkflow",
-  description: "Split an approved plan into bounded, worktree-safe tasks."
+  name: "PhasePartitionWorkflow",
+  description:
+    "Partition the active phase into bounded, worktree-safe tasks against current merged repo state."
 };
 
 export const TASK_EXECUTION_WORKFLOW: WorkflowDefinition<
@@ -74,12 +77,22 @@ export const TASK_FIX_WORKFLOW: WorkflowDefinition<
   description: "Apply bounded fixes in response to reviewer findings."
 };
 
-export const INTEGRATION_WORKFLOW: WorkflowDefinition<
-  IntegrationWorkflowInput,
-  IntegrationWorkflowResult
+export const PHASE_INTEGRATION_WORKFLOW: WorkflowDefinition<
+  PhaseIntegrationWorkflowInput,
+  PhaseIntegrationWorkflowResult
 > = {
-  name: "IntegrationWorkflow",
-  description: "Merge completed task branches in deterministic dependency order."
+  name: "PhaseIntegrationWorkflow",
+  description:
+    "Merge completed task branches for a phase in deterministic dependency order."
+};
+
+export const PHASE_AUDIT_WORKFLOW: WorkflowDefinition<
+  PhaseAuditWorkflowInput,
+  PhaseAuditWorkflowResult
+> = {
+  name: "PhaseAuditWorkflow",
+  description:
+    "Audit a completed phase against its merge run, findings, and phase-scope acceptance criteria."
 };
 
 export const COMPLETION_AUDIT_WORKFLOW: WorkflowDefinition<

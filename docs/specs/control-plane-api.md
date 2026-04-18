@@ -48,6 +48,14 @@ Start `PlanAuditWorkflow` or signal re-audit.
 
 Return the structured plan plus rendered artifacts and current status.
 
+### `GET /phases/:phaseId`
+
+Return phase status, task membership, merge state, and latest phase-audit state.
+
+### `POST /phases/:phaseId/partition`
+
+Start `PhasePartitionWorkflow` for the active phase.
+
 ### `POST /tasks/:taskId/run`
 
 Start `TaskExecutionWorkflow`.
@@ -64,13 +72,27 @@ Retry a blocked or failed task if policy allows it.
 
 Return task status, assigned branch/worktree, latest review outcome, and policy state.
 
-### `POST /merges`
+### `POST /phases/:phaseId/merge`
 
-Start `IntegrationWorkflow` for an approved plan or subset of ready tasks.
+Start `PhaseIntegrationWorkflow` for an active phase.
+
+### `POST /phases/:phaseId/audit`
+
+Start `PhaseAuditWorkflow` against a specific phase merge run.
+
+Request body:
+
+- `planId`
+- `mergeRunId`
 
 ### `POST /plans/:planId/completion-audit`
 
-Start `CompletionAuditWorkflow` against the latest merged state.
+Start `CompletionAuditWorkflow` against the latest audited final-phase merge run.
+
+Request body:
+
+- `finalPhaseId`
+- `mergeRunId`
 
 ### `GET /completion-audits/:completionAuditId`
 
@@ -90,6 +112,7 @@ Stream durable event-log updates via SSE.
 The UI should be able to answer these questions from API payloads alone:
 
 - What plan is running?
+- Which phase is active?
 - Which tasks are blocked and why?
 - Which findings are open?
 - Which merges are waiting?

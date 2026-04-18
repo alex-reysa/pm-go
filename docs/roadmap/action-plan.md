@@ -135,8 +135,9 @@ Work items:
 4. Implement plan markdown rendering as a secondary artifact, not the source of
    truth.
 5. Implement `SpecToPlanWorkflow`.
-6. Implement `PlanAuditWorkflow` checks for task size, dependency validity, and
-   ownership conflicts.
+6. Implement `PlanAuditWorkflow` checks for phase ordering, phase boundaries,
+   risk gates, and phase 1 task size, dependency validity, and ownership
+   conflicts only.
 7. Persist plans, tasks, dependencies, risks, and artifacts.
 8. Add one golden-path example spec that can be run repeatedly during
    development.
@@ -400,4 +401,3 @@ V1 targets TypeScript repos only. Python support is deferred to V1.1 because
 repo intelligence, test-runner parsing, and framework hints need language-
 specific implementations that were not sized into any V1 phase. The existing
 `mvp-boundaries.md` has been amended to reflect this.
-

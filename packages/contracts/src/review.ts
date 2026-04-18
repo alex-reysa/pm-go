@@ -46,6 +46,7 @@ export interface CompletionAuditReport {
   id: UUID;
   planId: UUID;
   finalPhaseId: UUID;
+  mergeRunId: UUID;
   auditorRunId: UUID;
   auditedHeadSha: string;
   outcome: CompletionAuditOutcome;
@@ -61,6 +62,7 @@ export interface PhaseAuditReport {
   id: UUID;
   phaseId: UUID;
   planId: UUID;
+  mergeRunId: UUID;
   auditorRunId: UUID;
   mergedHeadSha: string;
   outcome: PhaseAuditOutcome;
