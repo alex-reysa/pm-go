@@ -15,7 +15,7 @@ services:
       retries: 10
 
   temporal:
-    image: temporalio/auto-setup:1.27
+    image: temporalio/auto-setup:1.27.0
     environment:
       DB: postgres12
       DB_PORT: 5432
@@ -29,7 +29,7 @@ services:
       - "7233:7233"
 
   temporal-ui:
-    image: temporalio/ui:2.31
+    image: temporalio/ui:2.33.0
     environment:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_CORS_ORIGINS: http://localhost:3000
