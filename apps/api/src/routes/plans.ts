@@ -220,8 +220,8 @@ async function loadPlanById(
       ...(row.phaseAuditReportId !== null
         ? { phaseAuditReportId: row.phaseAuditReportId }
         : {}),
-      ...(row.startedAt !== null ? { startedAt: row.startedAt } : {}),
-      ...(row.completedAt !== null ? { completedAt: row.completedAt } : {}),
+      ...(row.startedAt !== null ? { startedAt: toIso(row.startedAt) } : {}),
+      ...(row.completedAt !== null ? { completedAt: toIso(row.completedAt) } : {}),
     }));
 
   const tasksOut: Task[] = taskRows.map((row) => ({
@@ -255,12 +255,22 @@ async function loadPlanById(
     phases: phasesOut,
     tasks: tasksOut,
     risks: (planRow.risks ?? []) as Risk[],
-    createdAt: planRow.createdAt,
-    updatedAt: planRow.updatedAt,
+    createdAt: toIso(planRow.createdAt),
+    updatedAt: toIso(planRow.updatedAt),
   };
 
   // Silence unused warning under strict mode — `and` is convenient for
   // extensions but not required on this simple reconstruction path.
   void and;
   return plan;
+}
+
+/**
+ * Postgres `timestamptz` with Drizzle's `mode: "string"` returns values in
+ * the Postgres display format (e.g. `"2026-04-15 09:00:00+00"`), which is
+ * not valid RFC 3339 / ISO 8601. `Iso8601Schema` in `@pm-go/contracts`
+ * expects the ISO form. Normalise on read.
+ */
+function toIso(dbTimestamp: string): string {
+  return new Date(dbTimestamp).toISOString();
 }

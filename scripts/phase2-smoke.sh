@@ -28,7 +28,7 @@ cd "$REPO_ROOT"
 : "${TEMPORAL_TASK_QUEUE:=pm-go-worker}"
 : "${API_PORT:=3001}"
 : "${PLANNER_EXECUTOR_MODE:=stub}"
-: "${PLAN_ARTIFACT_DIR:=./artifacts/plans}"
+: "${PLAN_ARTIFACT_DIR:=$REPO_ROOT/artifacts/plans}"
 : "${POSTGRES_CONTAINER:=pm-go-postgres-1}"
 
 export DATABASE_URL TEMPORAL_ADDRESS TEMPORAL_NAMESPACE TEMPORAL_TASK_QUEUE \
