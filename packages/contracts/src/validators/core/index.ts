@@ -16,7 +16,6 @@ export {
   AgentStopReasonSchema,
   AgentPermissionModeSchema,
   AgentDepthSchema,
-  RiskLevelSchema,
   validateAgentRun,
   type AgentRunStatic
 } from "./agent-run.js";
