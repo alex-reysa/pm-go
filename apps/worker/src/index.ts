@@ -20,7 +20,13 @@ async function main() {
   const temporalAddress = process.env.TEMPORAL_ADDRESS ?? "localhost:7233";
   const taskQueue = process.env.TEMPORAL_TASK_QUEUE ?? "pm-go-worker";
   const plannerMode = process.env.PLANNER_EXECUTOR_MODE ?? "stub";
-  const artifactDir = process.env.PLAN_ARTIFACT_DIR ?? "./artifacts/plans";
+  // Resolve to absolute eagerly so the markdown artifact lands at a
+  // predictable location regardless of where the worker is invoked from
+  // (pnpm --filter runs the child process in apps/worker/, so a relative
+  // "./artifacts/plans" would resolve there, not at repo root).
+  const artifactDir = path.resolve(
+    process.env.PLAN_ARTIFACT_DIR ?? "./artifacts/plans",
+  );
 
   if (!databaseUrl) {
     throw new Error("DATABASE_URL is required");

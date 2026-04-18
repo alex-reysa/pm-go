@@ -38,6 +38,12 @@ interface SpecToPlanActivities {
   persistArtifact(artifact: Artifact): Promise<string>;
 }
 
+// Cap retries explicitly. Temporal's default is infinite exponential
+// backoff, which on a transient-looking-but-actually-fatal activity
+// failure (e.g. Anthropic returning "Credit balance is too low") will
+// retry until the workflow times out 5+ minutes later. Three attempts
+// with bounded backoff fails fast enough to surface real problems while
+// still tolerating brief connection blips.
 const {
   generatePlan,
   auditPlanActivity,
@@ -47,6 +53,12 @@ const {
   persistArtifact,
 } = proxyActivities<SpecToPlanActivities>({
   startToCloseTimeout: "5 minutes",
+  retry: {
+    maximumAttempts: 3,
+    initialInterval: "2 seconds",
+    backoffCoefficient: 2,
+    maximumInterval: "30 seconds",
+  },
 });
 
 /**
