@@ -8,6 +8,9 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@pm-go/contracts": "workspace:*"
+    "@pm-go/contracts": "workspace:*",
+    "@pm-go/db": "workspace:*",
+    "@pm-go/temporal-activities": "workspace:*",
+    "@pm-go/temporal-workflows": "workspace:*"
   }
 }

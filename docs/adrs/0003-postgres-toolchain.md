@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
@@ -10,34 +10,28 @@ Postgres is the system of record for orchestration state per ADR 0001 and `db/RE
 
 ## Decision
 
-Pending. Three candidates under evaluation:
+Adopt the Drizzle stack for Phase 1b. Installed at repo root and in `@pm-go/db`:
 
-- `Drizzle ORM` — schema declared in TypeScript, migrations generated via `drizzle-kit` as plain SQL, type-safe query builder with SQL-shaped ergonomics. Small runtime. Lighter than `Prisma`, more ergonomic than raw SQL.
-- `Prisma` — mature DX, schema lives in a `.prisma` DSL, first-class migrations, heavier runtime with a separate query engine, code generation step. Historically weaker on complex SQL and pooling, actively improving.
-- `Kysely` plus `node-pg-migrate` — hand-written SQL migrations plus a strongly-typed query builder. Most control, least magic, highest ceremony.
+- `drizzle-orm` `^0.38.0`
+- `drizzle-kit` `^0.30.0`
+- `pg` `^8.13.0` with `@types/pg` `^8.11.0`
 
-Recommend `Drizzle` because:
+Rationale: a TypeScript-native schema matches the `@pm-go/contracts` ethos (one source of truth for types, schemas, and SQL), generated migrations are plain, auditable SQL that satisfies the "destructive migration = high risk" rule, and the runtime stays lean inside Temporal activities (`pg` native pool, no separate query engine). `node-postgres` (`pg`) is chosen as the driver for its breadth of support.
 
-- schema is TypeScript, matching the contracts in `packages/contracts`
-- generated migrations are plain SQL and human-reviewable
-- no separate runtime like `Prisma`'s query engine
-- integrates cleanly with Temporal activities that need low-overhead connections
-
-`Kysely` is the fallback if the team prefers zero ORM abstraction. `Prisma` is explicitly deprioritized because its second schema DSL conflicts with the "one source of truth" principle of ADR 0001 and ADR 0002.
+`Kysely` plus `node-pg-migrate` remains the documented fallback if the team later reverses course. `Prisma` stays explicitly deprioritized because its second schema DSL conflicts with the "one source of truth" principle of ADR 0001 and ADR 0002.
 
 ## Consequences
 
 Positive:
 
-- one schema definition in TypeScript, aligned with the contracts package
-- migrations are plain SQL, auditable, and fit the "destructive migration = high risk" policy
+- one schema definition in TypeScript, co-located with the contracts package
+- migrations are plain SQL, auditable, and compatible with the high-risk destructive-migration policy
 - low runtime overhead inside Temporal activities
 
 Tradeoffs:
 
-- `Drizzle` is younger than `Prisma` and has a smaller community
-- complex queries may require escape hatches to raw SQL
-- migration rollback tooling is thinner than `Prisma`'s
+- `Drizzle` has a smaller community than `Prisma`; complex queries may occasionally need raw SQL escape hatches
+- migration rollback tooling is thinner than `Prisma`'s and must be handled with explicit SQL
 
 ## Follow-On Decisions
 
