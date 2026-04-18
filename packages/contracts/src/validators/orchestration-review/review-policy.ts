@@ -21,7 +21,7 @@ export const ReviewPolicySchema = Type.Object({
   maxCycles: Type.Integer({ minimum: 0 }),
   reviewerWriteAccess: Type.Literal(false),
   stopOnHighSeverityCount: Type.Integer({ minimum: 0 })
-});
+}, { $id: "ReviewPolicy", additionalProperties: false });
 
 export type ReviewPolicySchemaType = Static<typeof ReviewPolicySchema>;
 

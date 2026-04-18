@@ -40,7 +40,7 @@ export const CompletionAuditReportSchema = Type.Object({
   findings: Type.Array(ReviewFindingSchema),
   summary: CompletionAuditSummarySchema,
   createdAt: Iso8601Schema
-});
+}, { $id: "CompletionAuditReport", additionalProperties: false });
 
 export type CompletionAuditReportSchemaType = Static<
   typeof CompletionAuditReportSchema

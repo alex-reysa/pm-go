@@ -11,7 +11,7 @@ export const FileScopeSchema = Type.Object({
   excludes: Type.Optional(Type.Array(Type.String())),
   packageScopes: Type.Optional(Type.Array(Type.String())),
   maxFiles: Type.Optional(Type.Integer({ minimum: 1 }))
-});
+}, { $id: "FileScope", additionalProperties: false });
 
 export type FileScopeSchemaType = Static<typeof FileScopeSchema>;
 

@@ -12,7 +12,7 @@ export const CompletionAuditSummarySchema = Type.Object({
   acceptanceCriteriaMissing: Type.Array(Type.String()),
   openFindingIds: Type.Array(Type.String()),
   unresolvedPolicyDecisionIds: Type.Array(UuidSchema)
-});
+}, { $id: "CompletionAuditSummary", additionalProperties: false });
 
 export type CompletionAuditSummarySchemaType = Static<
   typeof CompletionAuditSummarySchema

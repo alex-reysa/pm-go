@@ -41,4 +41,12 @@ describe("validatePlan", () => {
     void _phases;
     expect(validatePlan(rest)).toBe(false);
   });
+
+  it("rejects a plan with an unexpected top-level field", () => {
+    const extra = {
+      ...(fixture as Record<string, unknown>),
+      unexpected: "field"
+    };
+    expect(validatePlan(extra)).toBe(false);
+  });
 });

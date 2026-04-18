@@ -22,7 +22,7 @@ export const RiskSchema = Type.Object({
   description: Type.String(),
   mitigation: Type.String(),
   humanApprovalRequired: Type.Boolean()
-});
+}, { $id: "Risk", additionalProperties: false });
 
 export type RiskSchemaType = Static<typeof RiskSchema>;
 

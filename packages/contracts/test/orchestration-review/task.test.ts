@@ -53,4 +53,12 @@ describe("validateTask", () => {
     void _ac;
     expect(validateTask(rest)).toBe(false);
   });
+
+  it("rejects a task with an unexpected top-level field", () => {
+    const extra = {
+      ...(fixture as Record<string, unknown>),
+      unexpected: "field"
+    };
+    expect(validateTask(extra)).toBe(false);
+  });
 });

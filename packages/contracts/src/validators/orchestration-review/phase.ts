@@ -37,7 +37,7 @@ export const PhaseSchema = Type.Object({
   phaseAuditReportId: Type.Optional(UuidSchema),
   startedAt: Type.Optional(Iso8601Schema),
   completedAt: Type.Optional(Iso8601Schema)
-});
+}, { $id: "Phase", additionalProperties: false });
 
 export type PhaseSchemaType = Static<typeof PhaseSchema>;
 

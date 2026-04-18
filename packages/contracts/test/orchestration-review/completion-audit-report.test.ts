@@ -54,4 +54,12 @@ describe("validateCompletionAuditReport", () => {
     };
     expect(validateCompletionAuditReport(mutated)).toBe(false);
   });
+
+  it("rejects an audit with an unexpected top-level field", () => {
+    const extra = {
+      ...(fixture as Record<string, unknown>),
+      unexpected: "field"
+    };
+    expect(validateCompletionAuditReport(extra)).toBe(false);
+  });
 });

@@ -26,7 +26,7 @@ export const ReviewReportSchema = Type.Object({
   outcome: ReviewOutcomeSchema,
   findings: Type.Array(ReviewFindingSchema),
   createdAt: Iso8601Schema
-});
+}, { $id: "ReviewReport", additionalProperties: false });
 
 export type ReviewReportSchemaType = Static<typeof ReviewReportSchema>;
 
