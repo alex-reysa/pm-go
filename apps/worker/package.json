@@ -13,6 +13,7 @@
   "dependencies": {
     "@pm-go/contracts": "workspace:*",
     "@pm-go/db": "workspace:*",
+    "@pm-go/repo-intelligence": "workspace:*",
     "@pm-go/temporal-activities": "workspace:*",
     "@pm-go/temporal-workflows": "workspace:*",
     "@temporalio/activity": "^1.11.0",

@@ -55,6 +55,9 @@ importers:
       '@pm-go/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@pm-go/repo-intelligence':
+        specifier: workspace:*
+        version: link:../../packages/repo-intelligence
       '@pm-go/temporal-activities':
         specifier: workspace:*
         version: link:../../packages/temporal-activities
@@ -123,6 +126,19 @@ importers:
       '@pm-go/executor-claude':
         specifier: workspace:*
         version: link:../executor-claude
+    devDependencies:
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.17)(terser@5.46.1)
+
+  packages/repo-intelligence:
+    dependencies:
+      '@pm-go/contracts':
+        specifier: workspace:*
+        version: link:../contracts
     devDependencies:
       typescript:
         specifier: ^5.6.3
