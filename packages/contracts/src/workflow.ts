@@ -1,10 +1,10 @@
-import type { MergeRun, RepoSnapshot, SpecDocument } from "./execution.js";
+import type { MergeRun } from "./execution.js";
 import type { Plan, Task, UUID } from "./plan.js";
 import type { CompletionAuditReport, PhaseAuditReport, ReviewReport } from "./review.js";
 
 export interface SpecToPlanWorkflowInput {
-  specDocument: SpecDocument;
-  repoSnapshot: RepoSnapshot;
+  specDocumentId: UUID;
+  repoSnapshotId: UUID;
   requestedBy: string;
 }
 

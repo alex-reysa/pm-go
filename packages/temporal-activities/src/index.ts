@@ -1,9 +1,13 @@
 import type {
+  AgentRun,
+  Artifact,
   MergeRun,
   Plan,
+  PlanAuditWorkflowResult,
   RepoSnapshot,
   CompletionAuditReport,
   PhaseAuditReport,
+  ReviewFinding,
   ReviewReport,
   SpecDocument,
   Task,
@@ -18,6 +22,23 @@ export interface SpecIntakeActivities {
 export interface PlanningActivities {
   persistPlan(plan: Plan): Promise<UUID>;
   renderPlanMarkdown(planId: UUID): Promise<UUID>;
+  loadSpecDocument(specDocumentId: UUID): Promise<SpecDocument>;
+  loadRepoSnapshot(repoSnapshotId: UUID): Promise<RepoSnapshot>;
+  generatePlan(input: {
+    specDocumentId: UUID;
+    repoSnapshotId: UUID;
+    requestedBy: string;
+  }): Promise<{ plan: Plan; agentRun: AgentRun }>;
+  auditPlan(
+    plan: Plan
+  ): Promise<PlanAuditWorkflowResult & { findings: ReviewFinding[] }>;
+  persistAgentRun(run: AgentRun): Promise<UUID>;
+  persistArtifact(artifact: Artifact): Promise<UUID>;
+}
+
+export interface RepoIntelligenceActivities {
+  collectRepoSnapshot(input: { repoRoot: string }): Promise<RepoSnapshot>;
+  persistRepoSnapshot(snapshot: RepoSnapshot): Promise<UUID>;
 }
 
 export interface ExecutionActivities {
