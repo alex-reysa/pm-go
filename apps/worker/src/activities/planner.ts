@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import type { AgentRun, Artifact, Plan } from "@pm-go/contracts";
 import type { PmGoDb } from "@pm-go/db";
@@ -73,11 +74,15 @@ export function createPlannerActivities(
       await fs.mkdir(deps.artifactDir, { recursive: true });
       const filePath = path.join(deps.artifactDir, `${input.planId}.md`);
       await fs.writeFile(filePath, md, "utf8");
+      // `pathToFileURL` percent-encodes spaces and special characters
+      // so the URI is parseable by consumers via `new URL(uri)`. The raw
+      // `'file://' + path.resolve(...)` form breaks on paths containing
+      // whitespace (e.g. "/Users/alex/My Project/...").
       const artifact: Artifact = {
         id: randomUUID(),
         planId: input.planId,
         kind: "plan_markdown",
-        uri: `file://${path.resolve(filePath)}`,
+        uri: pathToFileURL(path.resolve(filePath)).href,
         createdAt: new Date().toISOString(),
       };
       return { artifact };
