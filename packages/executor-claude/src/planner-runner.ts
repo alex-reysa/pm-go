@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
@@ -108,7 +109,7 @@ export function createClaudePlannerRunner(
                 return { behavior: "deny", message: "planner is read-only" };
               }
               const targetPath = extractPathFromToolInput(toolInput);
-              if (targetPath && !targetPath.startsWith(cwd)) {
+              if (targetPath && !isInsideCwd(targetPath, cwd)) {
                 return {
                   behavior: "deny",
                   message: `planner may not read outside ${cwd}`,
@@ -277,4 +278,16 @@ function extractPathFromToolInput(toolInput: unknown): string {
   if (typeof obj.file_path === "string") return obj.file_path;
   if (typeof obj.path === "string") return obj.path;
   return "";
+}
+
+/**
+ * Resolve both paths to absolute, then check that `target` is exactly
+ * `cwd` or a descendant (a naive `startsWith` accepts e.g. `/repo-evil`
+ * when `cwd = /repo`). Segment boundary enforced via `path.sep`.
+ */
+export function isInsideCwd(target: string, cwd: string): boolean {
+  const absTarget = path.resolve(target);
+  const absCwd = path.resolve(cwd);
+  if (absTarget === absCwd) return true;
+  return absTarget.startsWith(absCwd + path.sep);
 }
