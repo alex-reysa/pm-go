@@ -1,0 +1,13 @@
+{
+  "id": "2e8b3c4d-5a6f-4b7c-8d9e-0f1a2b3c4d5e",
+  "repoRoot": "/tmp/example-repo",
+  "repoUrl": "https://github.com/pm-go/example-repo.git",
+  "defaultBranch": "main",
+  "headSha": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b",
+  "languageHints": ["TypeScript"],
+  "frameworkHints": ["Node.js"],
+  "buildCommands": ["pnpm install", "pnpm build"],
+  "testCommands": ["pnpm test"],
+  "ciConfigPaths": [".github/workflows/ci.yml"],
+  "capturedAt": "2026-04-18T10:35:12.000Z"
+}
