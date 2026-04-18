@@ -1,0 +1,6 @@
+{
+  "name": "@pm-go/worker",
+  "private": true,
+  "type": "module"
+}
+

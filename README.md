@@ -1,0 +1,50 @@
+# pm-go
+
+`pm-go` is a schema-first orchestration system for agent-driven software delivery.
+
+The repository is intentionally split into two layers:
+
+1. A durable orchestration layer that owns planning, retries, approvals, budgets, worktree lifecycle, merge order, and auditability.
+2. An execution layer that runs Claude-powered implementers and reviewers inside bounded task scopes.
+
+This scaffold focuses on structure and development contracts first. The main deliverables in this initial commit are:
+
+- a monorepo layout aligned to the control-plane and executor split
+- TypeScript contract stubs for plans, tasks, reviews, policies, and workflows
+- architecture and product specs that define the MVP before implementation begins
+
+## Repository Map
+
+- `apps/web`: Next.js UI for plans, tasks, findings, and merge visibility
+- `apps/api`: Node control-plane API for orchestration commands and event streaming
+- `apps/worker`: Temporal worker process
+- `packages/contracts`: schema-first domain types shared across the system
+- `packages/temporal-workflows`: workflow names and definitions
+- `packages/temporal-activities`: activity contracts for workflow implementations
+- `packages/orchestrator`: plan/task/merge application services
+- `packages/executor-claude`: Claude Agent SDK adapter boundary
+- `packages/worktree-manager`: git branch, worktree, and lease logic
+- `packages/repo-intelligence`: repo snapshot and context collection
+- `packages/review-engine`: reviewer loop orchestration
+- `packages/integration-engine`: deterministic integration sequencing
+- `packages/policy-engine`: risk, approval, and budget policy enforcement
+- `packages/observability`: OpenTelemetry and durable event log conventions
+- `docs`: architecture, specs, ADRs, and roadmap
+- `examples`: input templates for spec-driven execution
+- `db`: persistence model notes and migration guidance
+- `infra`: local runtime infrastructure notes
+
+## Development Order
+
+1. Finalize and stabilize the shared contracts in `packages/contracts`.
+2. Implement planner and plan audit workflows against those contracts.
+3. Add Temporal workflow implementations and durable state transitions.
+4. Add Claude execution adapter and worktree manager.
+5. Add reviewer loop, integration engine, and UI.
+
+The authoritative implementation guidance lives in `docs/`.
+
+Start with:
+
+- `docs/roadmap/action-plan.md` for the working delivery sequence
+- `docs/roadmap/milestones.md` for the higher-level milestone view
