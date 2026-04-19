@@ -244,5 +244,6 @@ function defaultStubSummary(
 
 export {
   createClaudeCompletionAuditorRunner,
+  CompletionAuditValidationError,
   type ClaudeCompletionAuditorRunnerConfig,
 } from "./claude-completion-auditor-runner.js";

@@ -207,5 +207,6 @@ function defaultStubChecklist(
 
 export {
   createClaudePhaseAuditorRunner,
+  PhaseAuditValidationError,
   type ClaudePhaseAuditorRunnerConfig,
 } from "./claude-phase-auditor-runner.js";

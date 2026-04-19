@@ -278,8 +278,15 @@ export function createClaudeReviewerRunner(
  * tee, curl/wget, pnpm-install, rm -rf, kill/pkill, git commit/push/merge/
  * reset/checkout/rebase/branch), plus the remaining git-write verbs since
  * the reviewer has no commit authority whatsoever.
+ *
+ * Exported so the Phase 5 phase auditor + completion auditor can reuse
+ * the same read-only Bash policy — they are structurally identical
+ * read-only agents operating on the post-merge tree.
  */
-const REVIEWER_FORBIDDEN_BASH_PATTERNS: Array<{ name: string; re: RegExp }> = [
+export const REVIEWER_FORBIDDEN_BASH_PATTERNS: Array<{
+  name: string;
+  re: RegExp;
+}> = [
   ...FORBIDDEN_BASH_PATTERNS,
   { name: "git add", re: /\bgit\s+add\b/ },
   { name: "git tag", re: /\bgit\s+tag\b/ },
