@@ -10,6 +10,7 @@ export default {
     "./packages/db/src/schema/task-dependencies.ts",
     "./packages/db/src/schema/agent-runs.ts",
     "./packages/db/src/schema/artifacts.ts",
+    "./packages/db/src/schema/worktree-leases.ts",
   ],
   out: "./db/migrations",
   dialect: "postgresql",

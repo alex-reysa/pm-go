@@ -1,6 +1,7 @@
 import type {
   AgentRun,
   Artifact,
+  FileScope,
   MergeRun,
   Plan,
   PlanAuditWorkflowResult,
@@ -11,7 +12,9 @@ import type {
   ReviewReport,
   SpecDocument,
   Task,
-  UUID
+  TaskStatus,
+  UUID,
+  WorktreeLease
 } from "@pm-go/contracts";
 
 export interface SpecIntakeActivities {
@@ -67,4 +70,36 @@ export interface CompletionAuditActivities {
   collectCompletionEvidence(planId: UUID, finalMergeRunId: UUID): Promise<UUID>;
   runCompletionAudit(planId: UUID, finalMergeRunId: UUID): Promise<UUID>;
   persistCompletionAuditReport(report: CompletionAuditReport): Promise<UUID>;
+}
+
+export interface WorktreeActivities {
+  leaseWorktree(input: {
+    task: Task;
+    repoRoot: string;
+    worktreeRoot: string;
+    maxLifetimeHours: number;
+  }): Promise<WorktreeLease>;
+  persistLease(lease: WorktreeLease): Promise<string>;
+  releaseLease(input: { leaseId: string }): Promise<void>;
+  revokeExpiredLease(input: { leaseId: string }): Promise<void>;
+  detectDirtyWorktree(input: { worktreePath: string }): Promise<{
+    dirty: boolean;
+    unknownFiles: string[];
+    modifiedFiles: string[];
+  }>;
+  diffWorktreeAgainstScope(input: {
+    worktreePath: string;
+    baseSha: string;
+    fileScope: FileScope;
+  }): Promise<{ changedFiles: string[]; violations: string[] }>;
+}
+
+export interface TaskExecutionActivities {
+  loadTask(input: { taskId: UUID }): Promise<Task>;
+  updateTaskStatus(input: { taskId: UUID; status: TaskStatus }): Promise<void>;
+  runImplementer(input: {
+    task: Task;
+    worktreePath: string;
+    baseSha: string;
+  }): Promise<{ agentRun: AgentRun; finalCommitSha?: string }>;
 }
