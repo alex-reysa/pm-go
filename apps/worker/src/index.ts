@@ -5,7 +5,10 @@ import { NativeConnection, Worker } from "@temporalio/worker";
 
 import { createDb } from "@pm-go/db";
 import {
+  createClaudeImplementerRunner,
   createClaudePlannerRunner,
+  createStubImplementerRunner,
+  type ImplementerRunner,
   type PlannerRunner,
 } from "@pm-go/executor-claude";
 
@@ -13,6 +16,8 @@ import { createPlannerActivities } from "./activities/planner.js";
 import { createPlanPersistenceActivities } from "./activities/plan-persistence.js";
 import { createRepoIntelligenceActivities } from "./activities/repo-intelligence.js";
 import { createSpecIntakeActivities } from "./activities/spec-intake.js";
+import { createTaskExecutionActivities } from "./activities/task-execution.js";
+import { createWorktreeActivities } from "./activities/worktree.js";
 import { createFixtureSubstitutingStubRunner } from "./lib/fixture-stub-runner.js";
 
 async function main() {
@@ -20,12 +25,19 @@ async function main() {
   const temporalAddress = process.env.TEMPORAL_ADDRESS ?? "localhost:7233";
   const taskQueue = process.env.TEMPORAL_TASK_QUEUE ?? "pm-go-worker";
   const plannerMode = process.env.PLANNER_EXECUTOR_MODE ?? "stub";
+  const implementerMode = process.env.IMPLEMENTER_EXECUTOR_MODE ?? "stub";
   // Resolve PLAN_ARTIFACT_DIR relative to the repo root, not the worker's
   // cwd. `pnpm --filter @pm-go/worker start` spawns the child with
   // cwd=apps/worker/, so a relative "./artifacts/plans" would otherwise
   // land under apps/worker/ rather than the user's expected location.
   const artifactDir = resolveArtifactDir(
     process.env.PLAN_ARTIFACT_DIR ?? "./artifacts/plans",
+  );
+  const repoRoot = resolveFromRepoRoot(
+    process.env.REPO_ROOT ?? ".",
+  );
+  const worktreeRoot = resolveFromRepoRoot(
+    process.env.WORKTREE_ROOT ?? ".worktrees",
   );
 
   if (!databaseUrl) {
@@ -39,6 +51,16 @@ async function main() {
       ? createClaudePlannerRunner()
       : createFixtureSubstitutingStubRunner(resolveFixturePath());
 
+  const implementerRunner: ImplementerRunner =
+    implementerMode === "live"
+      ? createClaudeImplementerRunner()
+      : createStubImplementerRunner({
+          writeFile: {
+            relativePath: "NOTES.md",
+            contents: "stub implementer output\n",
+          },
+        });
+
   const connection = await NativeConnection.connect({ address: temporalAddress });
 
   const planPersistence = createPlanPersistenceActivities({ db });
@@ -48,6 +70,13 @@ async function main() {
     db,
     plannerRunner,
     artifactDir,
+  });
+  const worktree = createWorktreeActivities({ db });
+  const taskExecution = createTaskExecutionActivities({
+    db,
+    implementerRunner,
+    repoRoot,
+    worktreeRoot,
   });
 
   // Named-property merge — each factory exposes a disjoint set of names so
@@ -60,6 +89,8 @@ async function main() {
     ...repoIntel,
     ...planPersistence,
     ...planner,
+    ...worktree,
+    ...taskExecution,
   };
 
   const worker = await Worker.create({
@@ -73,7 +104,9 @@ async function main() {
   process.on("SIGINT", () => worker.shutdown());
   process.on("SIGTERM", () => worker.shutdown());
 
-  console.log(`worker starting (planner mode=${plannerMode})`);
+  console.log(
+    `worker starting (planner=${plannerMode} implementer=${implementerMode})`,
+  );
   await worker.run();
 }
 
@@ -98,7 +131,16 @@ function resolveFixturePath(): string {
  */
 function resolveArtifactDir(input: string): string {
   if (path.isAbsolute(input)) return input;
-  // apps/worker/{dist|src}/index.{js|ts} -> repo root is three levels up.
+  return resolveFromRepoRoot(input);
+}
+
+/**
+ * Resolve any user-provided path against the repo root. The repo root
+ * is computed from `import.meta.url` so it is stable whether the worker
+ * runs under `tsx` (src/) or compiled (dist/).
+ */
+function resolveFromRepoRoot(input: string): string {
+  if (path.isAbsolute(input)) return input;
   const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
   return path.resolve(repoRoot, input);
 }

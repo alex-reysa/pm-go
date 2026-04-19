@@ -37,6 +37,10 @@ export interface PhasePartitionWorkflowResult {
 
 export interface TaskExecutionWorkflowInput {
   taskId: UUID;
+  repoRoot: string;
+  worktreeRoot: string;
+  maxLifetimeHours: number;
+  requestedBy: string;
 }
 
 export interface TaskExecutionWorkflowResult {
