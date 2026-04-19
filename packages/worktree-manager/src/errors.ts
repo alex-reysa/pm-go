@@ -9,7 +9,15 @@ export type WorktreeManagerErrorCode =
   | "lease-not-found"
   | "worktree-add-failed"
   | "worktree-already-exists"
-  | "git-command-failed";
+  | "git-command-failed"
+  // Phase 5 — integration lease + merge path.
+  | "integration-branch-conflict"
+  | "integration-base-sha-mismatch"
+  | "merge-conflict"
+  | "merge-abort-failed"
+  // Phase 5 — main-advance path.
+  | "main-advance-conflict"
+  | "non-fast-forward";
 
 export class WorktreeManagerError extends Error {
   readonly code: WorktreeManagerErrorCode;

@@ -21,3 +21,19 @@ export type {
   DirtyReport,
   DiffScopeResult,
 } from "./types.js";
+
+// Phase 5 — integration worktree + merge primitives.
+export { createIntegrationLease } from "./create-integration-lease.js";
+export type { CreateIntegrationLeaseInput } from "./create-integration-lease.js";
+export { attemptIntegrationMerge } from "./attempt-integration-merge.js";
+export type {
+  AttemptIntegrationMergeInput,
+  AttemptIntegrationMergeResult,
+} from "./attempt-integration-merge.js";
+export { abortIntegrationMerge } from "./abort-integration-merge.js";
+export type { AbortIntegrationMergeInput } from "./abort-integration-merge.js";
+export { fastForwardMainViaUpdateRef } from "./fast-forward-main.js";
+export type {
+  FastForwardMainInput,
+  FastForwardMainResult,
+} from "./fast-forward-main.js";
