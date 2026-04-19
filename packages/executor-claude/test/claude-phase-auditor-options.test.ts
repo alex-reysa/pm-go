@@ -57,6 +57,9 @@ function buildInput(
     plan: planFixture,
     phase: phaseFixture,
     mergeRun: mergeRunFixture,
+    // The base commit the phase forked from — paired with
+    // mergeRun.integrationHeadSha this defines the audit's diff range.
+    baseSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     evidence: {
       tasks: [],
       reviewReports: [],
@@ -233,6 +236,71 @@ describe("createClaudePhaseAuditorRunner — SDK query options", () => {
       file_path: "/etc/passwd",
     });
     expect(outside.behavior).toBe("deny");
+  });
+
+  it("canUseTool denies Bash containment escapes (git -C elsewhere, printenv/env, absolute-path reads, find ..)", async () => {
+    const runner = createClaudePhaseAuditorRunner({ apiKey: "test-key" });
+    await expect(runner.run(buildInput())).rejects.toThrow();
+    const canUseTool = queryMock.mock.calls[0]![0].options.canUseTool as (
+      tool: string,
+      toolInput: unknown,
+    ) => Promise<{ behavior: string; message?: string }>;
+
+    const cases: string[] = [
+      // git -C to any path — lets the agent jump to another repo.
+      "git -C /tmp/other status",
+      "git -C ../sibling-repo log",
+      // Environment dumps.
+      "printenv",
+      "env",
+      "env | grep KEY",
+      // Absolute-path file reads.
+      "cat /etc/passwd",
+      "head /var/log/system.log",
+      "tail -n 100 /var/log/auth.log",
+      "less /root/.ssh/id_rsa",
+      "more /etc/shadow",
+      "nl /home/user/secrets.txt",
+      "xxd /etc/passwd",
+      "od -c /etc/passwd",
+      "strings /usr/bin/true",
+      "base64 /etc/passwd",
+      // `find` walking outside cwd.
+      "find /etc -name passwd",
+      "find / -name .env",
+      "find .. -name .env",
+      "find ../../.. -type f",
+      // `ls` on sensitive roots.
+      "ls /etc",
+      "ls -la /home",
+      "ls /root",
+    ];
+    for (const cmd of cases) {
+      const r = await canUseTool("Bash", { command: cmd });
+      expect(r.behavior, `expected deny for: ${cmd}`).toBe("deny");
+    }
+  });
+
+  it("canUseTool still allows legitimate read-only Bash that touches relative paths or /dev/*", async () => {
+    const runner = createClaudePhaseAuditorRunner({ apiKey: "test-key" });
+    await expect(runner.run(buildInput())).rejects.toThrow();
+    const canUseTool = queryMock.mock.calls[0]![0].options.canUseTool as (
+      tool: string,
+      toolInput: unknown,
+    ) => Promise<{ behavior: string; message?: string }>;
+
+    const cases: string[] = [
+      "find . -name '*.ts'",
+      "find ./packages -type f",
+      "cat package.json",
+      "head -n 20 README.md",
+      "ls packages/contracts/src",
+      "pnpm test > /dev/null 2>&1",
+    ];
+    for (const cmd of cases) {
+      const r = await canUseTool("Bash", { command: cmd });
+      expect(r.behavior, `expected allow for: ${cmd}`).toBe("allow");
+    }
   });
 
   it("constructor throws when neither apiKey nor ANTHROPIC_API_KEY is set", () => {

@@ -49,7 +49,7 @@ You MUST emit these six items (from `docs/specs/completion-audit.md`). Add more 
 2. `check-acceptance-criteria-evidence` — "Every required acceptance criterion is mapped to evidence or marked missing." Status `passed` iff every `acceptanceCriteria[*]` with `required: true` appears in `summary.acceptanceCriteriaPassed`. Any item in `summary.acceptanceCriteriaMissing` fails this check.
 3. `check-no-open-blocking-findings` — "No blocking review findings remain unresolved across any phase." Status `passed` iff every high-severity `ReviewFinding` emitted by any per-task `ReviewReport` has been addressed by a later-cycle review or waived by a `PolicyDecision`.
 4. `check-policy-decisions-resolved` — "No unresolved policy decisions remain for release scope." Status `passed` iff no `PolicyDecision` with `decision='retry_denied'`/`'rejected'`/`'requires_human'` remains without a superseding resolution. Unresolved ids go into `summary.unresolvedPolicyDecisionIds`.
-5. `check-repo-state-matches-release` — "Final repo state matches artifacts proposed for release." Status `passed` iff `git rev-parse refs/heads/main` equals `input.finalMergeRun.integrationHeadSha` and the changed files (`git diff <plan.baseSha>..HEAD --name-only`) fall within the union of per-phase `fileScope.includes`.
+5. `check-repo-state-matches-release` — "Final repo state matches artifacts proposed for release." Status `passed` iff `git rev-parse refs/heads/main` equals `input.finalMergeRun.integrationHeadSha` and the changed files (`git diff <input.baseSha>..HEAD --name-only`) fall within the **file-scope union** rendered under `## fileScope union across the plan` in the user turn.
 6. `check-audit-against-latest-head` — "Completion audit is running against the latest merged head." Status `passed` iff no `MergeRun` exists with `completed_at` later than `input.finalMergeRun.completed_at`. Staleness fails this check.
 
 ## Strictness
@@ -90,9 +90,10 @@ FORBIDDEN (denied at the permission boundary):
 
 Each completion auditor run receives:
 
-- `plan` — the full Plan (id, title, phases, risks).
+- `plan` — the full Plan (id, title, phases, risks, **and `plan.tasks` — every task across every phase**). The user-turn prompt renders each task with its `fileScope`, `acceptanceCriteria`, and `testCommands` under `## Tasks (cross-phase union — every task in the plan)`.
 - `finalPhase` — the final phase row (the one whose integration head is being audited).
 - `finalMergeRun` — the MergeRun that produced the audited head. `integrationHeadSha` MUST be populated; fail with `outcome='blocked'` if it is not.
+- `baseSha` — the plan-level base commit (HEAD of `plan.repoSnapshotId`'s RepoSnapshot at plan-start). Pairs with `finalMergeRun.integrationHeadSha` to define the plan-wide diff range. This is a separate input field; the `Plan` contract does not carry it.
 - `evidence` — bundled durable rows:
   - `phases` — every phase in the plan.
   - `phaseAuditReports` — every phase audit report (one per phase; all are expected to be `outcome='pass'` — if any isn't, the plan shouldn't have reached you).

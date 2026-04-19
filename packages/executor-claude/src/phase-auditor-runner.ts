@@ -39,6 +39,16 @@ export interface PhaseAuditorRunnerInput {
   plan: Plan;
   phase: Phase;
   mergeRun: MergeRun;
+  /**
+   * Base commit the phase integration branch forked from — i.e. the
+   * HEAD of `phase.baseSnapshotId`'s RepoSnapshot at the time the
+   * phase started integrating. Paired with
+   * `mergeRun.integrationHeadSha`, it defines the commit range the
+   * auditor sees (`git diff baseSha..integrationHeadSha`). The
+   * `MergeRun` contract does not carry this — it comes from the
+   * phase's `baseSnapshotId` resolution in the activity layer.
+   */
+  baseSha: string;
   evidence: PhaseAuditEvidence;
   systemPrompt: string;
   promptVersion: string;

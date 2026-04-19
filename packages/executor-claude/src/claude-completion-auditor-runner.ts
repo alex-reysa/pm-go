@@ -4,13 +4,16 @@ import path from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
 import type {
+  AcceptanceCriterion,
   AgentRun,
   AgentStopReason,
   CompletionAuditReport,
+  FileScope,
   StoredReviewReport,
+  Task,
 } from "@pm-go/contracts";
 
-import { REVIEWER_FORBIDDEN_BASH_PATTERNS } from "./claude-reviewer-runner.js";
+import { AUDITOR_FORBIDDEN_BASH_PATTERNS } from "./claude-phase-auditor-runner.js";
 import { findForbiddenBashPatternAgainst } from "./implementer-runner.js";
 import { isInsideCwd } from "./planner-runner.js";
 import type {
@@ -304,7 +307,7 @@ async function gateAuditorToolUse(
     }
     const forbidden = findForbiddenBashPatternAgainst(
       command,
-      REVIEWER_FORBIDDEN_BASH_PATTERNS,
+      AUDITOR_FORBIDDEN_BASH_PATTERNS,
     );
     if (forbidden) {
       return {
@@ -353,7 +356,7 @@ function extractPathFromToolInput(toolInput: unknown): string {
 }
 
 function buildUserPrompt(input: CompletionAuditorRunnerInput): string {
-  const { plan, finalPhase, finalMergeRun, evidence } = input;
+  const { plan, finalPhase, finalMergeRun, baseSha, evidence } = input;
 
   const phaseBullets = evidence.phases
     .map(
@@ -363,6 +366,21 @@ function buildUserPrompt(input: CompletionAuditorRunnerInput): string {
         }`,
     )
     .join("\n");
+
+  // plan.tasks is the cross-phase union of every task in the plan.
+  // Completion audit's `check-all-required-tasks-merged` +
+  // `check-acceptance-criteria-evidence` + `check-repo-state-matches-release`
+  // all need per-task scope + criteria visibility, so render each task
+  // fully (same block shape the phase auditor uses).
+  const taskBlocks =
+    plan.tasks.length > 0
+      ? plan.tasks.map((t) => renderTaskBlock(t)).join("\n\n")
+      : "- (no tasks)";
+
+  // Union of every phase's task fileScopes — the cross-phase file
+  // ownership surface. `check-repo-state-matches-release` needs this
+  // to sanity-check that the merged diff stays within declared scope.
+  const fileScopeUnion = renderFileScopeUnion(plan.tasks);
 
   const phaseAuditBullets = evidence.phaseAuditReports
     .map(
@@ -397,6 +415,9 @@ function buildUserPrompt(input: CompletionAuditorRunnerInput): string {
     `# Plan under completion audit (id ${plan.id})`,
     `Title: ${plan.title}`,
     `Summary: ${plan.summary}`,
+    `Plan baseSha (from input): ${baseSha}`,
+    `Final audited head: ${finalMergeRun.integrationHeadSha}`,
+    `Plan-wide diff range: \`git diff ${baseSha}..${finalMergeRun.integrationHeadSha}\``,
     "",
     "## Phases",
     phaseBullets.length > 0 ? phaseBullets : "- (no phases)",
@@ -409,6 +430,12 @@ function buildUserPrompt(input: CompletionAuditorRunnerInput): string {
     `- integrationHeadSha: ${finalMergeRun.integrationHeadSha}`,
     `- mergedTaskIds: ${JSON.stringify(finalMergeRun.mergedTaskIds)}`,
     `- completedAt: ${finalMergeRun.completedAt ?? "(in flight — workflow bug)"}`,
+    "",
+    "## Tasks (cross-phase union — every task in the plan)",
+    taskBlocks,
+    "",
+    "## fileScope union across the plan",
+    fileScopeUnion,
     "",
     "## Phase audit reports",
     phaseAuditBullets.length > 0 ? phaseAuditBullets : "- (none)",
@@ -429,6 +456,66 @@ function buildUserPrompt(input: CompletionAuditorRunnerInput): string {
     "",
     "Emit a structured CompletionAuditReport JSON object per the schema. Do not emit prose outside the JSON.",
   ].join("\n");
+}
+
+/**
+ * Per-task rendering identical in shape to the phase auditor's so the
+ * two auditors see the same task surface. Duplicated here rather than
+ * importing from the phase auditor because cross-runner imports would
+ * make the boundary between the two harder to reason about — each
+ * runner is a self-contained read of the spec.
+ */
+function renderTaskBlock(t: Task): string {
+  return [
+    `- ${t.id} [${t.status}] ${t.slug}: ${t.title} (risk=${t.riskLevel}, kind=${t.kind}, phase=${t.phaseId})`,
+    `  fileScope: ${renderFileScope(t.fileScope)}`,
+    `  acceptanceCriteria: ${renderAcceptanceCriteria(t.acceptanceCriteria)}`,
+    `  testCommands: ${
+      t.testCommands.length > 0
+        ? t.testCommands.map((c) => `\`${c}\``).join(", ")
+        : "(none declared)"
+    }`,
+  ].join("\n");
+}
+
+function renderFileScope(scope: FileScope): string {
+  const includes = scope.includes.length > 0
+    ? scope.includes.map((p) => `\`${p}\``).join(", ")
+    : "(empty)";
+  const excludes = scope.excludes && scope.excludes.length > 0
+    ? `; excludes=[${scope.excludes.map((p) => `\`${p}\``).join(", ")}]`
+    : "";
+  return `includes=[${includes}]${excludes}`;
+}
+
+function renderAcceptanceCriteria(acs: AcceptanceCriterion[]): string {
+  if (acs.length === 0) return "(none declared)";
+  return acs
+    .map(
+      (ac) =>
+        `[${ac.required ? "required" : "optional"}] ${ac.id}: ${ac.description}`,
+    )
+    .join(" | ");
+}
+
+function renderFileScopeUnion(tasks: Task[]): string {
+  const includes = new Set<string>();
+  const excludes = new Set<string>();
+  for (const t of tasks) {
+    for (const p of t.fileScope.includes) includes.add(p);
+    for (const p of t.fileScope.excludes ?? []) excludes.add(p);
+  }
+  const inc = Array.from(includes).sort();
+  const exc = Array.from(excludes).sort();
+  const incLine =
+    inc.length > 0
+      ? `- includes: ${inc.map((p) => `\`${p}\``).join(", ")}`
+      : "- includes: (empty)";
+  const excLine =
+    exc.length > 0
+      ? `- excludes: ${exc.map((p) => `\`${p}\``).join(", ")}`
+      : "- excludes: (none)";
+  return [incLine, excLine].join("\n");
 }
 
 function renderStoredReviewReport(r: StoredReviewReport): string {

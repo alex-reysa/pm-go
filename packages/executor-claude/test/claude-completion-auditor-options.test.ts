@@ -54,6 +54,10 @@ function buildInput(
     plan: planFixture,
     finalPhase: finalPhaseFixture,
     finalMergeRun: finalMergeRunFixture,
+    // Plan-level base commit — HEAD of plan.repoSnapshotId at plan
+    // start. Paired with finalMergeRun.integrationHeadSha this
+    // defines the plan-wide diff range.
+    baseSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     evidence: {
       phases: planFixture.phases,
       phaseAuditReports: [],
@@ -232,6 +236,36 @@ describe("createClaudeCompletionAuditorRunner — SDK query options", () => {
       file_path: "/etc/passwd",
     });
     expect(outside.behavior).toBe("deny");
+  });
+
+  it("canUseTool denies Bash containment escapes (git -C elsewhere, printenv/env, absolute-path reads, find ..)", async () => {
+    const runner = createClaudeCompletionAuditorRunner({ apiKey: "test-key" });
+    await expect(runner.run(buildInput())).rejects.toThrow();
+    const canUseTool = queryMock.mock.calls[0]![0].options.canUseTool as (
+      tool: string,
+      toolInput: unknown,
+    ) => Promise<{ behavior: string; message?: string }>;
+
+    const cases: string[] = [
+      "git -C /tmp/other status",
+      "git -C ../sibling-repo log",
+      "printenv",
+      "env",
+      "cat /etc/passwd",
+      "head /var/log/system.log",
+      "tail /var/log/auth.log",
+      "less /root/.ssh/id_rsa",
+      "nl /home/user/secrets.txt",
+      "find /etc -name passwd",
+      "find / -name .env",
+      "find .. -name .env",
+      "ls /etc",
+      "ls -la /home",
+    ];
+    for (const cmd of cases) {
+      const r = await canUseTool("Bash", { command: cmd });
+      expect(r.behavior, `expected deny for: ${cmd}`).toBe("deny");
+    }
   });
 
   it("constructor throws when neither apiKey nor ANTHROPIC_API_KEY is set", () => {

@@ -43,6 +43,15 @@ export interface CompletionAuditorRunnerInput {
   plan: Plan;
   finalPhase: Phase;
   finalMergeRun: MergeRun;
+  /**
+   * Plan-level base commit — HEAD of `plan.repoSnapshotId`'s
+   * RepoSnapshot at the time the plan started. Paired with
+   * `finalMergeRun.integrationHeadSha`, it defines the plan-wide diff
+   * range the completion auditor sees (`git diff baseSha..finalHead`).
+   * The `Plan` contract does not carry this — it comes from the
+   * `repoSnapshotId` resolution in the activity layer.
+   */
+  baseSha: string;
   evidence: CompletionAuditEvidence;
   systemPrompt: string;
   promptVersion: string;

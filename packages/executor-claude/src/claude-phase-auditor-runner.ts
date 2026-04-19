@@ -4,15 +4,82 @@ import path from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
 import type {
+  AcceptanceCriterion,
   AgentRun,
   AgentStopReason,
+  FileScope,
   PhaseAuditReport,
   StoredReviewReport,
+  Task,
 } from "@pm-go/contracts";
 
 import { REVIEWER_FORBIDDEN_BASH_PATTERNS } from "./claude-reviewer-runner.js";
 import { findForbiddenBashPatternAgainst } from "./implementer-runner.js";
 import { isInsideCwd } from "./planner-runner.js";
+
+/**
+ * Auditor-only Bash containment patterns. The auditors (phase +
+ * completion) are strictly read-only AND worktree-scoped — they have
+ * no legitimate reason to touch paths outside the integration
+ * worktree, dump environment variables, or operate on a different
+ * repository via `git -C`. The reviewer's forbidden list blocks
+ * *writes*; this list blocks *reads and introspection outside the
+ * intended scope*.
+ *
+ * These patterns are deliberately narrow and explicit: we deny
+ * well-known leak vectors rather than try to parse arbitrary shell
+ * syntax, and we stop short of matching every `../` in a command
+ * string (tests and tools legitimately use relative parent refs
+ * *inside* the worktree via arguments like `git log -- path/../other`).
+ *
+ * Exported so both auditor runners share the same policy — the
+ * completion auditor runner imports this list.
+ */
+export const AUDITOR_CONTAINMENT_PATTERNS: Array<{
+  name: string;
+  re: RegExp;
+}> = [
+  // `git -C <path>` lets the agent jump to an arbitrary repository.
+  // The auditor's cwd is the integration worktree; use plain `git ...`
+  // without the -C argument to stay in it.
+  { name: "git -C (cross-repo)", re: /\bgit\s+-C\b/ },
+  // Environment dump — auditors should never need process env.
+  { name: "printenv", re: /\bprintenv\b/ },
+  // `env` with no args dumps everything; `env VAR=val cmd` is uncommon
+  // inside an auditor. Block broadly — if a legitimate use surfaces
+  // the policy can relax.
+  { name: "env", re: /\benv\b/ },
+  // Absolute-path reads via the usual file-dump utilities. The
+  // `[^|;&\n]*` tolerates intervening flags/args (e.g. `tail -n 100
+  // /var/log/x`) before the absolute path. Allow `/dev/null`,
+  // `/dev/stdin`, `/dev/stdout`, `/dev/stderr` as legitimate device
+  // targets.
+  {
+    name: "read absolute path",
+    re: /\b(?:cat|head|tail|less|more|nl|xxd|od|strings|base64)\b[^|;&\n]*\s\/(?!dev\/(?:null|stdin|stdout|stderr)\b)/,
+  },
+  // `find` walking an absolute path (anywhere under `/`) or the
+  // worktree's parent. Auditors can still run `find .`, `find ./sub`,
+  // `find -name` (cwd default).
+  { name: "find absolute", re: /\bfind\s+\// },
+  { name: "find parent", re: /\bfind\s+\.\.(?:$|\/|\s)/ },
+  // `ls` on an absolute path. Allow `ls -la /dev/null` style only via
+  // the /dev device exception.
+  {
+    name: "ls absolute path",
+    re: /\bls\b[^|;&\n]*\s\/(?!dev\/(?:null|stdin|stdout|stderr)\b)/,
+  },
+];
+
+/**
+ * Composite forbidden-Bash policy for both auditor runners: the
+ * reviewer's read-only list (which already extends the implementer's
+ * write-blocking list) plus the auditor-only containment patterns.
+ */
+export const AUDITOR_FORBIDDEN_BASH_PATTERNS: Array<{
+  name: string;
+  re: RegExp;
+}> = [...REVIEWER_FORBIDDEN_BASH_PATTERNS, ...AUDITOR_CONTAINMENT_PATTERNS];
 import type {
   PhaseAuditorRunner,
   PhaseAuditorRunnerInput,
@@ -331,7 +398,7 @@ async function gateAuditorToolUse(
     }
     const forbidden = findForbiddenBashPatternAgainst(
       command,
-      REVIEWER_FORBIDDEN_BASH_PATTERNS,
+      AUDITOR_FORBIDDEN_BASH_PATTERNS,
     );
     if (forbidden) {
       return {
@@ -381,14 +448,12 @@ function extractPathFromToolInput(toolInput: unknown): string {
 }
 
 function buildUserPrompt(input: PhaseAuditorRunnerInput): string {
-  const { plan, phase, mergeRun, evidence } = input;
+  const { plan, phase, mergeRun, baseSha, evidence } = input;
 
-  const phaseTaskBullets = evidence.tasks
-    .map(
-      (t) =>
-        `- ${t.id} [${t.status}] ${t.slug}: ${t.title} (risk=${t.riskLevel})`,
-    )
-    .join("\n");
+  const phaseTaskBlocks =
+    evidence.tasks.length > 0
+      ? evidence.tasks.map((t) => renderTaskBlock(t)).join("\n\n")
+      : "- (no tasks)";
 
   const mergeOrderLine = phase.mergeOrder
     .map((taskId) => `  - ${taskId}`)
@@ -423,14 +488,16 @@ function buildUserPrompt(input: PhaseAuditorRunnerInput): string {
     "",
     `## MergeRun under audit (id ${mergeRun.id})`,
     `- integrationBranch: ${mergeRun.integrationBranch}`,
+    `- baseSha (from input): ${baseSha}`,
     `- integrationHeadSha: ${mergeRun.integrationHeadSha}`,
     `- mergedTaskIds: ${JSON.stringify(mergeRun.mergedTaskIds)}`,
     `- failedTaskId: ${mergeRun.failedTaskId ?? "(none)"}`,
     `- startedAt: ${mergeRun.startedAt}`,
     `- completedAt: ${mergeRun.completedAt ?? "(in flight — this is a workflow bug)"}`,
+    `- audit diff range: \`git diff ${baseSha}..${mergeRun.integrationHeadSha}\``,
     "",
     "## Tasks in scope",
-    phaseTaskBullets.length > 0 ? phaseTaskBullets : "- (no tasks)",
+    phaseTaskBlocks,
     "",
     "## Review reports (reviewed commit range in brackets)",
     reviewReportBullets,
@@ -445,6 +512,46 @@ function buildUserPrompt(input: PhaseAuditorRunnerInput): string {
     "",
     "Emit a structured PhaseAuditReport JSON object per the schema. Do not emit prose outside the JSON.",
   ].join("\n");
+}
+
+/**
+ * Render every auditable facet of a task: identity, scope, acceptance
+ * criteria, and the test commands that are meant to validate it. The
+ * auditor's checklist items (`check-phase-acceptance-criteria`,
+ * `check-phase-tasks-merged`) depend on this information being in the
+ * user turn — rendering only id/status would force the model to guess.
+ */
+function renderTaskBlock(t: Task): string {
+  return [
+    `- ${t.id} [${t.status}] ${t.slug}: ${t.title} (risk=${t.riskLevel}, kind=${t.kind})`,
+    `  fileScope: ${renderFileScope(t.fileScope)}`,
+    `  acceptanceCriteria: ${renderAcceptanceCriteria(t.acceptanceCriteria)}`,
+    `  testCommands: ${
+      t.testCommands.length > 0
+        ? t.testCommands.map((c) => `\`${c}\``).join(", ")
+        : "(none declared)"
+    }`,
+  ].join("\n");
+}
+
+function renderFileScope(scope: FileScope): string {
+  const includes = scope.includes.length > 0
+    ? scope.includes.map((p) => `\`${p}\``).join(", ")
+    : "(empty)";
+  const excludes = scope.excludes && scope.excludes.length > 0
+    ? `; excludes=[${scope.excludes.map((p) => `\`${p}\``).join(", ")}]`
+    : "";
+  return `includes=[${includes}]${excludes}`;
+}
+
+function renderAcceptanceCriteria(acs: AcceptanceCriterion[]): string {
+  if (acs.length === 0) return "(none declared)";
+  return acs
+    .map(
+      (ac) =>
+        `[${ac.required ? "required" : "optional"}] ${ac.id}: ${ac.description}`,
+    )
+    .join(" | ");
 }
 
 function renderStoredReviewReport(r: StoredReviewReport): string {
