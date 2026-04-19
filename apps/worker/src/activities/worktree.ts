@@ -1,6 +1,6 @@
 import type { Task, WorktreeLease } from "@pm-go/contracts";
 import { worktreeLeases, type PmGoDb } from "@pm-go/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   createLease,
   releaseLease as releaseLeasePkg,
@@ -23,10 +23,21 @@ export interface WorktreeActivityDeps {
 export function createWorktreeActivities(deps: WorktreeActivityDeps) {
   return {
     /**
-     * Create a new on-disk worktree and persist the lease row. If the
-     * DB insert fails (e.g. the unique-active-per-task index fires),
-     * the on-disk worktree is rolled back with `releaseLease(..., force)`
-     * so we never leave orphan directories behind.
+     * Create a new on-disk worktree and persist the lease row.
+     *
+     * Idempotent with respect to Temporal retries: if an active lease
+     * already exists for this task, return it verbatim without touching
+     * disk or DB. Temporal may re-run the activity after the worker
+     * crashes post-success (before the completion event reaches history),
+     * and running `createLease()` a second time would fail with
+     * `worktree-already-exists`, turning a recoverable retry into a hard
+     * workflow failure.
+     *
+     * If the DB insert fails for a fresh lease (e.g. the partial unique
+     * index fires because another process concurrently inserted an
+     * active row), the on-disk worktree is rolled back with
+     * `releaseLease(..., force)` so we never leave orphan directories
+     * behind.
      */
     async leaseWorktree(input: {
       task: Task;
@@ -34,6 +45,28 @@ export function createWorktreeActivities(deps: WorktreeActivityDeps) {
       worktreeRoot: string;
       maxLifetimeHours: number;
     }): Promise<WorktreeLease> {
+      const [existing] = await deps.db
+        .select()
+        .from(worktreeLeases)
+        .where(
+          and(
+            eq(worktreeLeases.taskId, input.task.id),
+            eq(worktreeLeases.status, "active"),
+          ),
+        )
+        .limit(1);
+      if (existing) {
+        return {
+          id: existing.id,
+          taskId: existing.taskId,
+          repoRoot: existing.repoRoot,
+          branchName: existing.branchName,
+          worktreePath: existing.worktreePath,
+          baseSha: existing.baseSha,
+          expiresAt: existing.expiresAt,
+          status: existing.status,
+        };
+      }
       const lease = await createLease(input);
       try {
         await deps.db.insert(worktreeLeases).values({

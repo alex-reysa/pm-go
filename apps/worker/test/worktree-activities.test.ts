@@ -123,6 +123,48 @@ describe("createWorktreeActivities.leaseWorktree", () => {
       await rm(worktreeRoot, { recursive: true, force: true });
     }
   });
+
+  it("returns the existing active lease on retry (idempotent)", async () => {
+    const repo = await createTempGitRepo();
+    const worktreeRoot = await mkdtemp(join(tmpdir(), "pm-go-wtroot-"));
+    try {
+      const task = loadTaskFixture();
+      // Simulate the "first attempt partially succeeded" state by seeding
+      // an active-lease row via the select mock. The activity should
+      // short-circuit, returning the existing lease WITHOUT calling
+      // createLease (which would throw `worktree-already-exists`).
+      const existingRow = {
+        id: "11111111-2222-4333-8444-555555555555",
+        taskId: task.id,
+        repoRoot: repo.path,
+        branchName: "agent/existing",
+        worktreePath: join(worktreeRoot, "existing-worktree"),
+        baseSha: "deadbeefcafe",
+        expiresAt: "2026-04-20T00:00:00.000Z",
+        status: "active" as const,
+        createdAt: "2026-04-19T00:00:00.000Z",
+      };
+      const { db, spies } = makeDbMock({ selectResult: [existingRow] });
+      const activities = createWorktreeActivities({ db });
+
+      const lease = await activities.leaseWorktree({
+        task,
+        repoRoot: repo.path,
+        worktreeRoot,
+        maxLifetimeHours: 24,
+      });
+
+      // No fresh insert happened — idempotent short-circuit.
+      expect(spies.insert).not.toHaveBeenCalled();
+      expect(lease.id).toBe(existingRow.id);
+      expect(lease.worktreePath).toBe(existingRow.worktreePath);
+      expect(lease.branchName).toBe(existingRow.branchName);
+      expect(lease.baseSha).toBe(existingRow.baseSha);
+    } finally {
+      await repo.cleanup();
+      await rm(worktreeRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("createWorktreeActivities.revokeExpiredLease", () => {

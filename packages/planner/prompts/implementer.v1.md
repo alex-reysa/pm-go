@@ -35,10 +35,17 @@ If you need to modify a file that falls outside `fileScope.includes`, STOP. Do n
 The following command shapes are FORBIDDEN and will be denied at the permission boundary:
 
 - Any `git` write verb: `git commit`, `git push`, `git merge`, `git reset`, `git checkout`, `git rebase`, `git branch`, `git tag`, `git stash`, `git add` (the orchestrator stages and commits for you — see Commit policy).
-- Destructive filesystem commands: `rm -rf`, and anything that pipes content into `/dev/` or `/etc/`.
+- Destructive filesystem commands: `rm -rf`.
 - Network egress: `curl`, `wget`, or any tool that fetches remote resources.
 - Dependency mutation: `pnpm add`, `pnpm install`, `npm install`, `yarn add`. The dependency set is fixed at the start of your run; if the task genuinely needs a new dependency, stop and surface it as a blocker.
 - Process control: `kill`, `pkill`.
+- **Shell-level file writes that bypass the `Write`/`Edit` tool boundary.** All of these route edits around `fileScope` enforcement and are denied:
+  - Redirection or append to any path other than `/dev/null`, `/dev/stdout`, `/dev/stderr`, `/dev/stdin` (e.g. `echo x > file`, `command >> log.txt`). FD redirects like `>&2`, `2>&1` are allowed; `> /dev/null 2>&1` to silence noise is allowed.
+  - In-place editors: `sed -i`, `perl -i`, `awk -i`.
+  - Inline scripting (`node -e`, `python -c`, `python3 -c`, `perl -e`, `ruby -e`) — these can call `writeFileSync` / `open(...).write(...)` and bypass `fileScope`.
+  - `tee` (with or without `-a`).
+
+If you need to modify a file, use `Write` or `Edit` so `fileScope.includes`/`excludes` can enforce the boundary. Do not try to route edits through `Bash`.
 
 Keep Bash invocations small and deterministic. Prefer `pnpm --filter <pkg> test` over running the whole test suite when the task scope allows it.
 
