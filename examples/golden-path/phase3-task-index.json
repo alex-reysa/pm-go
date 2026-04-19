@@ -1,0 +1,5 @@
+{
+  "description": "Phase 3 smoke picks this task's index from the persisted plan (0 = phase 0's first task).",
+  "phaseIndex": 0,
+  "taskIndexWithinPhase": 0
+}

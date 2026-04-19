@@ -6,12 +6,16 @@ import {
   type SpecDocumentsRouteDeps,
 } from "./routes/spec-documents.js";
 import { createPlansRoute } from "./routes/plans.js";
+import { createTasksRoute } from "./routes/tasks.js";
 
 export interface AppDeps {
   temporal: TemporalClient;
   taskQueue: string;
   db: PmGoDb;
   artifactDir: string;
+  repoRoot: string;
+  worktreeRoot: string;
+  maxLifetimeHours: number;
   /** Optional override for unit tests that want to stub the repo-intel call. */
   collectRepoSnapshot?: SpecDocumentsRouteDeps["collectRepoSnapshot"];
 }
@@ -35,6 +39,17 @@ export function createApp(deps: AppDeps) {
       taskQueue: deps.taskQueue,
       db: deps.db,
       artifactDir: deps.artifactDir,
+    }),
+  );
+  app.route(
+    "/tasks",
+    createTasksRoute({
+      temporal: deps.temporal,
+      taskQueue: deps.taskQueue,
+      db: deps.db,
+      repoRoot: deps.repoRoot,
+      worktreeRoot: deps.worktreeRoot,
+      maxLifetimeHours: deps.maxLifetimeHours,
     }),
   );
   return app;

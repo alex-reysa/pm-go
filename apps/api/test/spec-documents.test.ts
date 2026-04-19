@@ -50,6 +50,9 @@ describe("POST /spec-documents", () => {
       taskQueue: "pm-go-worker",
       db,
       artifactDir: "./artifacts/plans",
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/repo/.worktrees",
+      maxLifetimeHours: 24,
       collectRepoSnapshot,
     });
 
@@ -89,6 +92,9 @@ describe("POST /spec-documents", () => {
       taskQueue: "pm-go-worker",
       db,
       artifactDir: "./artifacts/plans",
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/repo/.worktrees",
+      maxLifetimeHours: 24,
       collectRepoSnapshot,
     });
 
@@ -114,6 +120,9 @@ describe("POST /spec-documents", () => {
       taskQueue: "pm-go-worker",
       db,
       artifactDir: "./artifacts/plans",
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/repo/.worktrees",
+      maxLifetimeHours: 24,
       collectRepoSnapshot: vi.fn(),
     });
 
@@ -145,6 +154,9 @@ describe("POST /spec-documents", () => {
       taskQueue: "pm-go-worker",
       db,
       artifactDir: "./artifacts/plans",
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/repo/.worktrees",
+      maxLifetimeHours: 24,
       collectRepoSnapshot,
     });
 
@@ -174,6 +186,9 @@ describe("GET /health", () => {
       taskQueue: "pm-go-worker",
       db,
       artifactDir: "./artifacts/plans",
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/repo/.worktrees",
+      maxLifetimeHours: 24,
     });
     const res = await app.request("/health");
     expect(res.status).toBe(200);

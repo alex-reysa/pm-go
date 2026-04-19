@@ -118,6 +118,9 @@ describe("POST /plans", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       db: {} as any,
       artifactDir: "./artifacts/plans",
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/repo/.worktrees",
+      maxLifetimeHours: 24,
     });
 
     const specId = "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
@@ -164,6 +167,9 @@ describe("POST /plans", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       db: {} as any,
       artifactDir: "./artifacts/plans",
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/repo/.worktrees",
+      maxLifetimeHours: 24,
     });
 
     const res = await app.request("/plans", {
@@ -188,6 +194,9 @@ describe("POST /plans/:planId/audit", () => {
       taskQueue: "pm-go-worker",
       db,
       artifactDir: "./artifacts/plans",
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/repo/.worktrees",
+      maxLifetimeHours: 24,
     });
 
     const res = await app.request(
@@ -208,6 +217,9 @@ describe("POST /plans/:planId/audit", () => {
       taskQueue: "pm-go-worker",
       db,
       artifactDir: "./artifacts/plans",
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/repo/.worktrees",
+      maxLifetimeHours: 24,
     });
 
     const res = await app.request(`/plans/${planFixture.id}/audit`, {
@@ -236,6 +248,9 @@ describe("GET /plans/:planId", () => {
       taskQueue: "pm-go-worker",
       db,
       artifactDir: "./artifacts/plans",
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/repo/.worktrees",
+      maxLifetimeHours: 24,
     });
 
     const res = await app.request(
@@ -262,6 +277,9 @@ describe("GET /plans/:planId", () => {
       taskQueue: "pm-go-worker",
       db,
       artifactDir: "./artifacts/plans",
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/repo/.worktrees",
+      maxLifetimeHours: 24,
     });
 
     const res = await app.request(`/plans/${planFixture.id}`);
@@ -286,6 +304,9 @@ describe("GET /plans/:planId", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       db: {} as any,
       artifactDir: "./artifacts/plans",
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/repo/.worktrees",
+      maxLifetimeHours: 24,
     });
     const res = await app.request("/plans/not-a-uuid");
     expect(res.status).toBe(400);
