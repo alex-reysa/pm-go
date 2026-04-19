@@ -1,0 +1,1 @@
+ALTER TABLE "merge_runs" ADD COLUMN "base_sha" text NOT NULL;

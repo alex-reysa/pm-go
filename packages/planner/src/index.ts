@@ -20,6 +20,23 @@ export {
   type RunReviewerResult,
 } from "./reviewer.js";
 
+export {
+  runPhaseAuditor,
+  type RunPhaseAuditorInput,
+  type RunPhaseAuditorResult,
+} from "./phase-auditor.js";
+
+export {
+  runCompletionAuditor,
+  type RunCompletionAuditorInput,
+  type RunCompletionAuditorResult,
+} from "./completion-auditor.js";
+
+export {
+  renderPrSummaryMarkdown,
+  type PrSummaryEvidence,
+} from "./render-pr-summary.js";
+
 export { auditPlan, type PlanAuditOutcome } from "./audit.js";
 
 export { renderPlanMarkdown } from "./render.js";

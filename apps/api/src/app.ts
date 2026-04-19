@@ -5,7 +5,15 @@ import {
   createSpecDocumentsRoute,
   type SpecDocumentsRouteDeps,
 } from "./routes/spec-documents.js";
-import { createPlansRoute } from "./routes/plans.js";
+import {
+  createCompletionAuditReportsRoute,
+  createPlansRoute,
+} from "./routes/plans.js";
+import {
+  createMergeRunsRoute,
+  createPhaseAuditReportsRoute,
+  createPhasesRoute,
+} from "./routes/phases.js";
 import { createTasksRoute } from "./routes/tasks.js";
 
 export interface AppDeps {
@@ -51,6 +59,23 @@ export function createApp(deps: AppDeps) {
       worktreeRoot: deps.worktreeRoot,
       maxLifetimeHours: deps.maxLifetimeHours,
     }),
+  );
+  app.route(
+    "/phases",
+    createPhasesRoute({
+      temporal: deps.temporal,
+      taskQueue: deps.taskQueue,
+      db: deps.db,
+    }),
+  );
+  app.route("/merge-runs", createMergeRunsRoute({ db: deps.db }));
+  app.route(
+    "/phase-audit-reports",
+    createPhaseAuditReportsRoute({ db: deps.db }),
+  );
+  app.route(
+    "/completion-audit-reports",
+    createCompletionAuditReportsRoute({ db: deps.db }),
   );
   return app;
 }

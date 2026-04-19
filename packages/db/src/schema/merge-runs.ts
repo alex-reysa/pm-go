@@ -35,6 +35,12 @@ export const mergeRuns = pgTable(
       .notNull()
       .references(() => phases.id, { onDelete: "cascade" }),
     integrationBranch: text("integration_branch").notNull(),
+    // The commit the integration branch was forked from — HEAD of
+    // `phase.base_snapshot_id` at the time this merge run started.
+    // Pairs with `integration_head_sha` to fully describe the merge
+    // range this run produced, so a post-hoc reader can reconstruct
+    // the exact window without joining phases + repo_snapshots.
+    baseSha: text("base_sha").notNull(),
     // Points at the worktree_leases row that hosts the integration
     // worktree (kind='integration'). Set null after the lease is
     // released so the merge_runs row survives lease cleanup.

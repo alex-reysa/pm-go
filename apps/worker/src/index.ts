@@ -4,19 +4,34 @@ import { fileURLToPath } from "node:url";
 import { NativeConnection, Worker } from "@temporalio/worker";
 
 import { createDb } from "@pm-go/db";
-import type { ReviewOutcome } from "@pm-go/contracts";
+import type {
+  CompletionAuditOutcome,
+  PhaseAuditOutcome,
+  ReviewOutcome,
+} from "@pm-go/contracts";
 import {
+  createClaudeCompletionAuditorRunner,
   createClaudeImplementerRunner,
+  createClaudePhaseAuditorRunner,
   createClaudePlannerRunner,
   createClaudeReviewerRunner,
+  createStubCompletionAuditorRunner,
   createStubImplementerRunner,
+  createStubPhaseAuditorRunner,
   createStubReviewerRunner,
+  type CompletionAuditorRunner,
   type ImplementerRunner,
+  type PhaseAuditorRunner,
   type PlannerRunner,
   type ReviewerRunner,
+  type StubCompletionAuditorSequenceEntry,
+  type StubPhaseAuditorSequenceEntry,
   type StubReviewerSequenceEntry,
 } from "@pm-go/executor-claude";
 
+import { createCompletionAuditActivities } from "./activities/completion-audit.js";
+import { createIntegrationActivities } from "./activities/integration.js";
+import { createPhaseAuditActivities } from "./activities/phase-audit.js";
 import { createPlannerActivities } from "./activities/planner.js";
 import { createPlanPersistenceActivities } from "./activities/plan-persistence.js";
 import { createRepoIntelligenceActivities } from "./activities/repo-intelligence.js";
@@ -34,6 +49,13 @@ async function main() {
   const plannerMode = process.env.PLANNER_EXECUTOR_MODE ?? "stub";
   const implementerMode = process.env.IMPLEMENTER_EXECUTOR_MODE ?? "stub";
   const reviewerMode = process.env.REVIEWER_EXECUTOR_MODE ?? "stub";
+  const phaseAuditorMode = process.env.PHASE_AUDITOR_EXECUTOR_MODE ?? "stub";
+  const completionAuditorMode =
+    process.env.COMPLETION_AUDITOR_EXECUTOR_MODE ?? "stub";
+  const maxLifetimeHours = Number.parseInt(
+    process.env.WORKTREE_MAX_LIFETIME_HOURS ?? "24",
+    10,
+  );
   // Resolve PLAN_ARTIFACT_DIR relative to the repo root, not the worker's
   // cwd. `pnpm --filter @pm-go/worker start` spawns the child with
   // cwd=apps/worker/, so a relative "./artifacts/plans" would otherwise
@@ -46,6 +68,9 @@ async function main() {
   );
   const worktreeRoot = resolveFromRepoRoot(
     process.env.WORKTREE_ROOT ?? ".worktrees",
+  );
+  const integrationRoot = resolveFromRepoRoot(
+    process.env.INTEGRATION_WORKTREE_ROOT ?? ".integration-worktrees",
   );
 
   if (!databaseUrl) {
@@ -73,6 +98,24 @@ async function main() {
           ),
         });
 
+  const phaseAuditorRunner: PhaseAuditorRunner =
+    phaseAuditorMode === "live"
+      ? createClaudePhaseAuditorRunner()
+      : createStubPhaseAuditorRunner({
+          sequence: parsePhaseAuditorSmokeSequence(
+            process.env.PHASE_AUDITOR_SMOKE_SEQUENCE,
+          ),
+        });
+
+  const completionAuditorRunner: CompletionAuditorRunner =
+    completionAuditorMode === "live"
+      ? createClaudeCompletionAuditorRunner()
+      : createStubCompletionAuditorRunner({
+          sequence: parseCompletionAuditorSmokeSequence(
+            process.env.COMPLETION_AUDITOR_SMOKE_SEQUENCE,
+          ),
+        });
+
   const connection = await NativeConnection.connect({ address: temporalAddress });
 
   const planPersistence = createPlanPersistenceActivities({ db });
@@ -92,6 +135,21 @@ async function main() {
   });
   const review = createReviewActivities({ reviewerRunner });
   const reviewPersistence = createReviewPersistenceActivities({ db });
+  const integration = createIntegrationActivities({
+    db,
+    repoRoot,
+    integrationRoot,
+    maxLifetimeHours,
+  });
+  const phaseAudit = createPhaseAuditActivities({
+    db,
+    phaseAuditorRunner,
+  });
+  const completionAudit = createCompletionAuditActivities({
+    db,
+    completionAuditorRunner,
+    artifactDir,
+  });
 
   // Named-property merge — each factory exposes a disjoint set of names so
   // the spread is side-effect-free and collision-free. If a collision ever
@@ -107,6 +165,9 @@ async function main() {
     ...taskExecution,
     ...review,
     ...reviewPersistence,
+    ...integration,
+    ...phaseAudit,
+    ...completionAudit,
   };
 
   const worker = await Worker.create({
@@ -121,7 +182,7 @@ async function main() {
   process.on("SIGTERM", () => worker.shutdown());
 
   console.log(
-    `worker starting (planner=${plannerMode} implementer=${implementerMode} reviewer=${reviewerMode})`,
+    `worker starting (planner=${plannerMode} implementer=${implementerMode} reviewer=${reviewerMode} phase-auditor=${phaseAuditorMode} completion-auditor=${completionAuditorMode} integration-root=${integrationRoot})`,
   );
   await worker.run();
 }
@@ -188,6 +249,64 @@ function parseReviewerSmokeSequence(
     }
   }
   return filtered.length > 0 ? filtered : ["pass"];
+}
+
+/**
+ * Parse the `PHASE_AUDITOR_SMOKE_SEQUENCE` env var the same way as the
+ * reviewer sequence parser. Defaults to `["pass"]` so the stub runner
+ * is usable without explicit configuration. Unknown entries are dropped
+ * with a warning (same pattern as the reviewer for consistency).
+ */
+function parsePhaseAuditorSmokeSequence(
+  raw: string | undefined,
+): StubPhaseAuditorSequenceEntry[] {
+  if (!raw || raw.trim().length === 0) {
+    return ["pass"];
+  }
+  const parts = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const valid: PhaseAuditOutcome[] = ["pass", "changes_requested", "blocked"];
+  const out: StubPhaseAuditorSequenceEntry[] = [];
+  for (const p of parts) {
+    if ((valid as string[]).includes(p)) {
+      out.push(p as PhaseAuditOutcome);
+    } else {
+      console.warn(
+        `PHASE_AUDITOR_SMOKE_SEQUENCE: ignoring unknown entry '${p}' (valid: ${valid.join(", ")})`,
+      );
+    }
+  }
+  return out.length > 0 ? out : ["pass"];
+}
+
+function parseCompletionAuditorSmokeSequence(
+  raw: string | undefined,
+): StubCompletionAuditorSequenceEntry[] {
+  if (!raw || raw.trim().length === 0) {
+    return ["pass"];
+  }
+  const parts = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const valid: CompletionAuditOutcome[] = [
+    "pass",
+    "changes_requested",
+    "blocked",
+  ];
+  const out: StubCompletionAuditorSequenceEntry[] = [];
+  for (const p of parts) {
+    if ((valid as string[]).includes(p)) {
+      out.push(p as CompletionAuditOutcome);
+    } else {
+      console.warn(
+        `COMPLETION_AUDITOR_SMOKE_SEQUENCE: ignoring unknown entry '${p}' (valid: ${valid.join(", ")})`,
+      );
+    }
+  }
+  return out.length > 0 ? out : ["pass"];
 }
 
 function resolveFixturePath(): string {

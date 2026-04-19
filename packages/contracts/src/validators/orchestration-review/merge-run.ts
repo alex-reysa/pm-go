@@ -17,6 +17,7 @@ import { GitSha1Schema } from "./completion-audit-report.js";
 export const MergeRunSchema = Type.Object(
   {
     id: UuidSchema,
+    baseSha: GitSha1Schema,
     planId: UuidSchema,
     phaseId: UuidSchema,
     integrationBranch: Type.String(),

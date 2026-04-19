@@ -38,12 +38,24 @@ function makeMockDbForLookup(rowsPerSelect: unknown[][]) {
   let i = 0;
   const select = vi.fn().mockImplementation(() => {
     const rows = rowsPerSelect[i++] ?? [];
-    const whereThenable: Promise<unknown[]> & {
+    // Route handlers vary between terminal forms — `.where(...).limit(n)`
+    // for single-row + `.where(...).orderBy(col).limit(n)` for "latest
+    // by createdAt". The chain exposes both so a single mock matches
+    // every call pattern without a bespoke per-route shape.
+    const orderByChain: Promise<unknown[]> & {
       limit?: (n: number) => Promise<unknown[]>;
     } = Object.assign(Promise.resolve(rows), {
       limit: (_n: number) => Promise.resolve(rows),
     });
-    const where = vi.fn().mockImplementation(() => whereThenable);
+    const orderBy = vi.fn().mockImplementation(() => orderByChain);
+    const whereChain: Promise<unknown[]> & {
+      limit?: (n: number) => Promise<unknown[]>;
+      orderBy?: typeof orderBy;
+    } = Object.assign(Promise.resolve(rows), {
+      limit: (_n: number) => Promise.resolve(rows),
+      orderBy,
+    });
+    const where = vi.fn().mockImplementation(() => whereChain);
     const from = vi.fn().mockImplementation(() => ({ where }));
     return { from };
   });
@@ -263,13 +275,15 @@ describe("GET /plans/:planId", () => {
     const { client } = makeMockTemporal();
     const { planRow, phaseRows, taskRows, edgeRows } = planToRows(planFixture);
     const artifactRows = [{ id: "11111111-2222-4333-8444-aaaaaaaaaaaa" }];
-    // 5 selects: plans, phases, plan_tasks, task_dependencies, artifacts.
+    // 6 selects: plans, phases, plan_tasks, task_dependencies, artifacts,
+    // completion_audit_reports (latest). Empty for this test.
     const db = makeMockDbForLookup([
       [planRow],
       phaseRows,
       taskRows,
       edgeRows,
       artifactRows,
+      [],
     ]);
 
     const app = createApp({
@@ -310,5 +324,179 @@ describe("GET /plans/:planId", () => {
     });
     const res = await app.request("/plans/not-a-uuid");
     expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /plans/:planId/complete", () => {
+  const planId = "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+  const finalPhaseId = "f0e1d2c3-b4a5-4768-99aa-bbccddeeff00";
+  const mergeRunId = "11111111-2222-4333-8444-555555555555";
+
+  it("returns 404 when the plan row is missing", async () => {
+    const { client } = makeMockTemporal();
+    const db = makeMockDbForLookup([[]]);
+    const app = createApp({
+      temporal: client,
+      taskQueue: "q",
+      db,
+      artifactDir: ".",
+      repoRoot: "/",
+      worktreeRoot: "/",
+      maxLifetimeHours: 24,
+    });
+    const res = await app.request(`/plans/${planId}/complete`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 409 when any phase isn't completed", async () => {
+    const { client } = makeMockTemporal();
+    const db = makeMockDbForLookup([
+      [{ id: planId }],
+      [
+        { id: "p0", index: 0, status: "completed" },
+        { id: "p1", index: 1, status: "auditing" },
+      ],
+    ]);
+    const app = createApp({
+      temporal: client,
+      taskQueue: "q",
+      db,
+      artifactDir: ".",
+      repoRoot: "/",
+      worktreeRoot: "/",
+      maxLifetimeHours: 24,
+    });
+    const res = await app.request(`/plans/${planId}/complete`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it("starts CompletionAuditWorkflow with counter-suffix id on happy path", async () => {
+    const { client, start } = makeMockTemporal();
+    const db = makeMockDbForLookup([
+      [{ id: planId }],
+      [
+        { id: "p0", index: 0, status: "completed" },
+        { id: finalPhaseId, index: 1, status: "completed" },
+      ],
+      [{ id: mergeRunId }],
+      [],
+    ]);
+    const app = createApp({
+      temporal: client,
+      taskQueue: "q",
+      db,
+      artifactDir: ".",
+      repoRoot: "/",
+      worktreeRoot: "/",
+      maxLifetimeHours: 24,
+    });
+    const res = await app.request(`/plans/${planId}/complete`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as {
+      planId: string;
+      workflowRunId: string;
+      auditIndex: number;
+    };
+    expect(body.auditIndex).toBe(1);
+    expect(start).toHaveBeenCalledWith(
+      "CompletionAuditWorkflow",
+      expect.objectContaining({
+        workflowId: `plan-complete-${planId}-1`,
+        args: [
+          {
+            planId,
+            finalPhaseId,
+            mergeRunId,
+            requestedBy: "api",
+          },
+        ],
+      }),
+    );
+  });
+});
+
+describe("POST /plans/:planId/release", () => {
+  const planId = "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+  const auditId = "b2c3d4e5-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
+
+  it("returns 409 when plan has no completion audit stamped", async () => {
+    const { client } = makeMockTemporal();
+    const db = makeMockDbForLookup([
+      [{ id: planId, completionAuditReportId: null }],
+    ]);
+    const app = createApp({
+      temporal: client,
+      taskQueue: "q",
+      db,
+      artifactDir: ".",
+      repoRoot: "/",
+      worktreeRoot: "/",
+      maxLifetimeHours: 24,
+    });
+    const res = await app.request(`/plans/${planId}/release`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it("returns 409 when completion audit outcome is not pass", async () => {
+    const { client } = makeMockTemporal();
+    const db = makeMockDbForLookup([
+      [{ id: planId, completionAuditReportId: auditId }],
+      [{ id: auditId, outcome: "changes_requested" }],
+    ]);
+    const app = createApp({
+      temporal: client,
+      taskQueue: "q",
+      db,
+      artifactDir: ".",
+      repoRoot: "/",
+      worktreeRoot: "/",
+      maxLifetimeHours: 24,
+    });
+    const res = await app.request(`/plans/${planId}/release`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it("starts FinalReleaseWorkflow on happy path", async () => {
+    const { client, start } = makeMockTemporal();
+    const db = makeMockDbForLookup([
+      [{ id: planId, completionAuditReportId: auditId }],
+      [{ id: auditId, outcome: "pass" }],
+      [],
+    ]);
+    const app = createApp({
+      temporal: client,
+      taskQueue: "q",
+      db,
+      artifactDir: ".",
+      repoRoot: "/",
+      worktreeRoot: "/",
+      maxLifetimeHours: 24,
+    });
+    const res = await app.request(`/plans/${planId}/release`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(202);
+    expect(start).toHaveBeenCalledWith(
+      "FinalReleaseWorkflow",
+      expect.objectContaining({
+        workflowId: `plan-release-${planId}-1`,
+        args: [
+          {
+            planId,
+            completionAuditReportId: auditId,
+          },
+        ],
+      }),
+    );
   });
 });

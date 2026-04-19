@@ -1,10 +1,12 @@
 import { Hono } from "hono";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Client as TemporalClient } from "@temporalio/client";
 
 import {
   validatePlan,
+  type CompletionAuditWorkflowInput,
   type DependencyEdge,
+  type FinalReleaseWorkflowInput,
   type Phase,
   type Plan,
   type Risk,
@@ -15,6 +17,8 @@ import {
 import { auditPlan } from "@pm-go/planner";
 import {
   artifacts,
+  completionAuditReports,
+  mergeRuns,
   phases,
   planTasks,
   plans,
@@ -141,9 +145,244 @@ export function createPlansRoute(deps: PlansRouteDeps) {
       .where(eq(artifacts.planId, planId));
     const artifactIds = artifactRows.map((r) => r.id);
 
-    return c.json({ plan, artifactIds }, 200);
+    // latestCompletionAudit — the most recent completion audit verdict
+    // for this plan, if one exists. Re-audits produce new rows; callers
+    // use this to see the current release-readiness state without a
+    // second round-trip.
+    const [latestAuditRow] = await deps.db
+      .select()
+      .from(completionAuditReports)
+      .where(eq(completionAuditReports.planId, planId))
+      .orderBy(desc(completionAuditReports.createdAt))
+      .limit(1);
+    const latestCompletionAudit = latestAuditRow
+      ? {
+          id: latestAuditRow.id,
+          planId: latestAuditRow.planId,
+          finalPhaseId: latestAuditRow.finalPhaseId,
+          mergeRunId: latestAuditRow.mergeRunId,
+          auditorRunId: latestAuditRow.auditorRunId,
+          auditedHeadSha: latestAuditRow.auditedHeadSha,
+          outcome: latestAuditRow.outcome,
+          checklist: latestAuditRow.checklist,
+          findings: latestAuditRow.findings,
+          summary: latestAuditRow.summary,
+          createdAt: toIso(latestAuditRow.createdAt),
+        }
+      : null;
+
+    return c.json({ plan, artifactIds, latestCompletionAudit }, 200);
   });
 
+  // POST /plans/:planId/complete — start CompletionAuditWorkflow.
+  // Precondition: every phase row must have `status='completed'`. The
+  // final phase's latest merge_run supplies the mergeRunId input.
+  app.post("/:planId/complete", async (c) => {
+    const planId = c.req.param("planId");
+    if (!isUuid(planId)) {
+      return c.json({ error: "planId must be a UUID" }, 400);
+    }
+
+    const [planRow] = await deps.db
+      .select({ id: plans.id })
+      .from(plans)
+      .where(eq(plans.id, planId))
+      .limit(1);
+    if (!planRow) {
+      return c.json({ error: `plan ${planId} not found` }, 404);
+    }
+
+    const phaseRows = await deps.db
+      .select({
+        id: phases.id,
+        index: phases.index,
+        status: phases.status,
+      })
+      .from(phases)
+      .where(eq(phases.planId, planId));
+    if (phaseRows.length === 0) {
+      return c.json({ error: `plan ${planId} has no phases` }, 409);
+    }
+    const notDone = phaseRows.filter((p) => p.status !== "completed");
+    if (notDone.length > 0) {
+      return c.json(
+        {
+          error: `plan ${planId} has ${notDone.length} phase(s) not completed`,
+          blockedPhaseIds: notDone.map((p) => p.id),
+        },
+        409,
+      );
+    }
+
+    const finalPhase = [...phaseRows].sort((a, b) => b.index - a.index)[0]!;
+    const [finalMergeRun] = await deps.db
+      .select({ id: mergeRuns.id })
+      .from(mergeRuns)
+      .where(eq(mergeRuns.phaseId, finalPhase.id))
+      .orderBy(desc(mergeRuns.startedAt))
+      .limit(1);
+    if (!finalMergeRun) {
+      return c.json(
+        { error: `no merge_run for final phase ${finalPhase.id}` },
+        409,
+      );
+    }
+
+    const priorAudits = await deps.db
+      .select({ id: completionAuditReports.id })
+      .from(completionAuditReports)
+      .where(eq(completionAuditReports.planId, planId));
+    const auditIndex = priorAudits.length + 1;
+
+    const body = (await c.req.json().catch(() => null)) as {
+      requestedBy?: unknown;
+    } | null;
+    const requestedBy =
+      body &&
+      typeof body.requestedBy === "string" &&
+      body.requestedBy.trim().length > 0
+        ? body.requestedBy
+        : "api";
+
+    const input: CompletionAuditWorkflowInput = {
+      planId,
+      finalPhaseId: finalPhase.id,
+      mergeRunId: finalMergeRun.id,
+      requestedBy,
+    };
+
+    const handle = await deps.temporal.workflow.start(
+      "CompletionAuditWorkflow",
+      {
+        args: [input],
+        taskQueue: deps.taskQueue,
+        workflowId: `plan-complete-${planId}-${auditIndex}`,
+      },
+    );
+
+    return c.json(
+      {
+        planId,
+        workflowRunId: handle.firstExecutionRunId,
+        auditIndex,
+      },
+      202,
+    );
+  });
+
+  // POST /plans/:planId/release — start FinalReleaseWorkflow.
+  // Precondition: the plan must have a completion audit with outcome='pass'
+  // already stamped on `plans.completion_audit_report_id`.
+  app.post("/:planId/release", async (c) => {
+    const planId = c.req.param("planId");
+    if (!isUuid(planId)) {
+      return c.json({ error: "planId must be a UUID" }, 400);
+    }
+
+    const [planRow] = await deps.db
+      .select({
+        id: plans.id,
+        completionAuditReportId: plans.completionAuditReportId,
+      })
+      .from(plans)
+      .where(eq(plans.id, planId))
+      .limit(1);
+    if (!planRow) {
+      return c.json({ error: `plan ${planId} not found` }, 404);
+    }
+    if (!planRow.completionAuditReportId) {
+      return c.json(
+        {
+          error: `plan ${planId} has no completion_audit_report_id; run POST /plans/${planId}/complete first`,
+        },
+        409,
+      );
+    }
+
+    const [auditRow] = await deps.db
+      .select({ id: completionAuditReports.id, outcome: completionAuditReports.outcome })
+      .from(completionAuditReports)
+      .where(eq(completionAuditReports.id, planRow.completionAuditReportId))
+      .limit(1);
+    if (!auditRow) {
+      return c.json(
+        {
+          error: `completion_audit_report ${planRow.completionAuditReportId} not found`,
+        },
+        404,
+      );
+    }
+    if (auditRow.outcome !== "pass") {
+      return c.json(
+        {
+          error: `completion audit for plan ${planId} has outcome='${auditRow.outcome}'; /release requires 'pass'`,
+        },
+        409,
+      );
+    }
+
+    const priorReleases = await deps.db
+      .select({ id: artifacts.id })
+      .from(artifacts)
+      .where(and(eq(artifacts.planId, planId), eq(artifacts.kind, "pr_summary")));
+    const releaseIndex = priorReleases.length + 1;
+
+    const input: FinalReleaseWorkflowInput = {
+      planId,
+      completionAuditReportId: planRow.completionAuditReportId,
+    };
+
+    const handle = await deps.temporal.workflow.start("FinalReleaseWorkflow", {
+      args: [input],
+      taskQueue: deps.taskQueue,
+      workflowId: `plan-release-${planId}-${releaseIndex}`,
+    });
+
+    return c.json(
+      {
+        planId,
+        workflowRunId: handle.firstExecutionRunId,
+        releaseIndex,
+      },
+      202,
+    );
+  });
+
+  return app;
+}
+
+export function createCompletionAuditReportsRoute(deps: { db: PmGoDb }) {
+  const app = new Hono();
+  app.get("/:id", async (c) => {
+    const id = c.req.param("id");
+    if (typeof id !== "string" || !UUID_RE.test(id)) {
+      return c.json({ error: "id must be a UUID" }, 400);
+    }
+    const [row] = await deps.db
+      .select()
+      .from(completionAuditReports)
+      .where(eq(completionAuditReports.id, id))
+      .limit(1);
+    if (!row) {
+      return c.json({ error: `completion_audit_report ${id} not found` }, 404);
+    }
+    return c.json(
+      {
+        id: row.id,
+        planId: row.planId,
+        finalPhaseId: row.finalPhaseId,
+        mergeRunId: row.mergeRunId,
+        auditorRunId: row.auditorRunId,
+        auditedHeadSha: row.auditedHeadSha,
+        outcome: row.outcome,
+        checklist: row.checklist,
+        findings: row.findings,
+        summary: row.summary,
+        createdAt: toIso(row.createdAt),
+      },
+      200,
+    );
+  });
   return app;
 }
 

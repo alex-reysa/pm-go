@@ -259,6 +259,7 @@ export {
 export {
   createStubPhaseAuditorRunner,
   createClaudePhaseAuditorRunner,
+  PhaseAuditValidationError,
   type CreateStubPhaseAuditorRunnerOptions,
   type PhaseAuditEvidence,
   type PhaseAuditorRunner,
@@ -271,6 +272,7 @@ export {
 export {
   createStubCompletionAuditorRunner,
   createClaudeCompletionAuditorRunner,
+  CompletionAuditValidationError,
   type CreateStubCompletionAuditorRunnerOptions,
   type CompletionAuditEvidence,
   type CompletionAuditorRunner,

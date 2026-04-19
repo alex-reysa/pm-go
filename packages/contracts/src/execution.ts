@@ -137,6 +137,13 @@ export interface Artifact {
 
 export interface MergeRun {
   id: UUID;
+  /**
+   * Commit the integration branch was forked from at the start of this
+   * merge run (HEAD of `phase.baseSnapshotId`'s RepoSnapshot at merge
+   * time). Pairs with `integrationHeadSha` to define the merge window
+   * this run produced.
+   */
+  baseSha: string;
   planId: UUID;
   phaseId: UUID;
   integrationBranch: string;
