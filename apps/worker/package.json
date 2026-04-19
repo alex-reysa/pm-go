@@ -18,6 +18,7 @@
     "@pm-go/repo-intelligence": "workspace:*",
     "@pm-go/temporal-activities": "workspace:*",
     "@pm-go/temporal-workflows": "workspace:*",
+    "@pm-go/worktree-manager": "workspace:*",
     "@temporalio/activity": "^1.11.0",
     "@temporalio/worker": "^1.11.0",
     "@temporalio/workflow": "^1.11.0",

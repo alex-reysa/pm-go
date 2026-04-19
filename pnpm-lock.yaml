@@ -79,6 +79,9 @@ importers:
       '@pm-go/temporal-workflows':
         specifier: workspace:*
         version: link:../../packages/temporal-workflows
+      '@pm-go/worktree-manager':
+        specifier: workspace:*
+        version: link:../../packages/worktree-manager
       '@temporalio/activity':
         specifier: ^1.11.0
         version: 1.16.0
