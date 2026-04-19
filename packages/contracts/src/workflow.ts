@@ -41,9 +41,13 @@ export interface TaskExecutionWorkflowInput {
 
 export interface TaskExecutionWorkflowResult {
   taskId: UUID;
+  status: "ready_for_review" | "blocked" | "failed";
+  leaseId: UUID;
   branchName: string;
   worktreePath: string;
-  readyForReview: boolean;
+  agentRunId: UUID;
+  changedFiles: string[];
+  fileScopeViolations: string[];
 }
 
 export interface TaskReviewWorkflowInput {

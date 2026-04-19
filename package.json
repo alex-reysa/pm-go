@@ -21,7 +21,8 @@
     "start:worker": "pnpm --filter @pm-go/worker start",
     "start:api": "pnpm --filter @pm-go/api start",
     "smoke:phase1b": "bash scripts/phase1b-smoke.sh",
-    "smoke:phase2": "bash scripts/phase2-smoke.sh"
+    "smoke:phase2": "bash scripts/phase2-smoke.sh",
+    "smoke:phase3": "bash scripts/phase3-smoke.sh"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

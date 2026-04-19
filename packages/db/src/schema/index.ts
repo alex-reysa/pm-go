@@ -6,3 +6,4 @@ export * from "./plan-tasks.js";
 export * from "./task-dependencies.js";
 export * from "./agent-runs.js";
 export * from "./artifacts.js";
+export * from "./worktree-leases.js";
