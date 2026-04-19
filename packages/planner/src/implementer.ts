@@ -1,5 +1,8 @@
 import type { AgentRun, Task } from "@pm-go/contracts";
-import type { ImplementerRunner } from "@pm-go/executor-claude";
+import type {
+  ImplementerReviewFeedback,
+  ImplementerRunner,
+} from "@pm-go/executor-claude";
 
 import { loadPrompt } from "./prompts.js";
 
@@ -20,6 +23,8 @@ export interface RunImplementerInput {
   budgetUsdCap?: number;
   /** Hard turn cap for the implementer run. Defaults to 60. */
   maxTurnsCap?: number;
+  /** Populated on review-fix cycles; triggers the runner's Fix-mode preamble. */
+  reviewFeedback?: ImplementerReviewFeedback;
 }
 
 /**
@@ -63,6 +68,7 @@ export async function runImplementer(
     model,
     budgetUsdCap,
     maxTurnsCap,
+    ...(input.reviewFeedback ? { reviewFeedback: input.reviewFeedback } : {}),
   });
 
   return result.finalCommitSha !== undefined

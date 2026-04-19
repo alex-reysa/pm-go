@@ -8,8 +8,10 @@ import type {
   AgentRun,
   Plan,
   RepoSnapshot,
+  ReviewFinding,
   SpecDocument,
   Task,
+  UUID,
 } from "@pm-go/contracts";
 
 import { isInsideCwd as isInsideCwdImpl } from "./planner-runner.js";
@@ -76,6 +78,21 @@ export function createStubPlannerRunner(fixture: Plan): PlannerRunner {
 
 export { createClaudePlannerRunner, isInsideCwd } from "./planner-runner.js";
 
+/**
+ * Fix-mode context. When present on `ImplementerRunnerInput.reviewFeedback`
+ * the runner prepends a deterministic "Fix mode" preamble to the system
+ * prompt so the implementer sees the reviewer's findings verbatim. Used by
+ * `TaskFixWorkflow` in Phase 4; absent during the first implementer run.
+ */
+export interface ImplementerReviewFeedback {
+  reportId: UUID;
+  /** 1-indexed: this is the Nth fix pass. Matches `review_reports.cycle_number`. */
+  cycleNumber: number;
+  /** Max cycles allowed for this task (from `task.maxReviewFixCycles`). */
+  maxCycles: number;
+  findings: ReviewFinding[];
+}
+
 export interface ImplementerRunnerInput {
   task: Task;
   worktreePath: string;
@@ -85,6 +102,8 @@ export interface ImplementerRunnerInput {
   model: string;
   budgetUsdCap?: number;
   maxTurnsCap?: number;
+  /** Populated only on fix cycles (TaskFixWorkflow). Undefined on the first implementer run. */
+  reviewFeedback?: ImplementerReviewFeedback;
 }
 
 export interface ImplementerRunnerResult {
@@ -136,18 +155,44 @@ export function createStubImplementerRunner(
           );
         }
         await mkdir(path.dirname(absTarget), { recursive: true });
-        await writeFile(absTarget, options.writeFile.contents, "utf8");
+        // On fix cycles the same stub may be called again with identical
+        // contents. Append a cycle marker when reviewFeedback is present
+        // so the second commit has a real diff — otherwise `git commit`
+        // fails with "nothing to commit".
+        const baseContents = options.writeFile.contents;
+        const contents = input.reviewFeedback
+          ? `${baseContents}\n// fix cycle ${input.reviewFeedback.cycleNumber} — report ${input.reviewFeedback.reportId}\n`
+          : baseContents;
+        await writeFile(absTarget, contents, "utf8");
 
         const commitMessage =
           options.commitMessage ??
-          `feat(${input.task.slug}): stub implementer placeholder`;
+          (input.reviewFeedback
+            ? `fix(${input.task.slug}): stub fix cycle ${input.reviewFeedback.cycleNumber}`
+            : `feat(${input.task.slug}): stub implementer placeholder`);
 
         await execFileAsync("git", ["add", "--", relPath], {
           cwd: input.worktreePath,
         });
-        await execFileAsync("git", ["commit", "-m", commitMessage], {
-          cwd: input.worktreePath,
-        });
+        try {
+          // Force `LANG=C`/`LC_ALL=C` so the "nothing to commit" stdout
+          // we parse on the recovery path is English regardless of the
+          // developer's locale — otherwise a localized git message
+          // bypasses the regex below and the fix cycle crashes on what
+          // is really a no-op commit.
+          await execFileAsync("git", ["commit", "-m", commitMessage], {
+            cwd: input.worktreePath,
+            env: { ...process.env, LANG: "C", LC_ALL: "C" },
+          });
+        } catch (err) {
+          // Tolerate "nothing to commit, working tree clean" so retries
+          // (Temporal, fix cycles) don't explode. All other commit errors
+          // propagate unchanged.
+          const message = extractCommitErrorMessage(err);
+          if (!/nothing to commit|working tree clean/i.test(message)) {
+            throw err;
+          }
+        }
         const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], {
           cwd: input.worktreePath,
         });
@@ -187,5 +232,26 @@ export function createStubImplementerRunner(
   };
 }
 
+function extractCommitErrorMessage(err: unknown): string {
+  if (typeof err !== "object" || err === null) return "";
+  const obj = err as { stdout?: unknown; stderr?: unknown; message?: unknown };
+  const parts: string[] = [];
+  for (const v of [obj.stdout, obj.stderr, obj.message]) {
+    if (typeof v === "string") parts.push(v);
+  }
+  return parts.join("\n");
+}
+
 export { createClaudeImplementerRunner } from "./implementer-runner.js";
 export type { ClaudeImplementerRunnerConfig } from "./implementer-runner.js";
+
+export {
+  createStubReviewerRunner,
+  createClaudeReviewerRunner,
+  type CreateStubReviewerRunnerOptions,
+  type ReviewerRunner,
+  type ReviewerRunnerInput,
+  type ReviewerRunnerResult,
+  type StubReviewerSequenceEntry,
+  type ClaudeReviewerRunnerConfig,
+} from "./reviewer-runner.js";

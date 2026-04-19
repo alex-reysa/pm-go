@@ -151,5 +151,36 @@ export function createWorktreeActivities(deps: WorktreeActivityDeps) {
     }) {
       return diffScope(input);
     },
+
+    /**
+     * Load the active lease for a task, or null if none exists. Used by
+     * the review + fix workflows to reopen the worktree left behind by
+     * TaskExecutionWorkflow without creating a new one.
+     */
+    async loadLatestLease(input: {
+      taskId: string;
+    }): Promise<WorktreeLease | null> {
+      const [row] = await deps.db
+        .select()
+        .from(worktreeLeases)
+        .where(
+          and(
+            eq(worktreeLeases.taskId, input.taskId),
+            eq(worktreeLeases.status, "active"),
+          ),
+        )
+        .limit(1);
+      if (!row) return null;
+      return {
+        id: row.id,
+        taskId: row.taskId,
+        repoRoot: row.repoRoot,
+        branchName: row.branchName,
+        worktreePath: row.worktreePath,
+        baseSha: row.baseSha,
+        expiresAt: row.expiresAt,
+        status: row.status,
+      };
+    },
   };
 }

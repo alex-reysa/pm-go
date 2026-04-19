@@ -14,6 +14,12 @@ export {
   type RunImplementerResult,
 } from "./implementer.js";
 
+export {
+  runReviewer,
+  type RunReviewerInput,
+  type RunReviewerResult,
+} from "./reviewer.js";
+
 export { auditPlan, type PlanAuditOutcome } from "./audit.js";
 
 export { renderPlanMarkdown } from "./render.js";

@@ -9,7 +9,10 @@ import type {
   TaskStatus,
 } from "@pm-go/contracts";
 import { planTasks, type PmGoDb } from "@pm-go/db";
-import type { ImplementerRunner } from "@pm-go/executor-claude";
+import type {
+  ImplementerReviewFeedback,
+  ImplementerRunner,
+} from "@pm-go/executor-claude";
 import { runImplementer as runImplementerPkg } from "@pm-go/planner";
 
 const execFileAsync = promisify(execFile);
@@ -118,13 +121,18 @@ export function createTaskExecutionActivities(
       task: Task;
       worktreePath: string;
       baseSha: string;
+      /** Populated on fix cycles; forwarded verbatim to the runner. */
+      reviewFeedback?: ImplementerReviewFeedback;
     }): Promise<{ agentRun: AgentRun; finalCommitSha?: string }> {
       const result = await runImplementerPkg({
         task: input.task,
         worktreePath: input.worktreePath,
         baseSha: input.baseSha,
-        requestedBy: "task-execution-workflow",
+        requestedBy: input.reviewFeedback
+          ? "task-fix-workflow"
+          : "task-execution-workflow",
         runner: deps.implementerRunner,
+        ...(input.reviewFeedback ? { reviewFeedback: input.reviewFeedback } : {}),
       });
       return result.finalCommitSha !== undefined
         ? { agentRun: result.agentRun, finalCommitSha: result.finalCommitSha }
@@ -172,6 +180,27 @@ export function createTaskExecutionActivities(
       });
       const sha = stdout.trim();
       return sha.length > 0 ? sha : undefined;
+    },
+
+    /**
+     * Read-only `git rev-parse HEAD` inside a worktree. Used by the
+     * review + fix workflows to capture the implementer's tip sha at
+     * review time (distinct from the lease's `baseSha`, which is the
+     * branch-from-main sha).
+     */
+    async readWorktreeHeadSha(input: {
+      worktreePath: string;
+    }): Promise<string> {
+      const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], {
+        cwd: input.worktreePath,
+      });
+      const sha = stdout.trim();
+      if (sha.length === 0) {
+        throw new Error(
+          `readWorktreeHeadSha: empty HEAD in worktree ${input.worktreePath}`,
+        );
+      }
+      return sha;
     },
   };
 }

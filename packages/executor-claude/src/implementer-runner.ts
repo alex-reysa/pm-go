@@ -5,9 +5,15 @@ import { promisify } from "node:util";
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
-import type { AgentRun, AgentStopReason, Task } from "@pm-go/contracts";
+import type {
+  AgentRun,
+  AgentStopReason,
+  ReviewFinding,
+  Task,
+} from "@pm-go/contracts";
 
 import type {
+  ImplementerReviewFeedback,
   ImplementerRunner,
   ImplementerRunnerInput,
   ImplementerRunnerResult,
@@ -65,6 +71,10 @@ export function createClaudeImplementerRunner(
   return {
     async run(input: ImplementerRunnerInput): Promise<ImplementerRunnerResult> {
       const userPrompt = buildUserPrompt(input);
+      const systemPromptWithFixMode = applyFixModePreamble(
+        input.systemPrompt,
+        input.reviewFeedback,
+      );
       const cwd = input.worktreePath;
 
       let sessionId: string | undefined;
@@ -82,7 +92,7 @@ export function createClaudeImplementerRunner(
         const iter = query({
           prompt: userPrompt,
           options: {
-            systemPrompt: input.systemPrompt,
+            systemPrompt: systemPromptWithFixMode,
             model: input.model,
             permissionMode: "default",
             allowedTools: [
@@ -213,6 +223,57 @@ export function createClaudeImplementerRunner(
         : { agentRun };
     },
   };
+}
+
+/**
+ * Prepend a deterministic "Fix mode" preamble to the system prompt when
+ * the call is a review-triggered fix cycle. When `reviewFeedback` is
+ * undefined, returns the system prompt unchanged — first-time implementer
+ * runs see no preamble.
+ *
+ * The preamble:
+ * - Names the triggering report + cycle number + cycle cap.
+ * - Enumerates every ReviewFinding with severity, title, filePath:line,
+ *   and suggestedFixDirection, so the model sees them verbatim.
+ * - Restates the non-negotiable rules (every high/medium finding addressed,
+ *   no rewriting unrelated code, re-run testCommands, surface invalid
+ *   findings as blockers). The full "Fix mode" H2 in `implementer.v1.md`
+ *   covers these in depth; the preamble is the short-form trigger that
+ *   points the model at that section in context.
+ */
+export function applyFixModePreamble(
+  systemPrompt: string,
+  reviewFeedback: ImplementerReviewFeedback | undefined,
+): string {
+  if (!reviewFeedback) return systemPrompt;
+  const preamble = buildFixModePreamble(reviewFeedback);
+  return `${preamble}\n\n---\n\n${systemPrompt}`;
+}
+
+function buildFixModePreamble(feedback: ImplementerReviewFeedback): string {
+  const findingsBlock = feedback.findings
+    .map((f) => renderFindingBullet(f))
+    .join("\n");
+  return [
+    `# Fix mode (cycle ${feedback.cycleNumber} of ${feedback.maxCycles})`,
+    ``,
+    `You are re-running on an existing implementer branch to address reviewer findings from report ${feedback.reportId}. Read the findings below, apply the fixes inside \`fileScope\`, re-run every \`testCommand\`, and commit via the orchestrator (do NOT run \`git commit\`).`,
+    ``,
+    `Address every finding with **severity=high** or **severity=medium**. Low-severity findings are advisory — address if cheap, skip otherwise.`,
+    `Do NOT rewrite unrelated code. Touch only what the findings require.`,
+    `If a finding is invalid or points outside \`fileScope\`, STOP and surface it as a blocker in your final message — do not silently ignore it and do not edit out-of-scope files.`,
+    ``,
+    `## Reviewer findings`,
+    findingsBlock.length > 0 ? findingsBlock : "- (no findings — this should not happen in fix mode)",
+  ].join("\n");
+}
+
+function renderFindingBullet(f: ReviewFinding): string {
+  const loc =
+    typeof f.startLine === "number"
+      ? `:${f.startLine}${typeof f.endLine === "number" && f.endLine !== f.startLine ? `-${f.endLine}` : ""}`
+      : "";
+  return `- [${f.severity}] \`${f.id}\` — ${f.title}\n  file: \`${f.filePath}${loc}\`\n  summary: ${f.summary}\n  suggestedFixDirection: ${f.suggestedFixDirection}`;
 }
 
 /**
@@ -367,7 +428,7 @@ async function gateToolUse(
   return { behavior: "deny", message: `tool '${tool}' is not on the implementer allowlist` };
 }
 
-const FORBIDDEN_BASH_PATTERNS: Array<{ name: string; re: RegExp }> = [
+export const FORBIDDEN_BASH_PATTERNS: Array<{ name: string; re: RegExp }> = [
   { name: "git commit", re: /\bgit\s+commit\b/ },
   { name: "git push", re: /\bgit\s+push\b/ },
   { name: "git merge", re: /\bgit\s+merge\b/ },
@@ -406,7 +467,14 @@ const FORBIDDEN_BASH_PATTERNS: Array<{ name: string; re: RegExp }> = [
 ];
 
 function findForbiddenBashPattern(command: string): string | undefined {
-  for (const { name, re } of FORBIDDEN_BASH_PATTERNS) {
+  return findForbiddenBashPatternAgainst(command, FORBIDDEN_BASH_PATTERNS);
+}
+
+export function findForbiddenBashPatternAgainst(
+  command: string,
+  patterns: ReadonlyArray<{ name: string; re: RegExp }>,
+): string | undefined {
+  for (const { name, re } of patterns) {
     if (re.test(command)) return name;
   }
   return undefined;

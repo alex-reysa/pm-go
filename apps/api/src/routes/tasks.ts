@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import type { Client as TemporalClient } from "@temporalio/client";
 
 import type {
@@ -8,8 +8,11 @@ import type {
   AgentRole,
   AgentRunStatus,
   AgentStopReason,
+  ReviewReport,
   Task,
   TaskExecutionWorkflowInput,
+  TaskFixWorkflowInput,
+  TaskReviewWorkflowInput,
   UUID,
   WorktreeLease,
   WorktreeLeaseStatus,
@@ -17,6 +20,7 @@ import type {
 import {
   agentRuns,
   planTasks,
+  reviewReports,
   worktreeLeases,
   type PmGoDb,
 } from "@pm-go/db";
@@ -231,14 +235,139 @@ export function createTasksRoute(deps: TasksRouteDeps) {
         }
       : null;
 
+    // Surface the latest review report inline so a single GET /tasks/:id
+    // round-trip gives the UI / smoke tests everything they need to
+    // render the task's review state (Phase 4 addition — the history
+    // list lives under GET /tasks/:id/review-reports).
+    const reportRows = await deps.db
+      .select()
+      .from(reviewReports)
+      .where(eq(reviewReports.taskId, taskId))
+      .orderBy(desc(reviewReports.createdAt))
+      .limit(1);
+    const latestReviewReportRow = reportRows[0];
+    const latestReviewReport: ReviewReport | null = latestReviewReportRow
+      ? {
+          id: latestReviewReportRow.id,
+          taskId: latestReviewReportRow.taskId,
+          reviewerRunId: latestReviewReportRow.reviewerRunId,
+          outcome: latestReviewReportRow.outcome,
+          findings: latestReviewReportRow.findings,
+          createdAt: toIso(latestReviewReportRow.createdAt),
+        }
+      : null;
+
     return c.json(
       {
         task,
         latestAgentRun,
         latestLease,
+        latestReviewReport,
       },
       200,
     );
+  });
+
+  // POST /tasks/:taskId/review — start TaskReviewWorkflow.
+  app.post("/:taskId/review", async (c) => {
+    const taskId = c.req.param("taskId");
+    if (!isUuid(taskId)) {
+      return c.json({ error: "taskId must be a UUID" }, 400);
+    }
+
+    // Workflow id includes a cycle counter so repeat reviews of the same
+    // task start fresh workflow instances rather than hit the uniqueness
+    // collision on `task-review-<id>`. The counter is derived from the
+    // review_reports row count so it is monotonic across retries.
+    const existingReports = await deps.db
+      .select({ id: reviewReports.id })
+      .from(reviewReports)
+      .where(eq(reviewReports.taskId, taskId));
+    const nextCycle = existingReports.length + 1;
+
+    const input: TaskReviewWorkflowInput = { taskId };
+    const handle = await deps.temporal.workflow.start("TaskReviewWorkflow", {
+      args: [input],
+      taskQueue: deps.taskQueue,
+      workflowId: `task-review-${taskId}-${nextCycle}`,
+    });
+
+    return c.json(
+      { taskId, workflowRunId: handle.firstExecutionRunId, cycleNumber: nextCycle },
+      202,
+    );
+  });
+
+  // POST /tasks/:taskId/fix — start TaskFixWorkflow against the latest
+  // `changes_requested` review report.
+  app.post("/:taskId/fix", async (c) => {
+    const taskId = c.req.param("taskId");
+    if (!isUuid(taskId)) {
+      return c.json({ error: "taskId must be a UUID" }, 400);
+    }
+
+    const changesRequestedRows = await deps.db
+      .select()
+      .from(reviewReports)
+      .where(
+        and(
+          eq(reviewReports.taskId, taskId),
+          eq(reviewReports.outcome, "changes_requested"),
+        ),
+      )
+      .orderBy(desc(reviewReports.createdAt))
+      .limit(1);
+    const reportRow = changesRequestedRows[0];
+    if (!reportRow) {
+      return c.json(
+        {
+          error: `no changes_requested review report for task ${taskId}; run POST /tasks/${taskId}/review first`,
+        },
+        404,
+      );
+    }
+
+    const input: TaskFixWorkflowInput = {
+      taskId,
+      reviewReportId: reportRow.id,
+    };
+    const handle = await deps.temporal.workflow.start("TaskFixWorkflow", {
+      args: [input],
+      taskQueue: deps.taskQueue,
+      workflowId: `task-fix-${taskId}-${reportRow.cycleNumber}`,
+    });
+    return c.json(
+      {
+        taskId,
+        workflowRunId: handle.firstExecutionRunId,
+        reviewReportId: reportRow.id,
+        cycleNumber: reportRow.cycleNumber,
+      },
+      202,
+    );
+  });
+
+  // GET /tasks/:taskId/review-reports — chronological list of reports.
+  app.get("/:taskId/review-reports", async (c) => {
+    const taskId = c.req.param("taskId");
+    if (!isUuid(taskId)) {
+      return c.json({ error: "taskId must be a UUID" }, 400);
+    }
+    const rows = await deps.db
+      .select()
+      .from(reviewReports)
+      .where(eq(reviewReports.taskId, taskId))
+      .orderBy(asc(reviewReports.createdAt));
+    const reports = rows.map((row) => ({
+      id: row.id,
+      taskId: row.taskId,
+      reviewerRunId: row.reviewerRunId,
+      outcome: row.outcome,
+      findings: row.findings,
+      cycleNumber: row.cycleNumber,
+      createdAt: toIso(row.createdAt),
+    }));
+    return c.json({ taskId, reports }, 200);
   });
 
   return app;

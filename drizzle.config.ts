@@ -11,6 +11,8 @@ export default {
     "./packages/db/src/schema/agent-runs.ts",
     "./packages/db/src/schema/artifacts.ts",
     "./packages/db/src/schema/worktree-leases.ts",
+    "./packages/db/src/schema/review-reports.ts",
+    "./packages/db/src/schema/policy-decisions.ts",
   ],
   out: "./db/migrations",
   dialect: "postgresql",

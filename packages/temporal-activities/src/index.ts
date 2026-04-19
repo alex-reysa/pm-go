@@ -5,6 +5,7 @@ import type {
   MergeRun,
   Plan,
   PlanAuditWorkflowResult,
+  PolicyDecision,
   RepoSnapshot,
   CompletionAuditReport,
   PhaseAuditReport,
@@ -50,9 +51,45 @@ export interface ExecutionActivities {
   collectExecutionOutcome(taskId: UUID): Promise<{ readyForReview: boolean }>;
 }
 
+/**
+ * Fix-mode context supplied to `TaskExecutionActivities.runImplementer` on
+ * review-fix cycles. The underlying runner prepends a deterministic "Fix
+ * mode" preamble to the implementer system prompt when this is present.
+ * Absent on the first (non-fix) implementer run.
+ */
+export interface RunImplementerReviewFeedback {
+  reportId: UUID;
+  cycleNumber: number;
+  maxCycles: number;
+  findings: ReviewFinding[];
+}
+
+/**
+ * A persisted review report enriched with the DB-side `cycleNumber`. The
+ * contract `ReviewReport` is cycle-agnostic; `cycleNumber` lives only in
+ * the `review_reports` row because cycle-count enforcement is a workflow
+ * concern. Persistence + load activities operate on this enriched shape.
+ */
+export type StoredReviewReport = ReviewReport & { cycleNumber: number };
+
 export interface ReviewActivities {
-  runReviewer(taskId: UUID): Promise<UUID>;
-  persistReviewReport(report: ReviewReport): Promise<UUID>;
+  runReviewer(input: {
+    task: Task;
+    worktreePath: string;
+    baseSha: string;
+    headSha: string;
+    cycleNumber: number;
+    previousFindings?: ReviewFinding[];
+    workflowRunId?: string;
+    parentSessionId?: string;
+  }): Promise<{ report: ReviewReport; agentRun: AgentRun }>;
+  persistReviewReport(report: StoredReviewReport): Promise<UUID>;
+  loadReviewReport(reportId: UUID): Promise<StoredReviewReport | null>;
+  loadLatestReviewReport(taskId: UUID): Promise<StoredReviewReport | null>;
+  loadReviewReportsByTask(taskId: UUID): Promise<StoredReviewReport[]>;
+  /** Returns the highest cycleNumber seen for this task, or 0 if no reviews yet. */
+  countFixCyclesForTask(taskId: UUID): Promise<number>;
+  persistPolicyDecision(decision: PolicyDecision): Promise<UUID>;
 }
 
 export interface IntegrationActivities {
@@ -101,5 +138,6 @@ export interface TaskExecutionActivities {
     task: Task;
     worktreePath: string;
     baseSha: string;
+    reviewFeedback?: RunImplementerReviewFeedback;
   }): Promise<{ agentRun: AgentRun; finalCommitSha?: string }>;
 }
