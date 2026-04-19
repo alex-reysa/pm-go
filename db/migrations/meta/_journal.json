@@ -36,6 +36,13 @@
       "when": 1776604949011,
       "tag": "0004_icy_xorn",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1776616574569,
+      "tag": "0005_hot_blizzard",
+      "breakpoints": true
     }
   ]
 }

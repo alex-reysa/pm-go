@@ -214,9 +214,24 @@ export function createClaudeReviewerRunner(
         );
       }
 
-      const report = reportPayload as ReviewReport;
+      // Never trust model-emitted primary keys. The schema-validated
+      // payload has `id` and `reviewerRunId` fields, but those came from
+      // the model and a hallucinated duplicate would either overwrite an
+      // existing agent_runs row (via persistAgentRun's upsert) or no-op
+      // a persistReviewReport insert while the workflow proceeds with
+      // drifted in-memory state. Rewrite both fields with host-generated
+      // UUIDs before anything downstream sees them. Also rewrite
+      // taskId — the reviewer saw the task id in the user turn, but a
+      // misaligned payload must not bind to a different task.
+      const validatedPayload = reportPayload as ReviewReport;
+      const reviewerRunId = randomUUID();
+      const report: ReviewReport = {
+        ...validatedPayload,
+        id: randomUUID(),
+        taskId: input.task.id,
+        reviewerRunId,
+      };
       const completedAt = new Date().toISOString();
-      const reviewerRunId = report.reviewerRunId;
 
       const agentRun: AgentRun = {
         id: reviewerRunId,

@@ -227,18 +227,59 @@ describe("POST /tasks/:taskId/review", () => {
 });
 
 describe("POST /tasks/:taskId/fix", () => {
-  it("returns 404 when no changes_requested review report exists", async () => {
+  it("returns 404 when the task row is missing", async () => {
     const { client } = makeMockTemporal();
-    const db = makeMockDbForLookup([[]]);
+    const db = makeMockDbForLookup([[]]); // empty task lookup
     const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
     const res = await app.request(`/tasks/${TASK_ID}/fix`, { method: "POST" });
     expect(res.status).toBe(404);
   });
 
-  it("starts TaskFixWorkflow with the latest changes_requested report id", async () => {
+  it("returns 409 when the task is not currently in status=fixing", async () => {
+    const { client, start } = makeMockTemporal();
+    // Task row exists but status is `in_review` — a /fix call at this
+    // point would violate the state machine.
+    const db = makeMockDbForLookup([[{ status: "in_review" }]]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks/${TASK_ID}/fix`, { method: "POST" });
+    expect(res.status).toBe(409);
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when no review report exists for the task", async () => {
+    const { client } = makeMockTemporal();
+    // Task says fixing, but the review-report lookup returns no rows —
+    // inconsistent state that POST /fix should surface, not paper over.
+    const db = makeMockDbForLookup([[{ status: "fixing" }], []]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks/${TASK_ID}/fix`, { method: "POST" });
+    expect(res.status).toBe(409);
+  });
+
+  it("returns 409 when the LATEST overall review report is not changes_requested", async () => {
+    const { client, start } = makeMockTemporal();
+    // The latest review report is `pass`; the route must NOT walk back
+    // in time and reopen an older changes_requested cycle.
+    const latestPass = makeReviewReportRow({
+      outcome: "pass",
+      findings: [],
+      cycleNumber: 2,
+      createdAt: "2026-04-19T11:00:00.000Z",
+    });
+    const db = makeMockDbForLookup([
+      [{ status: "fixing" }],
+      [latestPass],
+    ]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks/${TASK_ID}/fix`, { method: "POST" });
+    expect(res.status).toBe(409);
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("starts TaskFixWorkflow when task=fixing AND latest report is changes_requested", async () => {
     const { start, client } = makeMockTemporal();
-    const report = makeReviewReportRow();
-    const db = makeMockDbForLookup([[report]]);
+    const report = makeReviewReportRow(); // outcome: "changes_requested"
+    const db = makeMockDbForLookup([[{ status: "fixing" }], [report]]);
     const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
     const res = await app.request(`/tasks/${TASK_ID}/fix`, { method: "POST" });
     expect(res.status).toBe(202);

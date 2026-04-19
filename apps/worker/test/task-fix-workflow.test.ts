@@ -86,7 +86,11 @@ function makeFinding(): ReviewFinding {
   };
 }
 
-function makeStoredReport(): ReviewReport & { cycleNumber: number } {
+function makeStoredReport(): ReviewReport & {
+  cycleNumber: number;
+  reviewedBaseSha: string;
+  reviewedHeadSha: string;
+} {
   return {
     id: "44444444-2222-4333-8444-555555555555",
     taskId: taskFixture.id,
@@ -95,6 +99,8 @@ function makeStoredReport(): ReviewReport & { cycleNumber: number } {
     findings: [makeFinding()],
     createdAt: "2026-04-19T10:00:00.000Z",
     cycleNumber: 1,
+    reviewedBaseSha: "deadbeef",
+    reviewedHeadSha: "cafef00d",
   };
 }
 

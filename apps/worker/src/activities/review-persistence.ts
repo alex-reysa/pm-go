@@ -56,6 +56,8 @@ export function createReviewPersistenceActivities(
           outcome: report.outcome,
           findings: report.findings,
           cycleNumber: report.cycleNumber,
+          reviewedBaseSha: report.reviewedBaseSha,
+          reviewedHeadSha: report.reviewedHeadSha,
           createdAt: report.createdAt,
         })
         .onConflictDoNothing({ target: reviewReports.id });
@@ -145,5 +147,7 @@ function rowToStoredReport(row: ReviewReportsRow): StoredReviewReport {
     findings: row.findings,
     createdAt: row.createdAt,
     cycleNumber: row.cycleNumber,
+    reviewedBaseSha: row.reviewedBaseSha,
+    reviewedHeadSha: row.reviewedHeadSha,
   };
 }

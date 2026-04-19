@@ -4,6 +4,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  text,
   timestamp,
   unique,
   uuid,
@@ -31,6 +32,14 @@ export const reviewReports = pgTable(
     outcome: reviewOutcome("outcome").notNull(),
     findings: jsonb("findings").$type<ReviewFinding[]>().notNull().default([]),
     cycleNumber: integer("cycle_number").notNull(),
+    // Commit range the review audited. `reviewedBaseSha` is the
+    // lease's base (same value for every cycle on the same lease);
+    // `reviewedHeadSha` is the task branch tip at review time, which
+    // moves forward after each fix cycle. Storing both lets a future
+    // reader reconstruct the exact git diff any historical review
+    // operated on, which the in-memory workflow state cannot.
+    reviewedBaseSha: text("reviewed_base_sha").notNull(),
+    reviewedHeadSha: text("reviewed_head_sha").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
       .notNull()
       .defaultNow(),

@@ -40,6 +40,8 @@ function makeStoredReport(overrides: Partial<StoredReviewReport> = {}): StoredRe
     findings: makeFindings(),
     createdAt: "2026-04-19T10:00:00.000Z",
     cycleNumber: 1,
+    reviewedBaseSha: "deadbeef",
+    reviewedHeadSha: "cafef00d",
     ...overrides,
   };
 }
@@ -124,6 +126,8 @@ describe("createReviewPersistenceActivities.persistReviewReport", () => {
         outcome: report.outcome,
         findings: report.findings,
         cycleNumber: report.cycleNumber,
+        reviewedBaseSha: report.reviewedBaseSha,
+        reviewedHeadSha: report.reviewedHeadSha,
         createdAt: report.createdAt,
       }),
     );
@@ -146,6 +150,8 @@ describe("createReviewPersistenceActivities.loadLatestReviewReport", () => {
       outcome: "changes_requested" as const,
       findings: makeFindings(),
       cycleNumber: 1,
+      reviewedBaseSha: "deadbeef",
+      reviewedHeadSha: "cafef00d",
       createdAt: "2026-04-19T10:00:00.000Z",
     };
     const { db } = makeDbMock({ selectResult: [storedRow] });
@@ -159,8 +165,10 @@ describe("createReviewPersistenceActivities.loadLatestReviewReport", () => {
       outcome: storedRow.outcome,
       findings: storedRow.findings,
       cycleNumber: storedRow.cycleNumber,
+      reviewedBaseSha: storedRow.reviewedBaseSha,
+      reviewedHeadSha: storedRow.reviewedHeadSha,
       createdAt: storedRow.createdAt,
-    } satisfies ReviewReport & { cycleNumber: number });
+    } satisfies ReviewReport & { cycleNumber: number; reviewedBaseSha: string; reviewedHeadSha: string });
   });
 });
 

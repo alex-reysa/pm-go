@@ -148,6 +148,17 @@ describe("TaskReviewWorkflow", () => {
       }),
     );
 
+    // Review report row must carry the exact commit range it audited,
+    // so a future reader can reconstruct the git diff after more fix
+    // cycles land on the branch.
+    expect(activityFns.persistReviewReport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cycleNumber: 1,
+        reviewedBaseSha: "deadbeefcafe",
+        reviewedHeadSha: "cafef00dcafef00d",
+      }),
+    );
+
     expect(result.report.outcome).toBe("pass");
     expect(result.taskId).toBe(taskFixture.id);
   });
@@ -192,6 +203,8 @@ describe("TaskReviewWorkflow", () => {
     activityFns.loadLatestReviewReport.mockResolvedValue({
       ...makeReport("changes_requested", [makeFinding("medium")]),
       cycleNumber: 1,
+      reviewedBaseSha: "deadbeef",
+      reviewedHeadSha: "cafef00d",
     });
     activityFns.runReviewer.mockResolvedValue({
       report: makeReport("changes_requested", [makeFinding("medium")]),

@@ -65,12 +65,21 @@ export interface RunImplementerReviewFeedback {
 }
 
 /**
- * A persisted review report enriched with the DB-side `cycleNumber`. The
- * contract `ReviewReport` is cycle-agnostic; `cycleNumber` lives only in
- * the `review_reports` row because cycle-count enforcement is a workflow
- * concern. Persistence + load activities operate on this enriched shape.
+ * A persisted review report enriched with the DB-side fields that are
+ * not on the wire `ReviewReport` contract:
+ * - `cycleNumber` — 1-indexed fix cycle this review evaluated.
+ * - `reviewedBaseSha` / `reviewedHeadSha` — the commit range the
+ *   reviewer actually diff'd. Pinning these on the row is what lets a
+ *   future reader reconstruct the exact audited commit window after
+ *   more fix cycles have appended commits to the same task branch.
+ *
+ * Persistence + load activities operate on this enriched shape.
  */
-export type StoredReviewReport = ReviewReport & { cycleNumber: number };
+export type StoredReviewReport = ReviewReport & {
+  cycleNumber: number;
+  reviewedBaseSha: string;
+  reviewedHeadSha: string;
+};
 
 export interface ReviewActivities {
   runReviewer(input: {

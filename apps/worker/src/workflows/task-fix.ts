@@ -11,7 +11,11 @@ import type {
   WorktreeLease,
 } from "@pm-go/contracts";
 
-type StoredReviewReport = ReviewReport & { cycleNumber: number };
+type StoredReviewReport = ReviewReport & {
+  cycleNumber: number;
+  reviewedBaseSha: string;
+  reviewedHeadSha: string;
+};
 
 interface TaskFixActivityInterface {
   loadTask(input: { taskId: string }): Promise<Task>;

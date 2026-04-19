@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 import type { Client as TemporalClient } from "@temporalio/client";
 
 import type {
@@ -299,31 +299,67 @@ export function createTasksRoute(deps: TasksRouteDeps) {
   });
 
   // POST /tasks/:taskId/fix — start TaskFixWorkflow against the latest
-  // `changes_requested` review report.
+  // review report, BUT only if the task state machine currently says a
+  // fix is allowed. Specifically:
+  //   1. The task row must be `status='fixing'` — that's the only state
+  //      the reviewer's policy evaluator leaves behind when it actually
+  //      authorizes a retry. Any other state (ready_to_merge, blocked,
+  //      in_review, running, failed, …) means either the loop already
+  //      moved on or a fix would violate the state machine.
+  //   2. The latest *overall* review report must itself be
+  //      `outcome='changes_requested'`. Selecting "latest
+  //      changes_requested" without the overall-latest check would let a
+  //      caller reopen a stale cycle-1 report even after cycle 2 had
+  //      passed/blocked, bypassing the cycle cap TaskFixWorkflow assumes
+  //      the API guards.
+  // Both failures surface as 409 Conflict so clients can distinguish
+  // "no review yet" (run /review first) from "not in a fixable state"
+  // (state-machine conflict).
   app.post("/:taskId/fix", async (c) => {
     const taskId = c.req.param("taskId");
     if (!isUuid(taskId)) {
       return c.json({ error: "taskId must be a UUID" }, 400);
     }
 
-    const changesRequestedRows = await deps.db
+    const taskRows = await deps.db
+      .select({ status: planTasks.status })
+      .from(planTasks)
+      .where(eq(planTasks.id, taskId))
+      .limit(1);
+    const taskRow = taskRows[0];
+    if (!taskRow) {
+      return c.json({ error: `task ${taskId} not found` }, 404);
+    }
+    if (taskRow.status !== "fixing") {
+      return c.json(
+        {
+          error: `task ${taskId} is in status='${taskRow.status}'; POST /fix is only permitted when status='fixing'`,
+        },
+        409,
+      );
+    }
+
+    const latestRows = await deps.db
       .select()
       .from(reviewReports)
-      .where(
-        and(
-          eq(reviewReports.taskId, taskId),
-          eq(reviewReports.outcome, "changes_requested"),
-        ),
-      )
+      .where(eq(reviewReports.taskId, taskId))
       .orderBy(desc(reviewReports.createdAt))
       .limit(1);
-    const reportRow = changesRequestedRows[0];
+    const reportRow = latestRows[0];
     if (!reportRow) {
       return c.json(
         {
-          error: `no changes_requested review report for task ${taskId}; run POST /tasks/${taskId}/review first`,
+          error: `no review report for task ${taskId}; run POST /tasks/${taskId}/review first`,
         },
-        404,
+        409,
+      );
+    }
+    if (reportRow.outcome !== "changes_requested") {
+      return c.json(
+        {
+          error: `latest review report for task ${taskId} has outcome='${reportRow.outcome}'; fixes are only allowed against a changes_requested report`,
+        },
+        409,
       );
     }
 

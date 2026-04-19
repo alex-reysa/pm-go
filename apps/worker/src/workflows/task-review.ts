@@ -13,7 +13,11 @@ import type {
 
 import { evaluateReviewPolicy } from "./review-policy.js";
 
-type StoredReviewReport = ReviewReport & { cycleNumber: number };
+type StoredReviewReport = ReviewReport & {
+  cycleNumber: number;
+  reviewedBaseSha: string;
+  reviewedHeadSha: string;
+};
 
 /**
  * Activity surface consumed by TaskReviewWorkflow. The workflow stays
@@ -144,6 +148,8 @@ export async function TaskReviewWorkflow(
     const storedReport: StoredReviewReport = {
       ...reviewerResult.report,
       cycleNumber,
+      reviewedBaseSha: lease.baseSha,
+      reviewedHeadSha: headSha,
     };
     await persistReviewReport(storedReport);
 
