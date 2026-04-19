@@ -158,11 +158,12 @@ export function createStubImplementerRunner(
 
       const agentRun: AgentRun = {
         id: randomUUID(),
+        taskId: input.task.id,
         workflowRunId: "stub-workflow-run",
         role: "implementer",
         depth: 1,
         status: "completed",
-        riskLevel: "low",
+        riskLevel: input.task.riskLevel,
         executor: "claude",
         model: input.model,
         promptVersion: input.promptVersion,

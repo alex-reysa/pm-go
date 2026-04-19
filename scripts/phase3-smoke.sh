@@ -179,9 +179,12 @@ AR_COUNT="$(docker exec "$POSTGRES_CONTAINER" psql -U pmgo -d pm_go -tAc \
   echo "[smoke] expected 1 implementer agent_run, got $AR_COUNT" >&2; exit 1
 }
 
-# 8. Verify the worktree path exists on disk.
+# 8. Verify the worktree path exists on disk. Trim only trailing newline
+# via awk — the path itself may contain spaces (e.g. "999. PROJECTS/..."),
+# so `tr -d '[:space:]'` would silently corrupt it.
 LEASE_PATH="$(docker exec "$POSTGRES_CONTAINER" psql -U pmgo -d pm_go -tAc \
-  "SELECT worktree_path FROM worktree_leases WHERE task_id='$TASK_ID'" | tr -d '[:space:]')"
+  "SELECT worktree_path FROM worktree_leases WHERE task_id='$TASK_ID'" \
+  | awk 'NF { print; exit }')"
 [[ -d "$LEASE_PATH" ]] || {
   echo "[smoke] worktree path missing: $LEASE_PATH" >&2; exit 1
 }
