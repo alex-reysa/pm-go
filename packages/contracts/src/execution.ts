@@ -19,6 +19,15 @@ export type AgentRunStatus =
 
 export type WorktreeLeaseStatus = "active" | "expired" | "released" | "revoked";
 
+/**
+ * Lease kind. `"task"` leases host a single implementer's worktree and
+ * are tied to a `plan_tasks` row. `"integration"` leases (Phase 5) host
+ * a phase's integration worktree and are tied to a `phases` row. The
+ * durable check constraint in `worktree_leases` enforces the correlation
+ * between `kind`, `task_id`, and `phase_id`.
+ */
+export type WorktreeLeaseKind = "task" | "integration";
+
 export interface SpecDocument {
   id: UUID;
   title: string;
@@ -86,7 +95,21 @@ export interface AgentRun {
 
 export interface WorktreeLease {
   id: UUID;
-  taskId: UUID;
+  /**
+   * Populated for `kind='task'` (the Phase 3 default). Undefined for
+   * integration leases, which bind via `phaseId` instead.
+   */
+  taskId?: UUID;
+  /**
+   * Populated for `kind='integration'` (added in Phase 5). Undefined for
+   * task leases.
+   */
+  phaseId?: UUID;
+  /**
+   * Lease kind. Optional for backward compatibility with Phase 3 code
+   * paths that predate the distinction; absent implies `"task"`.
+   */
+  kind?: WorktreeLeaseKind;
   repoRoot: string;
   branchName: string;
   worktreePath: string;

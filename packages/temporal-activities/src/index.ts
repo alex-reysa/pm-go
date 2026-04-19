@@ -1,21 +1,22 @@
 import type {
   AgentRun,
   Artifact,
+  CompletionAuditReport,
   FileScope,
   MergeRun,
+  Phase,
+  PhaseAuditReport,
   Plan,
   PlanAuditWorkflowResult,
   PolicyDecision,
   RepoSnapshot,
-  CompletionAuditReport,
-  PhaseAuditReport,
   ReviewFinding,
   ReviewReport,
   SpecDocument,
   Task,
   TaskStatus,
   UUID,
-  WorktreeLease
+  WorktreeLease,
 } from "@pm-go/contracts";
 
 export interface SpecIntakeActivities {
@@ -101,21 +102,188 @@ export interface ReviewActivities {
   persistPolicyDecision(decision: PolicyDecision): Promise<UUID>;
 }
 
+/**
+ * A persisted MergeRun enriched with Phase 5's DB-only linkage:
+ * - `postMergeSnapshotId` — FK to the `repo_snapshots` row captured
+ *   immediately after the integration merge succeeded. Null while the
+ *   run is in flight. Non-null on success. This is the durable hook
+ *   PhasePartitionWorkflow reads to see the post-merge repo state for
+ *   phase N+1.
+ * - `integrationLeaseId` — FK to the `worktree_leases` row hosting the
+ *   integration worktree. May be null after the lease is released; the
+ *   merge_runs row survives lease cleanup.
+ */
+export type StoredMergeRun = MergeRun & {
+  postMergeSnapshotId?: UUID;
+  integrationLeaseId?: UUID;
+};
+
+/**
+ * A persisted PhaseAuditReport row. The contract `PhaseAuditReport`
+ * already carries every field; this alias exists as a symmetric type
+ * for consistency with StoredReviewReport / StoredMergeRun.
+ */
+export type StoredPhaseAuditReport = PhaseAuditReport;
+
+/**
+ * A persisted CompletionAuditReport row. Alias for consistency.
+ */
+export type StoredCompletionAuditReport = CompletionAuditReport;
+
+/**
+ * Phase 5 integration activities — git + lease + persistence operations
+ * executed by `PhaseIntegrationWorkflow`. The merge path ALWAYS happens
+ * inside an isolated integration worktree (kind='integration'); no
+ * operation checks out a branch in `repoRoot` itself. `main` advancement
+ * happens in `PhaseAuditWorkflow` on a pass outcome, not here.
+ */
 export interface IntegrationActivities {
-  mergePhase(phaseId: UUID): Promise<MergeRun>;
-  runTargetedValidation(taskId: UUID): Promise<boolean>;
-  runPhaseIntegrationValidation(phaseId: UUID): Promise<boolean>;
+  loadPhase(input: { phaseId: UUID }): Promise<Phase>;
+  runPhasePartitionChecks(input: { phaseId: UUID }): Promise<{
+    ok: boolean;
+    reasons: string[];
+  }>;
+  createIntegrationLease(input: { phaseId: UUID }): Promise<WorktreeLease>;
+  integrateTask(input: {
+    integrationLease: WorktreeLease;
+    taskId: UUID;
+  }): Promise<
+    | { status: "merged"; mergedHeadSha: string }
+    | { status: "conflict"; conflictedPaths: string[] }
+    | { status: "other_error"; message: string }
+  >;
+  validatePostMergeState(input: {
+    integrationWorktreePath: string;
+    testCommands: string[];
+  }): Promise<{ passed: boolean; logs: string[] }>;
+  /**
+   * Capture a post-merge snapshot and stamp it on the `merge_runs` row
+   * in a single DB transaction. If `nextPhaseId` is provided, also
+   * updates that phase's `base_snapshot_id` transactionally so the
+   * post-merge RepoSnapshot only propagates once the prior phase's
+   * integration completed. `nextPhaseId` is typically undefined here
+   * and set by `PhaseAuditWorkflow` on pass — keeping the hook on this
+   * activity for workflow flexibility.
+   */
+  capturePostMergeSnapshotAndStamp(input: {
+    integrationWorktreePath: string;
+    mergeRunId: UUID;
+    nextPhaseId?: UUID;
+  }): Promise<{ snapshotId: UUID }>;
+  persistMergeRun(run: StoredMergeRun): Promise<UUID>;
+  loadMergeRun(id: UUID): Promise<StoredMergeRun | null>;
+  loadLatestMergeRunForPhase(phaseId: UUID): Promise<StoredMergeRun | null>;
+  /**
+   * Advance `refs/heads/main` via `git update-ref refs/heads/main <new>
+   * <expected-old>`. Atomic, no checkout, refuses on expected-old
+   * mismatch OR non-descendant update. Called ONLY from
+   * `PhaseAuditWorkflow` on pass.
+   */
+  fastForwardMainViaUpdateRef(input: {
+    newSha: string;
+    expectedCurrentSha: string;
+  }): Promise<{ headSha: string }>;
+  markTaskMerged(input: { taskId: UUID }): Promise<void>;
+  updatePhaseStatus(input: {
+    phaseId: UUID;
+    status:
+      | "pending"
+      | "planning"
+      | "executing"
+      | "integrating"
+      | "auditing"
+      | "completed"
+      | "blocked"
+      | "failed";
+  }): Promise<void>;
+  releaseIntegrationLease(input: { leaseId: UUID }): Promise<void>;
+  stampPhaseAuditReportId(input: {
+    phaseId: UUID;
+    reportId: UUID;
+  }): Promise<void>;
+  stampPhaseBaseSnapshotId(input: {
+    phaseId: UUID;
+    snapshotId: UUID;
+  }): Promise<void>;
 }
 
 export interface PhaseAuditActivities {
-  runPhaseAudit(planId: UUID, phaseId: UUID, mergeRunId: UUID): Promise<UUID>;
-  persistPhaseAuditReport(report: PhaseAuditReport): Promise<UUID>;
+  runPhaseAuditor(input: {
+    plan: Plan;
+    phase: Phase;
+    mergeRun: StoredMergeRun;
+    workflowRunId?: string;
+    parentSessionId?: string;
+  }): Promise<{ report: PhaseAuditReport; agentRun: AgentRun }>;
+  buildPhaseAuditEvidence(input: {
+    planId: UUID;
+    phaseId: UUID;
+    mergeRunId: UUID;
+  }): Promise<{
+    tasks: Task[];
+    reviewReports: ReviewReport[];
+    policyDecisions: PolicyDecision[];
+    diffSummary: string;
+  }>;
+  persistPhaseAuditReport(
+    report: StoredPhaseAuditReport,
+  ): Promise<UUID>;
+  loadLatestPhaseAuditForPhase(
+    phaseId: UUID,
+  ): Promise<StoredPhaseAuditReport | null>;
+  loadPhaseAuditReport(id: UUID): Promise<StoredPhaseAuditReport | null>;
 }
 
 export interface CompletionAuditActivities {
-  collectCompletionEvidence(planId: UUID, finalMergeRunId: UUID): Promise<UUID>;
-  runCompletionAudit(planId: UUID, finalMergeRunId: UUID): Promise<UUID>;
-  persistCompletionAuditReport(report: CompletionAuditReport): Promise<UUID>;
+  runCompletionAuditor(input: {
+    plan: Plan;
+    finalPhase: Phase;
+    finalMergeRun: StoredMergeRun;
+    workflowRunId?: string;
+    parentSessionId?: string;
+  }): Promise<{ report: CompletionAuditReport; agentRun: AgentRun }>;
+  buildCompletionAuditEvidence(input: {
+    planId: UUID;
+    finalPhaseId: UUID;
+    mergeRunId: UUID;
+  }): Promise<{
+    phases: Phase[];
+    phaseAuditReports: PhaseAuditReport[];
+    mergeRuns: MergeRun[];
+    reviewReports: ReviewReport[];
+    policyDecisions: PolicyDecision[];
+    diffSummary: string;
+  }>;
+  persistCompletionAuditReport(
+    report: StoredCompletionAuditReport,
+  ): Promise<UUID>;
+  loadCompletionAuditReport(
+    id: UUID,
+  ): Promise<StoredCompletionAuditReport | null>;
+  /**
+   * Update `plans.completion_audit_report_id` + `plans.status`
+   * transactionally on a completion audit verdict.
+   */
+  stampPlanCompletionAudit(input: {
+    planId: UUID;
+    reportId: UUID;
+    planStatus:
+      | "draft"
+      | "auditing"
+      | "approved"
+      | "blocked"
+      | "executing"
+      | "completed"
+      | "failed";
+  }): Promise<void>;
+  renderAndPersistPrSummary(input: {
+    planId: UUID;
+    completionAuditReportId: UUID;
+  }): Promise<{ artifactId: UUID; uri: string }>;
+  persistCompletionEvidenceBundle(input: {
+    planId: UUID;
+    completionAuditReportId: UUID;
+  }): Promise<{ artifactId: UUID; uri: string }>;
 }
 
 export interface WorktreeActivities {

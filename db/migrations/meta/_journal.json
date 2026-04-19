@@ -43,6 +43,13 @@
       "when": 1776616574569,
       "tag": "0005_hot_blizzard",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1776626950059,
+      "tag": "0006_dusty_beyonder",
+      "breakpoints": true
     }
   ]
 }

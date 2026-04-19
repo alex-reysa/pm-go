@@ -1,7 +1,12 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-export type PromptName = "planner" | "implementer" | "reviewer";
+export type PromptName =
+  | "planner"
+  | "implementer"
+  | "reviewer"
+  | "phase-auditor"
+  | "completion-auditor";
 
 /**
  * Canonical prompt-version registry. Every .md file under
@@ -12,6 +17,8 @@ export const PROMPT_VERSIONS: Record<PromptName, number> = {
   planner: 1,
   implementer: 1,
   reviewer: 1,
+  "phase-auditor": 1,
+  "completion-auditor": 1,
 };
 
 /**

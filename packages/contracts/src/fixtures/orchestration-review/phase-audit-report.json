@@ -1,0 +1,40 @@
+{
+  "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "phaseId": "22222222-3333-4444-8555-666666666666",
+  "planId": "6d1f4c3a-5f2b-4e27-9d8c-9a7f1b2c3d4e",
+  "mergeRunId": "7a6b5c4d-3e2f-4a1b-8c0d-9e8f7a6b5c4d",
+  "auditorRunId": "11112222-3333-4444-8555-666677778888",
+  "mergedHeadSha": "5f02c30a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e",
+  "outcome": "pass",
+  "checklist": [
+    {
+      "id": "check-phase-tasks-merged",
+      "title": "Every required phase task is merged, waived, or blocked with reason",
+      "status": "passed",
+      "evidenceArtifactIds": ["33334444-5555-4666-8777-888899990000"],
+      "relatedTaskIds": ["cccccccc-dddd-4eee-8fff-000000000000"]
+    },
+    {
+      "id": "check-phase-acceptance-criteria",
+      "title": "Phase-scope acceptance criteria satisfied",
+      "status": "passed",
+      "evidenceArtifactIds": ["44445555-6666-4777-8888-999900001111"],
+      "notes": "pnpm --filter @pm-go/contracts test exited zero on the merged head."
+    },
+    {
+      "id": "check-phase-findings-resolved",
+      "title": "No blocking findings remain open within the phase",
+      "status": "passed",
+      "evidenceArtifactIds": []
+    },
+    {
+      "id": "check-phase-merge-run-cited",
+      "title": "Report cites the exact MergeRun that produced the audited head",
+      "status": "passed",
+      "evidenceArtifactIds": ["55556666-7777-4888-8999-000011112222"]
+    }
+  ],
+  "findings": [],
+  "summary": "Phase foundation-lane merged cleanly; two tasks integrated; targeted validation passed on the merged integration branch head.",
+  "createdAt": "2026-04-18T11:30:00.000Z"
+}

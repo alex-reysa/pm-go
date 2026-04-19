@@ -1,0 +1,13 @@
+{
+  "id": "7a6b5c4d-3e2f-4a1b-8c0d-9e8f7a6b5c4d",
+  "planId": "6d1f4c3a-5f2b-4e27-9d8c-9a7f1b2c3d4e",
+  "phaseId": "22222222-3333-4444-8555-666666666666",
+  "integrationBranch": "integration/6d1f4c3a-5f2b-4e27-9d8c-9a7f1b2c3d4e/phase-0",
+  "mergedTaskIds": [
+    "cccccccc-dddd-4eee-8fff-000000000000",
+    "cccccccc-dddd-4eee-8fff-111111111111"
+  ],
+  "integrationHeadSha": "5f02c30a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e",
+  "startedAt": "2026-04-18T11:15:00.000Z",
+  "completedAt": "2026-04-18T11:28:00.000Z"
+}

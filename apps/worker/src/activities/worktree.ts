@@ -58,7 +58,9 @@ export function createWorktreeActivities(deps: WorktreeActivityDeps) {
       if (existing) {
         return {
           id: existing.id,
-          taskId: existing.taskId,
+          ...(existing.taskId !== null ? { taskId: existing.taskId } : {}),
+          ...(existing.phaseId !== null ? { phaseId: existing.phaseId } : {}),
+          kind: existing.kind,
           repoRoot: existing.repoRoot,
           branchName: existing.branchName,
           worktreePath: existing.worktreePath,
@@ -173,7 +175,9 @@ export function createWorktreeActivities(deps: WorktreeActivityDeps) {
       if (!row) return null;
       return {
         id: row.id,
-        taskId: row.taskId,
+        ...(row.taskId !== null ? { taskId: row.taskId } : {}),
+        ...(row.phaseId !== null ? { phaseId: row.phaseId } : {}),
+        kind: row.kind,
         repoRoot: row.repoRoot,
         branchName: row.branchName,
         worktreePath: row.worktreePath,

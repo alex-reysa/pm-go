@@ -255,3 +255,27 @@ export {
   type StubReviewerSequenceEntry,
   type ClaudeReviewerRunnerConfig,
 } from "./reviewer-runner.js";
+
+export {
+  createStubPhaseAuditorRunner,
+  createClaudePhaseAuditorRunner,
+  type CreateStubPhaseAuditorRunnerOptions,
+  type PhaseAuditEvidence,
+  type PhaseAuditorRunner,
+  type PhaseAuditorRunnerInput,
+  type PhaseAuditorRunnerResult,
+  type StubPhaseAuditorSequenceEntry,
+  type ClaudePhaseAuditorRunnerConfig,
+} from "./phase-auditor-runner.js";
+
+export {
+  createStubCompletionAuditorRunner,
+  createClaudeCompletionAuditorRunner,
+  type CreateStubCompletionAuditorRunnerOptions,
+  type CompletionAuditEvidence,
+  type CompletionAuditorRunner,
+  type CompletionAuditorRunnerInput,
+  type CompletionAuditorRunnerResult,
+  type StubCompletionAuditorSequenceEntry,
+  type ClaudeCompletionAuditorRunnerConfig,
+} from "./completion-auditor-runner.js";

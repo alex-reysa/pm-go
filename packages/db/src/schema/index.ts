@@ -9,3 +9,6 @@ export * from "./artifacts.js";
 export * from "./worktree-leases.js";
 export * from "./review-reports.js";
 export * from "./policy-decisions.js";
+export * from "./merge-runs.js";
+export * from "./phase-audit-reports.js";
+export * from "./completion-audit-reports.js";

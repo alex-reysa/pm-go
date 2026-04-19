@@ -225,7 +225,9 @@ export function createTasksRoute(deps: TasksRouteDeps) {
     const latestLease: WorktreeLease | null = leaseRow
       ? {
           id: leaseRow.id,
-          taskId: leaseRow.taskId,
+          ...(leaseRow.taskId !== null ? { taskId: leaseRow.taskId } : {}),
+          ...(leaseRow.phaseId !== null ? { phaseId: leaseRow.phaseId } : {}),
+          kind: leaseRow.kind,
           repoRoot: leaseRow.repoRoot,
           branchName: leaseRow.branchName,
           worktreePath: leaseRow.worktreePath,
