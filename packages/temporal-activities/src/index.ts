@@ -13,11 +13,16 @@ import type {
   ReviewFinding,
   ReviewReport,
   SpecDocument,
+  StoredReviewReport,
   Task,
   TaskStatus,
   UUID,
   WorktreeLease,
 } from "@pm-go/contracts";
+
+// Re-export for back-compat with Phase 4 call sites that imported
+// StoredReviewReport from this package.
+export type { StoredReviewReport };
 
 export interface SpecIntakeActivities {
   persistSpecDocument(input: SpecDocument): Promise<UUID>;
@@ -64,23 +69,6 @@ export interface RunImplementerReviewFeedback {
   maxCycles: number;
   findings: ReviewFinding[];
 }
-
-/**
- * A persisted review report enriched with the DB-side fields that are
- * not on the wire `ReviewReport` contract:
- * - `cycleNumber` — 1-indexed fix cycle this review evaluated.
- * - `reviewedBaseSha` / `reviewedHeadSha` — the commit range the
- *   reviewer actually diff'd. Pinning these on the row is what lets a
- *   future reader reconstruct the exact audited commit window after
- *   more fix cycles have appended commits to the same task branch.
- *
- * Persistence + load activities operate on this enriched shape.
- */
-export type StoredReviewReport = ReviewReport & {
-  cycleNumber: number;
-  reviewedBaseSha: string;
-  reviewedHeadSha: string;
-};
 
 export interface ReviewActivities {
   runReviewer(input: {
@@ -221,7 +209,10 @@ export interface PhaseAuditActivities {
     mergeRunId: UUID;
   }): Promise<{
     tasks: Task[];
-    reviewReports: ReviewReport[];
+    // Pass the full persisted shape — `reviewedBaseSha` / `reviewedHeadSha`
+    // carry the audit-relevant commit provenance. Bare `ReviewReport[]`
+    // would drop that at the boundary.
+    reviewReports: StoredReviewReport[];
     policyDecisions: PolicyDecision[];
     diffSummary: string;
   }>;
@@ -250,7 +241,7 @@ export interface CompletionAuditActivities {
     phases: Phase[];
     phaseAuditReports: PhaseAuditReport[];
     mergeRuns: MergeRun[];
-    reviewReports: ReviewReport[];
+    reviewReports: StoredReviewReport[];
     policyDecisions: PolicyDecision[];
     diffSummary: string;
   }>;

@@ -12,7 +12,7 @@ import type {
   Plan,
   PolicyDecision,
   ReviewFinding,
-  ReviewReport,
+  StoredReviewReport,
 } from "@pm-go/contracts";
 
 /**
@@ -26,8 +26,13 @@ export interface CompletionAuditEvidence {
   phaseAuditReports: PhaseAuditReport[];
   /** Every MergeRun across all phases. */
   mergeRuns: MergeRun[];
-  /** Every ReviewReport across all tasks in the plan. */
-  reviewReports: ReviewReport[];
+  /**
+   * Every persisted review report across all tasks in the plan. Uses
+   * the stored shape so `reviewedBaseSha` / `reviewedHeadSha` reach
+   * the completion auditor — same provenance concern as
+   * `PhaseAuditEvidence.reviewReports`.
+   */
+  reviewReports: StoredReviewReport[];
   /** Every PolicyDecision scoped to the plan. */
   policyDecisions: PolicyDecision[];
   /** Plan-level diff summary: `git diff <plan.base_sha>..<final_merge_run.integration_head_sha> --stat --name-only`. */

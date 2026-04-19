@@ -26,6 +26,28 @@ export interface ReviewReport {
   createdAt: string;
 }
 
+/**
+ * Persisted ReviewReport shape — the wire `ReviewReport` plus the
+ * host-stamped commit range and cycle number. These three fields live
+ * on the `review_reports` table columns (reviewed_base_sha,
+ * reviewed_head_sha, cycle_number) so a later reader can reconstruct
+ * the exact audited commit window after more fix cycles land on the
+ * same task branch. Phase auditors and completion auditors consume
+ * this enriched shape in their evidence bundles — passing bare
+ * `ReviewReport[]` through the audit boundary would drop the commit
+ * provenance that Phase 4 hardening deliberately added.
+ *
+ * This is the canonical "durable review report" type used everywhere
+ * outside the wire protocol between reviewer agent and host. The
+ * `@pm-go/temporal-activities` package re-exports it under the same
+ * name for back-compat with Phase 4 call sites.
+ */
+export type StoredReviewReport = ReviewReport & {
+  cycleNumber: number;
+  reviewedBaseSha: string;
+  reviewedHeadSha: string;
+};
+
 export interface CompletionChecklistItem {
   id: string;
   title: string;

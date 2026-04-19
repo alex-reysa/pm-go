@@ -10,7 +10,7 @@ import type {
   Plan,
   PolicyDecision,
   ReviewFinding,
-  ReviewReport,
+  StoredReviewReport,
   Task,
 } from "@pm-go/contracts";
 
@@ -22,8 +22,13 @@ import type {
 export interface PhaseAuditEvidence {
   /** Every task in the phase being audited, by id. */
   tasks: Task[];
-  /** Every ReviewReport for the phase's tasks. */
-  reviewReports: ReviewReport[];
+  /**
+   * Every persisted review report for the phase's tasks. Uses the
+   * stored shape so `reviewedBaseSha` / `reviewedHeadSha` (added in
+   * Phase 4 hardening) reach the auditor — otherwise the commit
+   * provenance that justifies the audit verdict is dropped.
+   */
+  reviewReports: StoredReviewReport[];
   /** Every PolicyDecision scoped to a task or review in the phase. */
   policyDecisions: PolicyDecision[];
   /** `git diff <mergeRun.integration_head_sha>~<n> HEAD --stat --name-only` inside the integration worktree. */
