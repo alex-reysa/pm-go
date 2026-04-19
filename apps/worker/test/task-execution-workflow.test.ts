@@ -170,7 +170,7 @@ describe("TaskExecutionWorkflow", () => {
     expect(result.agentRunId).toBe(agentRun.id);
   });
 
-  it("propagates implementer failures without advancing to diff-scope", async () => {
+  it("stamps the task `failed` and re-throws when the implementer crashes", async () => {
     activityFns.loadTask.mockResolvedValue(taskFixture);
     activityFns.updateTaskStatus.mockResolvedValue(undefined);
     activityFns.leaseWorktree.mockResolvedValue(makeLease());
@@ -182,16 +182,67 @@ describe("TaskExecutionWorkflow", () => {
       "implementer crashed",
     );
 
-    // After the failure, neither persistAgentRun nor diff-scope run, and
-    // no terminal status transition happens.
+    // After the failure: no downstream activities run.
     expect(activityFns.persistAgentRun).not.toHaveBeenCalled();
     expect(activityFns.commitAgentWork).not.toHaveBeenCalled();
     expect(activityFns.diffWorktreeAgainstScope).not.toHaveBeenCalled();
-    // Only the first "running" transition has been emitted at this point.
-    expect(activityFns.updateTaskStatus).toHaveBeenCalledTimes(1);
-    expect(activityFns.updateTaskStatus).toHaveBeenCalledWith({
+    // Terminal status IS emitted: `running` first, then `failed` in the
+    // catch branch. Without this the source of truth would be stuck at
+    // `running` forever even though the workflow died.
+    expect(activityFns.updateTaskStatus).toHaveBeenCalledTimes(2);
+    expect(activityFns.updateTaskStatus).toHaveBeenNthCalledWith(1, {
       taskId: taskFixture.id,
       status: "running",
     });
+    expect(activityFns.updateTaskStatus).toHaveBeenNthCalledWith(2, {
+      taskId: taskFixture.id,
+      status: "failed",
+    });
+  });
+
+  it("still throws the original error when the failure-status update itself fails", async () => {
+    activityFns.loadTask.mockResolvedValue(taskFixture);
+    // First call (running) succeeds; second call (failed) throws.
+    activityFns.updateTaskStatus
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("DB down"));
+    activityFns.leaseWorktree.mockRejectedValue(
+      new Error("lease acquisition failed"),
+    );
+
+    // The ORIGINAL error must surface, not the secondary DB-down error.
+    await expect(TaskExecutionWorkflow(BASE_INPUT)).rejects.toThrow(
+      "lease acquisition failed",
+    );
+    // Both status-update calls were attempted.
+    expect(activityFns.updateTaskStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("stamps `failed` when diff-scope itself throws", async () => {
+    const lease = makeLease();
+    const agentRun = makeAgentRun();
+    activityFns.loadTask.mockResolvedValue(taskFixture);
+    activityFns.updateTaskStatus.mockResolvedValue(undefined);
+    activityFns.leaseWorktree.mockResolvedValue(lease);
+    activityFns.runImplementer.mockResolvedValue({
+      agentRun,
+      finalCommitSha: "abc1234567890",
+    });
+    activityFns.persistAgentRun.mockResolvedValue(agentRun.id);
+    activityFns.diffWorktreeAgainstScope.mockRejectedValue(
+      new Error("diff-scope crashed"),
+    );
+
+    await expect(TaskExecutionWorkflow(BASE_INPUT)).rejects.toThrow(
+      "diff-scope crashed",
+    );
+
+    // Failure mid-pipeline still flips the task to `failed`, not stuck
+    // in `running` (and not stamped `ready_for_review`/`blocked`).
+    const calls = activityFns.updateTaskStatus.mock.calls.map((c) => c[0]);
+    expect(calls).toEqual([
+      { taskId: taskFixture.id, status: "running" },
+      { taskId: taskFixture.id, status: "failed" },
+    ]);
   });
 });

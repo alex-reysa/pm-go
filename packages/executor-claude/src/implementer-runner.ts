@@ -384,8 +384,25 @@ const FORBIDDEN_BASH_PATTERNS: Array<{ name: string; re: RegExp }> = [
   { name: "yarn add", re: /\byarn\s+add\b/ },
   { name: "kill", re: /\bkill\b/ },
   { name: "pkill", re: /\bpkill\b/ },
-  { name: "redirect to /dev/", re: />\s*\/dev\// },
-  { name: "redirect to /etc/", re: />\s*\/etc\// },
+  // Shell-level file writes that bypass the Write/Edit tool boundary.
+  // Writes to `/dev/null` and the other standard device descriptors are
+  // allowed; FD redirects (`>&1`, `>&2`, `2>&1`) are allowed. Anything
+  // else is a path-level write and must go through Write/Edit so
+  // `fileScope.includes`/`excludes` can be enforced.
+  {
+    name: "redirect to file",
+    re: />{1,2}\s*(?!&|\/dev\/(?:null|stdin|stdout|stderr)\b)\S/,
+  },
+  // `sed -i` edits files in place; `tee` writes to its path args; inline
+  // code-exec flags (`-e`/`-c`) in scripting runtimes trivially bypass
+  // the allowed-tool set by invoking Node/Python/Perl/Ruby write APIs.
+  { name: "sed -i", re: /\bsed\s+[^|;&]*-i\b/ },
+  { name: "tee", re: /\btee\b/ },
+  { name: "node -e", re: /\bnode\s+-e\b/ },
+  { name: "python -c", re: /\bpython3?\s+-c\b/ },
+  { name: "perl -e/-i", re: /\bperl\s+-[ei]\b/ },
+  { name: "ruby -e", re: /\bruby\s+-e\b/ },
+  { name: "awk -i", re: /\bawk\s+-i\b/ },
 ];
 
 function findForbiddenBashPattern(command: string): string | undefined {

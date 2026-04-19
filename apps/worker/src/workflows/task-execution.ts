@@ -100,70 +100,85 @@ export async function TaskExecutionWorkflow(
 
   await updateTaskStatus({ taskId: input.taskId, status: "running" });
 
-  const lease = await leaseWorktree({
-    task,
-    repoRoot: input.repoRoot,
-    worktreeRoot: input.worktreeRoot,
-    maxLifetimeHours: input.maxLifetimeHours,
-  });
-
-  const implementerResult = await runImplementer({
-    task,
-    worktreePath: lease.worktreePath,
-    baseSha: lease.baseSha,
-  });
-
-  await persistAgentRun(implementerResult.agentRun);
-
-  // The runner returns `finalCommitSha` only when the implementer
-  // committed itself (stub path) or the live runner observed a HEAD
-  // change. When absent, stage+commit any pending worktree changes on
-  // the task's behalf so diff-scope sees a non-empty diff.
-  if (implementerResult.finalCommitSha === undefined) {
-    const commitTitle = `feat(${task.slug}): ${task.title}`;
-    await commitAgentWork({
-      worktreePath: lease.worktreePath,
-      taskSlug: task.slug,
-      commitTitle,
+  try {
+    const lease = await leaseWorktree({
+      task,
+      repoRoot: input.repoRoot,
+      worktreeRoot: input.worktreeRoot,
+      maxLifetimeHours: input.maxLifetimeHours,
     });
-  }
 
-  const diffResult = await diffWorktreeAgainstScope({
-    worktreePath: lease.worktreePath,
-    baseSha: lease.baseSha,
-    fileScope: task.fileScope,
-  });
+    const implementerResult = await runImplementer({
+      task,
+      worktreePath: lease.worktreePath,
+      baseSha: lease.baseSha,
+    });
 
-  if (diffResult.violations.length > 0) {
+    await persistAgentRun(implementerResult.agentRun);
+
+    // The runner returns `finalCommitSha` only when the implementer
+    // committed itself (stub path) or the live runner observed a HEAD
+    // change. When absent, stage+commit any pending worktree changes on
+    // the task's behalf so diff-scope sees a non-empty diff.
+    if (implementerResult.finalCommitSha === undefined) {
+      const commitTitle = `feat(${task.slug}): ${task.title}`;
+      await commitAgentWork({
+        worktreePath: lease.worktreePath,
+        taskSlug: task.slug,
+        commitTitle,
+      });
+    }
+
+    const diffResult = await diffWorktreeAgainstScope({
+      worktreePath: lease.worktreePath,
+      baseSha: lease.baseSha,
+      fileScope: task.fileScope,
+    });
+
+    if (diffResult.violations.length > 0) {
+      await updateTaskStatus({
+        taskId: input.taskId,
+        status: "blocked",
+      });
+      return {
+        taskId: input.taskId,
+        status: "blocked",
+        leaseId: lease.id,
+        branchName: lease.branchName,
+        worktreePath: lease.worktreePath,
+        agentRunId: implementerResult.agentRun.id,
+        changedFiles: diffResult.changedFiles,
+        fileScopeViolations: diffResult.violations,
+      };
+    }
+
     await updateTaskStatus({
       taskId: input.taskId,
-      status: "blocked",
+      status: "ready_for_review",
     });
+
     return {
       taskId: input.taskId,
-      status: "blocked",
+      status: "ready_for_review",
       leaseId: lease.id,
       branchName: lease.branchName,
       worktreePath: lease.worktreePath,
       agentRunId: implementerResult.agentRun.id,
       changedFiles: diffResult.changedFiles,
-      fileScopeViolations: diffResult.violations,
+      fileScopeViolations: [],
     };
+  } catch (err) {
+    // Any activity that fails after we've already transitioned the task
+    // to `running` leaves the durable state in an in-flight status. Mark
+    // the task `failed` so downstream consumers (reviewers, human
+    // operators) see a terminal outcome rather than a permanently-stale
+    // `running`. The status update itself is wrapped in a catch so a
+    // failure persisting the transition does not mask the original
+    // error — Temporal will still record the workflow as failed.
+    await updateTaskStatus({
+      taskId: input.taskId,
+      status: "failed",
+    }).catch(() => undefined);
+    throw err;
   }
-
-  await updateTaskStatus({
-    taskId: input.taskId,
-    status: "ready_for_review",
-  });
-
-  return {
-    taskId: input.taskId,
-    status: "ready_for_review",
-    leaseId: lease.id,
-    branchName: lease.branchName,
-    worktreePath: lease.worktreePath,
-    agentRunId: implementerResult.agentRun.id,
-    changedFiles: diffResult.changedFiles,
-    fileScopeViolations: [],
-  };
 }

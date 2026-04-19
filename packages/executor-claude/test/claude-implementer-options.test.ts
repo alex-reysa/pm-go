@@ -135,6 +135,60 @@ describe("createClaudeImplementerRunner — SDK query options", () => {
     expect(allowedTest.behavior).toBe("allow");
   });
 
+  it("canUseTool denies Bash write idioms that bypass the Write/Edit tool boundary", async () => {
+    const runner = createClaudeImplementerRunner({ apiKey: "test-key" });
+    await runner.run(buildInput());
+    const canUseTool = queryMock.mock.calls[0]![0].options.canUseTool as (
+      tool: string,
+      toolInput: unknown,
+    ) => Promise<{ behavior: string; message?: string }>;
+
+    const cases: Array<{ command: string; label: string }> = [
+      { command: "echo 'x' > /etc/passwd", label: "redirect to /etc" },
+      { command: "echo 'x' > /tmp/evil.sh", label: "redirect outside scope" },
+      { command: "echo 'x' >> /tmp/evil.sh", label: "append redirect" },
+      { command: "sed -i 's/foo/bar/' src/a.ts", label: "sed -i in-place" },
+      { command: "node -e \"require('fs').writeFileSync('x','y')\"", label: "node -e" },
+      { command: "python -c \"open('x','w').write('y')\"", label: "python -c" },
+      { command: "python3 -c 'print(1)'", label: "python3 -c" },
+      { command: "perl -i -pe 's/a/b/' x.txt", label: "perl -i" },
+      { command: "perl -e 'print 1'", label: "perl -e" },
+      { command: "ruby -e 'puts 1'", label: "ruby -e" },
+      { command: "awk -i inplace '{print}' a.txt", label: "awk -i" },
+      { command: "echo foo | tee out.txt", label: "tee" },
+    ];
+
+    for (const { command, label } of cases) {
+      const result = await canUseTool("Bash", { command });
+      expect(result.behavior, `expected deny for: ${label} (${command})`).toBe(
+        "deny",
+      );
+    }
+  });
+
+  it("canUseTool permits Bash redirects to /dev/null and FD redirects", async () => {
+    const runner = createClaudeImplementerRunner({ apiKey: "test-key" });
+    await runner.run(buildInput());
+    const canUseTool = queryMock.mock.calls[0]![0].options.canUseTool as (
+      tool: string,
+      toolInput: unknown,
+    ) => Promise<{ behavior: string; message?: string }>;
+
+    // /dev/null (and the other standard device descriptors) is a
+    // recognised "discard" target and must stay allowed so the implementer
+    // can silence test output. FD redirects like `2>&1` are not file
+    // writes and must also stay allowed.
+    const devNull = await canUseTool("Bash", {
+      command: "pnpm test > /dev/null 2>&1",
+    });
+    expect(devNull.behavior).toBe("allow");
+
+    const fdRedirect = await canUseTool("Bash", {
+      command: "pnpm test 2>&1",
+    });
+    expect(fdRedirect.behavior).toBe("allow");
+  });
+
   it("canUseTool denies Write into .git/ inside the worktree", async () => {
     const runner = createClaudeImplementerRunner({ apiKey: "test-key" });
     const input = buildInput();
