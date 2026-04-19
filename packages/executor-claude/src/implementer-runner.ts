@@ -1,0 +1,486 @@
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { promisify } from "node:util";
+
+import { query } from "@anthropic-ai/claude-agent-sdk";
+
+import type { AgentRun, AgentStopReason, Task } from "@pm-go/contracts";
+
+import type {
+  ImplementerRunner,
+  ImplementerRunnerInput,
+  ImplementerRunnerResult,
+} from "./index.js";
+import { isInsideCwd } from "./planner-runner.js";
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Write-class tools filtered against `Task.fileScope`. The target path
+ * input to these tools lives under the `file_path` / `path` / `notebook_path`
+ * key depending on which SDK tool is invoked.
+ */
+const WRITE_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
+const READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
+
+/**
+ * Config for {@link createClaudeImplementerRunner}. The API key defaults
+ * to `process.env.ANTHROPIC_API_KEY`. The constructor throws eagerly if no
+ * key is available so callers get a clean failure up-front rather than a
+ * confusing SDK error at first-request time.
+ */
+export interface ClaudeImplementerRunnerConfig {
+  apiKey?: string;
+}
+
+/**
+ * Build an `ImplementerRunner` backed by the real `@anthropic-ai/claude-agent-sdk`.
+ *
+ * The runner:
+ * - Uses the system prompt given by the caller verbatim (loaded by
+ *   `@pm-go/planner`'s `runImplementer`).
+ * - Allows the agent to use `Read`, `Grep`, `Glob`, `Write`, `Edit`,
+ *   `NotebookEdit`, `Bash` — but gates every call through a `canUseTool`
+ *   callback that enforces fileScope, worktree containment, and the
+ *   forbidden-bash-shape list.
+ * - Does NOT set `outputFormat`: the implementer produces filesystem
+ *   state, not JSON.
+ * - After the model finishes, tries to capture the git HEAD sha in the
+ *   worktree via `git rev-parse HEAD`. Errors (e.g. the worktree is not
+ *   a git repo) are swallowed and `finalCommitSha` is left undefined.
+ * - Accumulates token, cost, and turn counters from the message stream
+ *   and synthesizes an `AgentRun` record for the implementer role.
+ */
+export function createClaudeImplementerRunner(
+  config: ClaudeImplementerRunnerConfig = {},
+): ImplementerRunner {
+  const apiKey = config.apiKey ?? process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "createClaudeImplementerRunner: ANTHROPIC_API_KEY not set",
+    );
+  }
+
+  return {
+    async run(input: ImplementerRunnerInput): Promise<ImplementerRunnerResult> {
+      const userPrompt = buildUserPrompt(input);
+      const cwd = input.worktreePath;
+
+      let sessionId: string | undefined;
+      let inputTokens = 0;
+      let outputTokens = 0;
+      let cacheCreationTokens = 0;
+      let cacheReadTokens = 0;
+      let costUsd = 0;
+      let turns = 0;
+      let stopReason: AgentStopReason = "completed";
+
+      const startedAt = new Date().toISOString();
+
+      try {
+        const iter = query({
+          prompt: userPrompt,
+          options: {
+            systemPrompt: input.systemPrompt,
+            model: input.model,
+            permissionMode: "default",
+            allowedTools: [
+              "Read",
+              "Grep",
+              "Glob",
+              "Write",
+              "Edit",
+              "NotebookEdit",
+              "Bash",
+            ],
+            disallowedTools: [],
+            settingSources: [],
+            ...(typeof input.budgetUsdCap === "number"
+              ? { maxBudgetUsd: input.budgetUsdCap }
+              : {}),
+            ...(typeof input.maxTurnsCap === "number"
+              ? { maxTurns: input.maxTurnsCap }
+              : {}),
+            cwd,
+            canUseTool: async (tool, toolInput) => {
+              return gateToolUse(tool, toolInput, cwd, input.task);
+            },
+          },
+        });
+
+        for await (const message of iter) {
+          if (
+            "session_id" in message &&
+            typeof message.session_id === "string"
+          ) {
+            sessionId = message.session_id;
+          }
+          if (message.type === "assistant" || message.type === "user") {
+            turns += 1;
+          }
+          if (
+            message.type === "assistant" &&
+            "message" in message &&
+            message.message &&
+            typeof message.message === "object" &&
+            "usage" in message.message &&
+            message.message.usage
+          ) {
+            const usage = message.message.usage as {
+              input_tokens?: number;
+              output_tokens?: number;
+              cache_creation_input_tokens?: number;
+              cache_read_input_tokens?: number;
+            };
+            inputTokens += usage.input_tokens ?? 0;
+            outputTokens += usage.output_tokens ?? 0;
+            cacheCreationTokens += usage.cache_creation_input_tokens ?? 0;
+            cacheReadTokens += usage.cache_read_input_tokens ?? 0;
+          }
+          if (message.type === "result") {
+            if (typeof message.total_cost_usd === "number") {
+              costUsd = message.total_cost_usd;
+            }
+            if ("usage" in message && message.usage) {
+              const usage = message.usage as {
+                input_tokens?: number;
+                output_tokens?: number;
+                cache_creation_input_tokens?: number;
+                cache_read_input_tokens?: number;
+              };
+              if (typeof usage.input_tokens === "number") {
+                inputTokens = usage.input_tokens;
+              }
+              if (typeof usage.output_tokens === "number") {
+                outputTokens = usage.output_tokens;
+              }
+              if (typeof usage.cache_creation_input_tokens === "number") {
+                cacheCreationTokens = usage.cache_creation_input_tokens;
+              }
+              if (typeof usage.cache_read_input_tokens === "number") {
+                cacheReadTokens = usage.cache_read_input_tokens;
+              }
+            }
+            if (typeof message.subtype === "string") {
+              const st = message.subtype;
+              if (st.includes("budget")) stopReason = "budget_exceeded";
+              else if (st.includes("turn")) stopReason = "turns_exceeded";
+              else if (st.includes("error")) stopReason = "error";
+            }
+          }
+        }
+      } catch (err) {
+        stopReason = "error";
+        throw err;
+      }
+
+      const completedAt = new Date().toISOString();
+      const finalCommitSha = await tryReadHeadSha(cwd);
+
+      const agentRun: AgentRun = {
+        id: randomUUID(),
+        workflowRunId: sessionId ?? randomUUID(),
+        role: "implementer",
+        depth: 1,
+        status: "completed",
+        riskLevel: input.task.riskLevel,
+        executor: "claude",
+        model: input.model,
+        promptVersion: input.promptVersion,
+        taskId: input.task.id,
+        ...(sessionId !== undefined ? { sessionId } : {}),
+        permissionMode: "default",
+        ...(typeof input.budgetUsdCap === "number"
+          ? { budgetUsdCap: input.budgetUsdCap }
+          : {}),
+        ...(typeof input.maxTurnsCap === "number"
+          ? { maxTurnsCap: input.maxTurnsCap }
+          : {}),
+        turns,
+        inputTokens,
+        outputTokens,
+        cacheCreationTokens,
+        cacheReadTokens,
+        costUsd,
+        stopReason,
+        startedAt,
+        completedAt,
+      };
+
+      return finalCommitSha !== undefined
+        ? { agentRun, finalCommitSha }
+        : { agentRun };
+    },
+  };
+}
+
+/**
+ * Build the user-turn text fed to the Claude Agent SDK. Deterministic and
+ * compact — the model reads the task fields once, then relies on the
+ * system prompt for behavioral rules.
+ */
+function buildUserPrompt(input: ImplementerRunnerInput): string {
+  const task = input.task;
+  const includes = task.fileScope.includes;
+  const excludes = task.fileScope.excludes ?? [];
+  const acceptanceBullets = task.acceptanceCriteria
+    .map(
+      (ac) =>
+        `- [${ac.required ? "required" : "optional"}] ${ac.id}: ${ac.description}` +
+        (ac.verificationCommands.length > 0
+          ? `\n  verify: ${ac.verificationCommands.join(" && ")}`
+          : ""),
+    )
+    .join("\n");
+  const testCommandsBlock =
+    task.testCommands.length > 0
+      ? task.testCommands.map((c) => `- \`${c}\``).join("\n")
+      : "- (none declared)";
+  const budgetLines = [
+    `- maxWallClockMinutes: ${task.budget.maxWallClockMinutes}`,
+    typeof task.budget.maxModelCostUsd === "number"
+      ? `- maxModelCostUsd: ${task.budget.maxModelCostUsd}`
+      : undefined,
+    typeof task.budget.maxPromptTokens === "number"
+      ? `- maxPromptTokens: ${task.budget.maxPromptTokens}`
+      : undefined,
+  ]
+    .filter((x): x is string => typeof x === "string")
+    .join("\n");
+
+  return [
+    `# Task (id ${task.id})`,
+    `Title: ${task.title}`,
+    `Slug: ${task.slug}`,
+    `Kind: ${task.kind}`,
+    `Risk level: ${task.riskLevel}`,
+    "",
+    "## Summary",
+    task.summary,
+    "",
+    "## fileScope",
+    `includes: ${JSON.stringify(includes)}`,
+    `excludes: ${JSON.stringify(excludes)}`,
+    "",
+    "## Acceptance criteria",
+    acceptanceBullets.length > 0 ? acceptanceBullets : "- (none declared)",
+    "",
+    "## Test commands (run these before declaring done)",
+    testCommandsBlock,
+    "",
+    "## Budget",
+    budgetLines,
+    "",
+    "## Worktree",
+    `- cwd: ${input.worktreePath}`,
+    `- baseSha: ${input.baseSha}`,
+    "",
+    "Work inside the cwd above. Do not run `git commit` — the orchestrator commits for you. End with a final message whose first line is a conventional-commit title.",
+  ].join("\n");
+}
+
+/**
+ * Permission gate invoked by the SDK before every tool call. The gate is
+ * the belt-and-braces enforcement of the rules documented in the
+ * implementer system prompt; agents that try to violate them get a
+ * `deny` back and can retry legitimately.
+ */
+async function gateToolUse(
+  tool: string,
+  toolInput: Record<string, unknown>,
+  cwd: string,
+  task: Task,
+): Promise<
+  | { behavior: "allow"; updatedInput: Record<string, unknown> }
+  | { behavior: "deny"; message: string }
+> {
+  if (tool === "Bash") {
+    const command = extractBashCommand(toolInput);
+    if (command === undefined) {
+      return { behavior: "deny", message: "Bash call missing command" };
+    }
+    const forbidden = findForbiddenBashPattern(command);
+    if (forbidden) {
+      return {
+        behavior: "deny",
+        message: `Bash command blocked by implementer policy (${forbidden})`,
+      };
+    }
+    return { behavior: "allow", updatedInput: toolInput };
+  }
+
+  if (WRITE_TOOLS.has(tool)) {
+    const target = extractPathFromToolInput(toolInput);
+    if (!target) {
+      return { behavior: "deny", message: `${tool} call missing target path` };
+    }
+    const abs = path.resolve(cwd, target);
+    if (!isInsideCwd(abs, cwd)) {
+      return {
+        behavior: "deny",
+        message: `${tool} target '${target}' is outside worktree ${cwd}`,
+      };
+    }
+    const relPath = path.relative(cwd, abs);
+    // .git/** is always denied, even if an include glob would cover it.
+    if (relPath === ".git" || relPath.startsWith(`.git${path.sep}`)) {
+      return {
+        behavior: "deny",
+        message: `${tool} target '${relPath}' is inside .git/ (off-limits)`,
+      };
+    }
+    const relPosix = toPosix(relPath);
+    const excludes = task.fileScope.excludes ?? [];
+    if (matchesAnyPattern(relPosix, excludes)) {
+      return {
+        behavior: "deny",
+        message: `${tool} target '${relPosix}' matches fileScope.excludes`,
+      };
+    }
+    if (!matchesAnyPattern(relPosix, task.fileScope.includes)) {
+      return {
+        behavior: "deny",
+        message: `${tool} target '${relPosix}' is not inside fileScope.includes`,
+      };
+    }
+    return { behavior: "allow", updatedInput: toolInput };
+  }
+
+  if (READ_TOOLS.has(tool)) {
+    const target = extractPathFromToolInput(toolInput);
+    if (!target) {
+      // Some read tools (e.g. Grep with no path) default to cwd; allow.
+      return { behavior: "allow", updatedInput: toolInput };
+    }
+    const abs = path.resolve(cwd, target);
+    if (!isInsideCwd(abs, cwd)) {
+      return {
+        behavior: "deny",
+        message: `${tool} target '${target}' is outside worktree ${cwd}`,
+      };
+    }
+    return { behavior: "allow", updatedInput: toolInput };
+  }
+
+  // Anything else (sub-agents, MCP, web fetch) is denied.
+  return { behavior: "deny", message: `tool '${tool}' is not on the implementer allowlist` };
+}
+
+const FORBIDDEN_BASH_PATTERNS: Array<{ name: string; re: RegExp }> = [
+  { name: "git commit", re: /\bgit\s+commit\b/ },
+  { name: "git push", re: /\bgit\s+push\b/ },
+  { name: "git merge", re: /\bgit\s+merge\b/ },
+  { name: "git reset", re: /\bgit\s+reset\b/ },
+  { name: "git checkout", re: /\bgit\s+checkout\b/ },
+  { name: "git rebase", re: /\bgit\s+rebase\b/ },
+  { name: "git branch", re: /\bgit\s+branch\b/ },
+  { name: "rm -rf", re: /\brm\s+(?:-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|-rf|-fr)\b/ },
+  { name: "curl", re: /\bcurl\b/ },
+  { name: "wget", re: /\bwget\b/ },
+  { name: "pnpm add", re: /\bpnpm\s+add\b/ },
+  { name: "pnpm install", re: /\bpnpm\s+install\b/ },
+  { name: "npm install", re: /\bnpm\s+install\b/ },
+  { name: "yarn add", re: /\byarn\s+add\b/ },
+  { name: "kill", re: /\bkill\b/ },
+  { name: "pkill", re: /\bpkill\b/ },
+  { name: "redirect to /dev/", re: />\s*\/dev\// },
+  { name: "redirect to /etc/", re: />\s*\/etc\// },
+];
+
+function findForbiddenBashPattern(command: string): string | undefined {
+  for (const { name, re } of FORBIDDEN_BASH_PATTERNS) {
+    if (re.test(command)) return name;
+  }
+  return undefined;
+}
+
+function extractBashCommand(toolInput: unknown): string | undefined {
+  if (typeof toolInput !== "object" || toolInput === null) return undefined;
+  const obj = toolInput as Record<string, unknown>;
+  if (typeof obj.command === "string") return obj.command;
+  return undefined;
+}
+
+function extractPathFromToolInput(toolInput: unknown): string {
+  if (typeof toolInput !== "object" || toolInput === null) return "";
+  const obj = toolInput as Record<string, unknown>;
+  if (typeof obj.file_path === "string") return obj.file_path;
+  if (typeof obj.path === "string") return obj.path;
+  if (typeof obj.notebook_path === "string") return obj.notebook_path;
+  return "";
+}
+
+/**
+ * Minimal glob matcher for the `**` any-segments and `*` within-segment
+ * semantics used by `Task.fileScope`. Compatible with plain concrete paths
+ * (e.g. `packages/foo/src/bar.ts`) and simple globs (`packages/foo/**`,
+ * `**\/*.ts`). Does not implement brace expansion, negation, or `?`.
+ */
+function matchesAnyPattern(
+  relPath: string,
+  patterns: readonly string[],
+): boolean {
+  for (const pat of patterns) {
+    if (globMatches(relPath, pat)) return true;
+  }
+  return false;
+}
+
+function globMatches(relPath: string, pattern: string): boolean {
+  const re = globToRegExp(pattern);
+  return re.test(relPath);
+}
+
+function globToRegExp(pattern: string): RegExp {
+  // Convert the glob to a regex character-by-character. `**` matches any
+  // number of path segments (including zero); `*` matches any run of
+  // non-`/` characters within a single segment.
+  let re = "^";
+  let i = 0;
+  while (i < pattern.length) {
+    const ch = pattern[i];
+    if (ch === "*") {
+      if (pattern[i + 1] === "*") {
+        // Handle `**/` (consume the trailing slash) and bare `**`.
+        if (pattern[i + 2] === "/") {
+          re += "(?:.*/)?";
+          i += 3;
+        } else {
+          re += ".*";
+          i += 2;
+        }
+      } else {
+        re += "[^/]*";
+        i += 1;
+      }
+    } else if (/[.+^$(){}|\\[\]]/.test(ch!)) {
+      re += `\\${ch}`;
+      i += 1;
+    } else if (ch === "?") {
+      re += "[^/]";
+      i += 1;
+    } else {
+      re += ch;
+      i += 1;
+    }
+  }
+  re += "$";
+  return new RegExp(re);
+}
+
+function toPosix(p: string): string {
+  return p.split(path.sep).join("/");
+}
+
+async function tryReadHeadSha(cwd: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], {
+      cwd,
+    });
+    const trimmed = stdout.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  } catch {
+    return undefined;
+  }
+}

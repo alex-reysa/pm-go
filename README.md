@@ -116,3 +116,40 @@ pnpm smoke:phase2
 See `examples/golden-path/README.md` for the spec the smoke feeds in
 and a walk-through of the durable rows and on-disk artifact the run
 produces.
+
+### Phase 3: Task Execution Vertical Slice
+
+Phase 3 adds the implementer half of the pipeline: `TaskExecutionWorkflow`
+leases a worktree, runs the implementer (stub or Claude) inside it,
+runs the deterministic diff-scope audit against `Task.fileScope`, and
+stamps the task `in_review` (`ready_for_review` in the workflow result)
+or `blocked`. The new HTTP surface:
+
+- `POST /tasks/:taskId/run` starts `TaskExecutionWorkflow` for the task
+- `GET /tasks/:taskId` returns the task row plus the latest `agent_run`
+  and `worktree_lease` rows for that task
+
+```bash
+cp .env.example .env  # if not already done
+pnpm install
+pnpm docker:up
+pnpm db:migrate
+pnpm smoke:phase3
+```
+
+Like Phase 2, the default smoke runs with `PLANNER_EXECUTOR_MODE=stub`
+and `IMPLEMENTER_EXECUTOR_MODE=stub` — no Anthropic API key required.
+The stub implementer writes `NOTES.md` into the leased worktree and
+commits, so downstream diff-scope has something to verify. To run the
+full Claude-backed flow:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+export PLANNER_EXECUTOR_MODE=live
+export IMPLEMENTER_EXECUTOR_MODE=live
+pnpm smoke:phase3
+```
+
+`scripts/phase3-smoke.sh` also verifies the durable `worktree_leases`
+and `agent_runs` rows land in Postgres and the leased worktree
+directory exists on disk.

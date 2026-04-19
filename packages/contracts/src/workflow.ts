@@ -37,13 +37,21 @@ export interface PhasePartitionWorkflowResult {
 
 export interface TaskExecutionWorkflowInput {
   taskId: UUID;
+  repoRoot: string;
+  worktreeRoot: string;
+  maxLifetimeHours: number;
+  requestedBy: string;
 }
 
 export interface TaskExecutionWorkflowResult {
   taskId: UUID;
+  status: "ready_for_review" | "blocked" | "failed";
+  leaseId: UUID;
   branchName: string;
   worktreePath: string;
-  readyForReview: boolean;
+  agentRunId: UUID;
+  changedFiles: string[];
+  fileScopeViolations: string[];
 }
 
 export interface TaskReviewWorkflowInput {

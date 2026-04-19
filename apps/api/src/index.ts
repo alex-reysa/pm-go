@@ -1,3 +1,6 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { serve } from "@hono/node-server";
 import { createDb } from "@pm-go/db";
 import { createApp } from "./app.js";
@@ -10,6 +13,17 @@ async function main() {
   const taskQueue = process.env.TEMPORAL_TASK_QUEUE ?? "pm-go-worker";
   const databaseUrl = process.env.DATABASE_URL;
   const artifactDir = process.env.PLAN_ARTIFACT_DIR ?? "./artifacts/plans";
+
+  // Derive repo root from `import.meta.url` (three levels up from the
+  // compiled/tsx-run `index.js|ts`) so the API does not have to be
+  // launched from the repo root. Env overrides still win.
+  const defaultRepoRoot = fileURLToPath(new URL("../../../", import.meta.url));
+  const repoRoot = process.env.REPO_ROOT ?? defaultRepoRoot;
+  const worktreeRoot =
+    process.env.WORKTREE_ROOT ?? path.resolve(repoRoot, ".worktrees");
+  const maxLifetimeHours = Number(
+    process.env.MAX_WORKTREE_LIFETIME_HOURS ?? 24,
+  );
 
   if (!databaseUrl) {
     throw new Error("DATABASE_URL is required");
@@ -26,6 +40,9 @@ async function main() {
     taskQueue,
     db,
     artifactDir,
+    repoRoot,
+    worktreeRoot,
+    maxLifetimeHours,
   });
 
   serve({ fetch: app.fetch, port }, (info) => {

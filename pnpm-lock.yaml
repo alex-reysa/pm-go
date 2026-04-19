@@ -79,6 +79,9 @@ importers:
       '@pm-go/temporal-workflows':
         specifier: workspace:*
         version: link:../../packages/temporal-workflows
+      '@pm-go/worktree-manager':
+        specifier: workspace:*
+        version: link:../../packages/worktree-manager
       '@temporalio/activity':
         specifier: ^1.11.0
         version: 1.16.0
@@ -183,6 +186,19 @@ importers:
       '@pm-go/contracts':
         specifier: workspace:*
         version: link:../contracts
+
+  packages/worktree-manager:
+    dependencies:
+      '@pm-go/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.17)(terser@5.46.1)
 
 packages:
 

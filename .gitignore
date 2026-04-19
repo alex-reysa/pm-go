@@ -12,5 +12,6 @@ coverage
 .env.*.local
 tmp
 runtime
+.worktrees/
 artifacts
 
