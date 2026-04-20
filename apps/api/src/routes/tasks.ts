@@ -19,6 +19,7 @@ import type {
 } from "@pm-go/contracts";
 import {
   agentRuns,
+  phases,
   planTasks,
   reviewReports,
   worktreeLeases,
@@ -52,11 +53,42 @@ function isUuid(value: unknown): value is UUID {
 export function createTasksRoute(deps: TasksRouteDeps) {
   const app = new Hono();
 
-  // POST /tasks/:taskId/run — start TaskExecutionWorkflow
+  // POST /tasks/:taskId/run — start TaskExecutionWorkflow.
+  //
+  // Phase gate: the task's owning phase must be `executing`. Tasks in
+  // a `pending` phase haven't been unlocked yet (their baseSnapshot is
+  // still inherited from the planner, not stamped from the prior
+  // phase's audited post-merge state). Tasks in `integrating`,
+  // `auditing`, `completed`, `blocked`, or `failed` phases must not be
+  // re-run — the phase has already moved past the execution stage.
   app.post("/:taskId/run", async (c) => {
     const taskId = c.req.param("taskId");
     if (!isUuid(taskId)) {
       return c.json({ error: "taskId must be a UUID" }, 400);
+    }
+
+    const [gateRow] = await deps.db
+      .select({
+        phaseId: planTasks.phaseId,
+        phaseStatus: phases.status,
+        phaseTitle: phases.title,
+      })
+      .from(planTasks)
+      .innerJoin(phases, eq(phases.id, planTasks.phaseId))
+      .where(eq(planTasks.id, taskId))
+      .limit(1);
+    if (!gateRow) {
+      return c.json({ error: `task ${taskId} not found` }, 404);
+    }
+    if (gateRow.phaseStatus !== "executing") {
+      return c.json(
+        {
+          error: `task ${taskId} cannot run — owning phase ${gateRow.phaseId} (${gateRow.phaseTitle}) is status='${gateRow.phaseStatus}'; /tasks/:id/run requires phase.status='executing'`,
+          phaseId: gateRow.phaseId,
+          phaseStatus: gateRow.phaseStatus,
+        },
+        409,
+      );
     }
 
     // Accept an empty body (default `requestedBy=api`) or a JSON body

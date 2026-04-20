@@ -48,6 +48,13 @@ interface PhaseIntegrationActivityInterface {
   capturePostMergeSnapshotAndStamp(input: {
     integrationWorktreePath: string;
     mergeRunId: UUID;
+    /**
+     * Workflow-generated snapshot id so retries are idempotent: a
+     * Temporal re-execution uses the same id, the repo_snapshots
+     * insert is ON CONFLICT DO NOTHING, and the merge_runs UPDATE is
+     * a no-op.
+     */
+    snapshotId: UUID;
     nextPhaseId?: UUID;
   }): Promise<{ snapshotId: UUID }>;
   persistMergeRun(run: StoredMergeRun): Promise<UUID>;
@@ -182,16 +189,11 @@ export async function PhaseIntegrationWorkflow(
       worktreePath: lease.worktreePath,
     });
 
-    // Snapshot + stamp the merge_run FK so post-hoc readers can
-    // reconstruct the repo state at this merge point. We stamp the
-    // merge_run but not the next phase's base_snapshot_id — that
-    // propagation only happens on audit pass.
-    await capturePostMergeSnapshotAndStamp({
-      integrationWorktreePath: lease.worktreePath,
-      mergeRunId,
-    });
-
     const startedAt = new Date().toISOString();
+    // Persist the merge_run row FIRST so that the subsequent snapshot
+    // stamp has a row to UPDATE. Prior ordering (capture-then-persist)
+    // lost the linkage because capturePostMergeSnapshotAndStamp's
+    // UPDATE was a no-op against a row that didn't exist yet.
     const storedRun: StoredMergeRun = {
       id: mergeRunId,
       planId: phase.planId,
@@ -206,6 +208,23 @@ export async function PhaseIntegrationWorkflow(
       completedAt: startedAt,
     };
     await persistMergeRun(storedRun);
+
+    // Snapshot + stamp the merge_run FK. Snapshot id is workflow-
+    // generated via uuid4() so Temporal retries are fully idempotent:
+    // snapshot insert is ON CONFLICT DO NOTHING, merge_runs UPDATE is
+    // a deterministic overwrite with the same value. Skip when no task
+    // merged — the pre-failed run has no meaningful post-merge state.
+    if (failedTaskId === undefined) {
+      const postMergeSnapshotId: UUID = uuid4();
+      await capturePostMergeSnapshotAndStamp({
+        integrationWorktreePath: lease.worktreePath,
+        mergeRunId,
+        snapshotId: postMergeSnapshotId,
+      });
+      // Reflect the stamp on the local object so the returned MergeRun
+      // contract carries the snapshot id (used by PhaseAuditWorkflow).
+      storedRun.postMergeSnapshotId = postMergeSnapshotId;
+    }
 
     if (failedTaskId !== undefined) {
       await updatePhaseStatus({

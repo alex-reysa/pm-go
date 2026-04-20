@@ -268,6 +268,36 @@ describe("createClaudeCompletionAuditorRunner — SDK query options", () => {
     }
   });
 
+  it("canUseTool denies shell chaining / substitution / interpreters / file-copiers (shared with phase auditor)", async () => {
+    const runner = createClaudeCompletionAuditorRunner({ apiKey: "test-key" });
+    await expect(runner.run(buildInput())).rejects.toThrow();
+    const canUseTool = queryMock.mock.calls[0]![0].options.canUseTool as (
+      tool: string,
+      toolInput: unknown,
+    ) => Promise<{ behavior: string; message?: string }>;
+
+    const cases: string[] = [
+      "git log; cat /tmp/secret",
+      "git status && cat /etc/passwd",
+      "git log $(cat /etc/passwd)",
+      "git log `whoami`",
+      "diff <(git log) <(cat /etc/passwd)",
+      "grep foo </etc/passwd",
+      "python3 -c 'open(\"/etc/passwd\").read()'",
+      "node -p 'require(\"fs\").readFileSync(\"/etc/passwd\")'",
+      "perl script.pl",
+      "sh -c 'cat /etc/passwd'",
+      "cp /etc/passwd /tmp/x",
+      "dd if=/etc/passwd of=/tmp/x",
+      "ln -s /etc/passwd /tmp/x",
+      "tar -cf /tmp/x.tar /etc",
+    ];
+    for (const cmd of cases) {
+      const r = await canUseTool("Bash", { command: cmd });
+      expect(r.behavior, `expected deny for: ${cmd}`).toBe("deny");
+    }
+  });
+
   it("constructor throws when neither apiKey nor ANTHROPIC_API_KEY is set", () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "");
     expect(() => createClaudeCompletionAuditorRunner()).toThrow(

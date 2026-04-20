@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 
 import type {
@@ -342,6 +341,14 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
     async capturePostMergeSnapshotAndStamp(input: {
       integrationWorktreePath: string;
       mergeRunId: UUID;
+      /**
+       * Workflow-generated snapshot id. Passing it in instead of
+       * generating here keeps the activity idempotent across Temporal
+       * retries: the snapshot insert is ON CONFLICT DO NOTHING, so
+       * re-invocations don't leak orphan rows, and the merge_runs
+       * UPDATE becomes a no-op since it writes the same value.
+       */
+      snapshotId: UUID;
       nextPhaseId?: UUID;
     }): Promise<{ snapshotId: UUID }> {
       // Pull a fresh snapshot OUTSIDE the transaction (I/O + subprocess
@@ -349,36 +356,36 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
       const snapshot = await collectSnapshot({
         repoRoot: input.integrationWorktreePath,
       });
-      // Override the id with a fresh host-generated UUID so the row is
-      // distinct from any prior snapshot with the same repoRoot.
-      const snapshotId = randomUUID();
 
       await db.transaction(async (tx) => {
-        await tx.insert(repoSnapshots).values({
-          id: snapshotId,
-          repoRoot: snapshot.repoRoot,
-          repoUrl: snapshot.repoUrl ?? null,
-          defaultBranch: snapshot.defaultBranch,
-          headSha: snapshot.headSha,
-          languageHints: snapshot.languageHints,
-          frameworkHints: snapshot.frameworkHints,
-          buildCommands: snapshot.buildCommands,
-          testCommands: snapshot.testCommands,
-          ciConfigPaths: snapshot.ciConfigPaths,
-          capturedAt: snapshot.capturedAt,
-        });
+        await tx
+          .insert(repoSnapshots)
+          .values({
+            id: input.snapshotId,
+            repoRoot: snapshot.repoRoot,
+            repoUrl: snapshot.repoUrl ?? null,
+            defaultBranch: snapshot.defaultBranch,
+            headSha: snapshot.headSha,
+            languageHints: snapshot.languageHints,
+            frameworkHints: snapshot.frameworkHints,
+            buildCommands: snapshot.buildCommands,
+            testCommands: snapshot.testCommands,
+            ciConfigPaths: snapshot.ciConfigPaths,
+            capturedAt: snapshot.capturedAt,
+          })
+          .onConflictDoNothing({ target: repoSnapshots.id });
         await tx
           .update(mergeRuns)
-          .set({ postMergeSnapshotId: snapshotId })
+          .set({ postMergeSnapshotId: input.snapshotId })
           .where(eq(mergeRuns.id, input.mergeRunId));
         if (input.nextPhaseId) {
           await tx
             .update(phases)
-            .set({ baseSnapshotId: snapshotId })
+            .set({ baseSnapshotId: input.snapshotId })
             .where(eq(phases.id, input.nextPhaseId));
         }
       });
-      return { snapshotId };
+      return { snapshotId: input.snapshotId };
     },
 
     async persistMergeRun(run: StoredMergeRun): Promise<UUID> {
@@ -398,13 +405,18 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
           startedAt: run.startedAt,
           completedAt: run.completedAt ?? null,
         })
+        // NOTE: `postMergeSnapshotId` intentionally omitted from the set
+        // clause. The stamp comes exclusively from
+        // `capturePostMergeSnapshotAndStamp`, which runs AFTER this
+        // persist. On a Temporal retry where this activity fires a
+        // second time, we must not zap an already-stamped snapshot id
+        // with null.
         .onConflictDoUpdate({
           target: mergeRuns.id,
           set: {
             mergedTaskIds: run.mergedTaskIds,
             failedTaskId: run.failedTaskId ?? null,
             integrationHeadSha: run.integrationHeadSha ?? null,
-            postMergeSnapshotId: run.postMergeSnapshotId ?? null,
             completedAt: run.completedAt ?? null,
           },
         });

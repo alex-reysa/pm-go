@@ -25,14 +25,16 @@ function makeMockDbForLookup(rowsPerSelect: unknown[][]) {
     const rows = rowsPerSelect[i++] ?? [];
     // Self-referencing thenable: every chain method returns the same
     // object so the caller can terminate anywhere (.where, .orderBy,
-    // .limit) and `await` resolves to `rows`. This matches Drizzle's
-    // real query builder, which is thenable at every chainable node.
+    // .limit, .innerJoin) and `await` resolves to `rows`. Matches the
+    // shape of Drizzle's query builder, which is thenable at every
+    // chainable node.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const chain: any = {
       then: (resolve: (v: unknown[]) => void) => resolve(rows),
     };
     chain.where = vi.fn().mockReturnValue(chain);
     chain.orderBy = vi.fn().mockReturnValue(chain);
+    chain.innerJoin = vi.fn().mockReturnValue(chain);
     chain.limit = vi.fn().mockResolvedValue(rows);
     const from = vi.fn().mockReturnValue(chain);
     return { from };
@@ -50,17 +52,26 @@ const APP_DEFAULTS = {
 };
 
 describe("POST /tasks/:taskId/run", () => {
-  it("starts TaskExecutionWorkflow and returns 202 with taskId + workflowRunId", async () => {
+  it("starts TaskExecutionWorkflow and returns 202 when owning phase is executing", async () => {
     const { start, client } = makeMockTemporal();
 
+    const taskId = "11111111-2222-4333-8444-555555555555";
+    const phaseId = "22222222-3333-4444-8555-666666666666";
+    const db = makeMockDbForLookup([
+      [
+        {
+          phaseId,
+          phaseStatus: "executing",
+          phaseTitle: "Phase 0",
+        },
+      ],
+    ]);
     const app = createApp({
       temporal: client,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      db: {} as any,
+      db,
       ...APP_DEFAULTS,
     });
 
-    const taskId = "11111111-2222-4333-8444-555555555555";
     const res = await app.request(`/tasks/${taskId}/run`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -91,6 +102,72 @@ describe("POST /tasks/:taskId/run", () => {
         ],
       }),
     );
+  });
+
+  it("returns 404 when the task row does not exist", async () => {
+    const { client, start } = makeMockTemporal();
+    const db = makeMockDbForLookup([[]]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const taskId = "11111111-2222-4333-8444-555555555555";
+    const res = await app.request(`/tasks/${taskId}/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(404);
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when owning phase is pending (gate enforces sequential execution)", async () => {
+    const { client, start } = makeMockTemporal();
+    const taskId = "11111111-2222-4333-8444-555555555555";
+    const phaseId = "22222222-3333-4444-8555-666666666666";
+    const db = makeMockDbForLookup([
+      [
+        {
+          phaseId,
+          phaseStatus: "pending",
+          phaseTitle: "Phase 1",
+        },
+      ],
+    ]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks/${taskId}/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as {
+      error: string;
+      phaseId: string;
+      phaseStatus: string;
+    };
+    expect(body.phaseStatus).toBe("pending");
+    expect(body.phaseId).toBe(phaseId);
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when owning phase is auditing (task already past execution)", async () => {
+    const { client, start } = makeMockTemporal();
+    const taskId = "11111111-2222-4333-8444-555555555555";
+    const db = makeMockDbForLookup([
+      [
+        {
+          phaseId: "22222222-3333-4444-8555-666666666666",
+          phaseStatus: "auditing",
+          phaseTitle: "Phase 0",
+        },
+      ],
+    ]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks/${taskId}/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(409);
+    expect(start).not.toHaveBeenCalled();
   });
 
   it("returns 400 when taskId is not a UUID", async () => {

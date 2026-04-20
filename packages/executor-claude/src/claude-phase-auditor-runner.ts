@@ -39,6 +39,71 @@ export const AUDITOR_CONTAINMENT_PATTERNS: Array<{
   name: string;
   re: RegExp;
 }> = [
+  // ==================================================================
+  // Shell-chaining / substitution / redirection.
+  //
+  // Pipes (`|`) stay allowed so the auditor can still compose
+  // `git log --oneline | head -20`. The constructs below unlock escape
+  // paths (sub-shells, command substitution, multi-command chains,
+  // heredocs, input redirection from arbitrary paths) that the
+  // per-command denylist cannot police.
+  // ==================================================================
+  { name: "command separator ;", re: /;/ },
+  { name: "logical AND &&", re: /&&/ },
+  { name: "logical OR ||", re: /\|\|/ },
+  { name: "command substitution $()", re: /\$\(/ },
+  { name: "command substitution backtick", re: /`/ },
+  { name: "process substitution", re: /[<>]\(/ },
+  { name: "brace expansion ${}", re: /\$\{/ },
+  // Input redirect from a non-/dev path. `</dev/null` etc stay allowed.
+  {
+    name: "input redirect from path",
+    re: /<\s*(?!&|\/dev\/(?:null|stdin|stdout|stderr)\b)\S/,
+  },
+  // Newline in a single Bash invocation enables multi-line scripts.
+  { name: "multi-line bash", re: /\n/ },
+
+  // ==================================================================
+  // Interpreters — auditors are read-only and never need to execute
+  // scripted code. Even inline snippets (`python3 -c 'open(...).read()'`)
+  // trivially exfiltrate filesystem contents the existing cat-style
+  // guards would block; ban the interpreter outright.
+  // ==================================================================
+  // Interpreter patterns. Each requires whitespace or end-of-line after
+  // the name so we don't flag path tokens like `node_modules/` or
+  // `python/script` that happen to be arguments to an otherwise-safe
+  // command. `\b` plus `(?=\s|$)` = "interpreter invoked as a command."
+  {
+    name: "shell -c",
+    re: /\b(?:sh|bash|zsh|dash|ksh)\s+(?:[^|\n]*\s)?-c\b/,
+  },
+  { name: "python", re: /\bpython3?(?=\s|$)/ },
+  { name: "perl", re: /\bperl(?=\s|$)/ },
+  { name: "ruby", re: /\bruby(?=\s|$)/ },
+  { name: "lua", re: /\blua(?=\s|$)/ },
+  { name: "php", re: /\bphp(?=\s|$)/ },
+  { name: "awk", re: /\bawk(?=\s|$)/ },
+  { name: "node standalone", re: /\bnode(?=\s|$)/ },
+  { name: "xargs", re: /\bxargs(?=\s|$)/ },
+
+  // ==================================================================
+  // File copiers / movers — exfiltration vectors that the cat-style
+  // absolute-path guard doesn't cover (they take pairs of paths, not
+  // piped content).
+  // ==================================================================
+  { name: "cp", re: /\bcp\b/ },
+  { name: "mv", re: /\bmv\b/ },
+  { name: "dd", re: /\bdd\b/ },
+  { name: "install(1)", re: /\binstall\s+-/ },
+  { name: "ln", re: /\bln\b/ },
+  { name: "tar", re: /\btar\b/ },
+  { name: "rsync", re: /\brsync\b/ },
+  { name: "scp", re: /\bscp\b/ },
+
+  // ==================================================================
+  // Original containment patterns (absolute-path reads, find escapes,
+  // env dumps, cross-repo git).
+  // ==================================================================
   // `git -C <path>` lets the agent jump to an arbitrary repository.
   // The auditor's cwd is the integration worktree; use plain `git ...`
   // without the -C argument to stay in it.
@@ -56,7 +121,7 @@ export const AUDITOR_CONTAINMENT_PATTERNS: Array<{
   // targets.
   {
     name: "read absolute path",
-    re: /\b(?:cat|head|tail|less|more|nl|xxd|od|strings|base64)\b[^|;&\n]*\s\/(?!dev\/(?:null|stdin|stdout|stderr)\b)/,
+    re: /\b(?:cat|head|tail|less|more|nl|xxd|od|strings|base64|tr|cut|sort|uniq)\b[^|;&\n]*\s\/(?!dev\/(?:null|stdin|stdout|stderr)\b)/,
   },
   // `find` walking an absolute path (anywhere under `/`) or the
   // worktree's parent. Auditors can still run `find .`, `find ./sub`,

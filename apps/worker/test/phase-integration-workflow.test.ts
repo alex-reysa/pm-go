@@ -147,6 +147,26 @@ describe("PhaseIntegrationWorkflow", () => {
       status: "auditing",
     });
     expect(activityFns.persistMergeRun).toHaveBeenCalledOnce();
+    // persistMergeRun MUST run before capturePostMergeSnapshotAndStamp
+    // so the capture's UPDATE has a row to target. Inverting the order
+    // used to silently lose the post_merge_snapshot_id linkage.
+    const persistOrder =
+      activityFns.persistMergeRun.mock.invocationCallOrder[0] ?? 0;
+    const captureOrder =
+      activityFns.capturePostMergeSnapshotAndStamp.mock
+        .invocationCallOrder[0] ?? 0;
+    expect(persistOrder).toBeLessThan(captureOrder);
+    // Workflow must pass a deterministic snapshotId via uuid4 so
+    // retries are idempotent (insert ON CONFLICT DO NOTHING,
+    // UPDATE no-op).
+    expect(
+      activityFns.capturePostMergeSnapshotAndStamp,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mergeRunId: expect.any(String),
+        snapshotId: expect.any(String),
+      }),
+    );
   });
 
   it("records failed_task_id and flips phase to blocked when a merge conflict exhausts retries", async () => {
@@ -182,6 +202,12 @@ describe("PhaseIntegrationWorkflow", () => {
       phaseId: PHASE_ID,
       status: "blocked",
     });
+    // Snapshot capture skipped when all tasks failed — there is no
+    // meaningful post-merge state to record, and the next phase's
+    // base_snapshot_id stays unchanged.
+    expect(
+      activityFns.capturePostMergeSnapshotAndStamp,
+    ).not.toHaveBeenCalled();
   });
 
   it("throws nonRetryable PhasePartitionInvariantError on partition violation", async () => {

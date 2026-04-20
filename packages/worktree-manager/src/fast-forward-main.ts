@@ -27,16 +27,25 @@ export interface FastForwardMainResult {
  * Advance `refs/heads/main` to `newSha` via `git update-ref`. Atomic,
  * no checkout, optimistically locked against concurrent updates.
  *
- * Two refusal paths, each surfacing a distinct `WorktreeManagerError`
- * code so the caller can branch without string matching:
+ * Idempotent: if the target ref already equals `newSha`, returns
+ * success without touching anything. This matters for Temporal
+ * retries — a successful `update-ref` followed by a later-step failure
+ * would otherwise retry the whole activity and find the ref already
+ * advanced, leaving the phase-audit workflow permanently stuck on
+ * `main-advance-conflict`.
+ *
+ * Refusal paths, each surfacing a distinct `WorktreeManagerError` code
+ * so the caller can branch without string matching:
  *   - `non-fast-forward` — `newSha` is not a descendant of
  *     `expectedCurrentSha` (pre-check via `git merge-base
  *     --is-ancestor`). Publishing a non-descendant commit to `main`
  *     would rewrite history for anyone already pulled — refuse.
+ *     Skipped on the idempotent "already at target" fast path.
  *   - `main-advance-conflict` — `main`'s actual SHA differs from
- *     `expectedCurrentSha`. Someone else advanced the branch between
- *     when the phase captured its baseline and when the audit
- *     completed. The caller must re-partition or escalate.
+ *     `expectedCurrentSha` AND is not already `newSha`. Someone else
+ *     advanced the branch between when the phase captured its baseline
+ *     and when the audit completed. The caller must re-partition or
+ *     escalate.
  *
  * Never checks out any branch. Safe to call regardless of what
  * `HEAD` points at in the repo's working tree.
@@ -46,6 +55,35 @@ export async function fastForwardMainViaUpdateRef(
 ): Promise<FastForwardMainResult> {
   const targetBranch = input.targetBranch ?? "main";
   const targetRef = `refs/heads/${targetBranch}`;
+
+  // Resolve the actual current ref BEFORE the ancestry pre-check. The
+  // idempotent fast path (already at target) must short-circuit before
+  // `git merge-base --is-ancestor expectedCurrentSha newSha` runs,
+  // because on retry `expectedCurrentSha` == old-main-sha and that is
+  // no longer an ancestor of main (since main IS newSha now).
+  let actualCurrentSha: string;
+  try {
+    const { stdout } = await execFileAsync("git", [
+      "-C",
+      input.repoRoot,
+      "rev-parse",
+      "--verify",
+      targetRef,
+    ]);
+    actualCurrentSha = stdout.trim();
+  } catch (err) {
+    throw new WorktreeManagerError(
+      "git-command-failed",
+      `rev-parse ${targetRef} failed: ${extractStderr(err)}`,
+    );
+  }
+
+  // Idempotent path: ref is already at the target sha. Return success
+  // so the Temporal retry can continue to downstream steps without
+  // hitting main-advance-conflict on a state we ourselves produced.
+  if (actualCurrentSha === input.newSha) {
+    return { headSha: input.newSha };
+  }
 
   // Ancestry pre-check. `git merge-base --is-ancestor A B` exits 0 iff
   // A is an ancestor of B. We require expectedCurrentSha to be an
@@ -64,26 +102,6 @@ export async function fastForwardMainViaUpdateRef(
     throw new WorktreeManagerError(
       "non-fast-forward",
       `refuse to advance ${targetBranch}: ${input.newSha} is not a descendant of ${input.expectedCurrentSha}`,
-    );
-  }
-
-  // Resolve the actual current ref; `update-ref` with two args does its
-  // own check but we want a distinct error code for "main moved under
-  // us" vs "your new sha is not a descendant".
-  let actualCurrentSha: string;
-  try {
-    const { stdout } = await execFileAsync("git", [
-      "-C",
-      input.repoRoot,
-      "rev-parse",
-      "--verify",
-      targetRef,
-    ]);
-    actualCurrentSha = stdout.trim();
-  } catch (err) {
-    throw new WorktreeManagerError(
-      "git-command-failed",
-      `rev-parse ${targetRef} failed: ${extractStderr(err)}`,
     );
   }
 
