@@ -132,4 +132,63 @@ describe("createStubImplementerRunner", () => {
       }),
     ).rejects.toThrow(/escapes worktreePath/);
   });
+
+  it("writeFileBySlug picks the per-slug path; falls back to writeFile otherwise", async () => {
+    // Seed a real git repo so the commit path can run end-to-end.
+    await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: worktree });
+    await execFileAsync("git", ["config", "user.email", "stub@example.com"], {
+      cwd: worktree,
+    });
+    await execFileAsync("git", ["config", "user.name", "Stub"], {
+      cwd: worktree,
+    });
+    await execFileAsync(
+      "git",
+      ["commit", "--allow-empty", "-m", "init", "-q"],
+      { cwd: worktree },
+    );
+
+    const runner = createStubImplementerRunner({
+      writeFileBySlug: {
+        bySlug: {
+          "p5-task-a": "phase5-smoke/task-a.txt",
+          "p5-task-b": "phase5-smoke/task-b.txt",
+        },
+        contents: "stub body",
+      },
+      writeFile: { relativePath: "FALLBACK.md", contents: "fallback body" },
+    });
+
+    // Task with a matching slug → uses bySlug path.
+    const matched = await runner.run({
+      task: buildTask({ slug: "p5-task-a" }),
+      worktreePath: worktree,
+      baseSha: "deadbeef",
+      systemPrompt: "sp",
+      promptVersion: "1",
+      model: "claude-sonnet-4-6",
+    });
+    expect(matched.finalCommitSha).toMatch(/^[0-9a-f]{40}$/);
+    const wroteA = await readFile(
+      path.join(worktree, "phase5-smoke/task-a.txt"),
+      "utf8",
+    );
+    expect(wroteA).toBe("stub body");
+
+    // Task whose slug is not in the map → falls back to writeFile.
+    const unmatched = await runner.run({
+      task: buildTask({ slug: "some-other-slug" }),
+      worktreePath: worktree,
+      baseSha: "deadbeef",
+      systemPrompt: "sp",
+      promptVersion: "1",
+      model: "claude-sonnet-4-6",
+    });
+    expect(unmatched.finalCommitSha).toMatch(/^[0-9a-f]{40}$/);
+    const wroteFallback = await readFile(
+      path.join(worktree, "FALLBACK.md"),
+      "utf8",
+    );
+    expect(wroteFallback).toBe("fallback body");
+  });
 });

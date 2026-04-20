@@ -36,12 +36,18 @@ function loadTaskFixture(): Task {
 }
 
 /**
- * Minimal chainable Drizzle mock: `.insert(...).values(...)` resolves
- * (or rejects if `insertError` set); `.select(...).from(...).where(...).limit(...)`
- * resolves to `selectResult`; `.update(...).set(...).where(...)` resolves.
+ * Minimal chainable Drizzle mock supporting:
+ *   - `.insert(...).values(...)` — resolves, or rejects if `insertError`
+ *   - `.select(...).from(...).where(...).limit(...)` — resolves to `selectResult`
+ *   - `.update(...).set(...).where(...)` — resolves, or rejects if `updateError`
+ *   - `.transaction(async tx => ...)` — invokes the callback with a tx
+ *     that exposes the same insert/update chain. Rejects the whole tx
+ *     and propagates the first callback rejection so the outer activity
+ *     catch path runs.
  */
 function makeDbMock(options: {
   insertError?: Error;
+  updateError?: Error;
   selectResult?: unknown[];
 } = {}) {
   const insertValues = vi.fn().mockImplementation(() => {
@@ -53,17 +59,41 @@ function makeDbMock(options: {
   const where = vi.fn().mockReturnValue({ limit });
   const from = vi.fn().mockReturnValue({ where });
   const select = vi.fn().mockReturnValue({ from });
-  const updateWhere = vi.fn().mockResolvedValue(undefined);
+  const updateWhere = vi.fn().mockImplementation(() => {
+    if (options.updateError) return Promise.reject(options.updateError);
+    return Promise.resolve();
+  });
   const set = vi.fn().mockReturnValue({ where: updateWhere });
   const update = vi.fn().mockReturnValue({ set });
+  const transaction = vi.fn().mockImplementation(
+    async (cb: (tx: unknown) => Promise<unknown>) => {
+      // Give the callback the same insert/update/select surface. Whatever
+      // it throws propagates out; for the rollback test we want this to
+      // reject so the outer catch runs releaseLeasePkg.
+      return cb({ insert, update, select });
+    },
+  );
   return {
-    db: { insert, select, update } as unknown as Parameters<typeof createWorktreeActivities>[0]["db"],
-    spies: { insert, insertValues, select, from, where, limit, update, set, updateWhere },
+    db: { insert, select, update, transaction } as unknown as Parameters<
+      typeof createWorktreeActivities
+    >[0]["db"],
+    spies: {
+      insert,
+      insertValues,
+      select,
+      from,
+      where,
+      limit,
+      update,
+      set,
+      updateWhere,
+      transaction,
+    },
   };
 }
 
 describe("createWorktreeActivities.leaseWorktree", () => {
-  it("creates the worktree on disk and persists the lease row", async () => {
+  it("creates the worktree, persists the lease, and stamps task.branch_name transactionally", async () => {
     const repo = await createTempGitRepo();
     const worktreeRoot = await mkdtemp(join(tmpdir(), "pm-go-wtroot-"));
     try {
@@ -80,6 +110,8 @@ describe("createWorktreeActivities.leaseWorktree", () => {
 
       expect(lease.status).toBe("active");
       expect(existsSync(lease.worktreePath)).toBe(true);
+      // Both writes happen inside the same transaction.
+      expect(spies.transaction).toHaveBeenCalledTimes(1);
       expect(spies.insert).toHaveBeenCalledTimes(1);
       expect(spies.insertValues).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -91,13 +123,20 @@ describe("createWorktreeActivities.leaseWorktree", () => {
           status: "active",
         }),
       );
+      // plan_tasks.branch_name + worktree_path stamped from the lease so
+      // integrateTask (which reads taskRow.branchName) sees the real
+      // branch, not the planner-supplied fixture value.
+      expect(spies.set).toHaveBeenCalledWith({
+        branchName: lease.branchName,
+        worktreePath: lease.worktreePath,
+      });
     } finally {
       await repo.cleanup();
       await rm(worktreeRoot, { recursive: true, force: true });
     }
   });
 
-  it("rolls back the on-disk worktree when db insert fails", async () => {
+  it("rolls back the on-disk worktree when the lease insert fails", async () => {
     const repo = await createTempGitRepo();
     const worktreeRoot = await mkdtemp(join(tmpdir(), "pm-go-wtroot-"));
     try {
@@ -114,8 +153,6 @@ describe("createWorktreeActivities.leaseWorktree", () => {
         }),
       ).rejects.toThrow();
 
-      // The worktree directory that the activity would have created
-      // should NOT exist after rollback.
       const expectedPath = join(worktreeRoot, task.planId, `${task.id}-${task.slug}`);
       expect(existsSync(expectedPath)).toBe(false);
     } finally {
@@ -124,15 +161,46 @@ describe("createWorktreeActivities.leaseWorktree", () => {
     }
   });
 
-  it("returns the existing active lease on retry (idempotent)", async () => {
+  it("rolls back everything when the plan_tasks stamp inside the transaction fails", async () => {
+    const repo = await createTempGitRepo();
+    const worktreeRoot = await mkdtemp(join(tmpdir(), "pm-go-wtroot-"));
+    try {
+      // Lease insert succeeds, but the plan_tasks update inside the
+      // transaction throws. The activity's outer catch must still invoke
+      // releaseLeasePkg so the on-disk worktree is reclaimed — lease row
+      // and task row both roll back via the transaction abort.
+      const { db } = makeDbMock({
+        updateError: new Error("plan_tasks update failed"),
+      });
+      const activities = createWorktreeActivities({ db });
+      const task = loadTaskFixture();
+
+      await expect(
+        activities.leaseWorktree({
+          task,
+          repoRoot: repo.path,
+          worktreeRoot,
+          maxLifetimeHours: 24,
+        }),
+      ).rejects.toThrow(/plan_tasks update failed/);
+
+      const expectedPath = join(
+        worktreeRoot,
+        task.planId,
+        `${task.id}-${task.slug}`,
+      );
+      expect(existsSync(expectedPath)).toBe(false);
+    } finally {
+      await repo.cleanup();
+      await rm(worktreeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("re-stamps task.branch_name on the existing-lease early-return path", async () => {
     const repo = await createTempGitRepo();
     const worktreeRoot = await mkdtemp(join(tmpdir(), "pm-go-wtroot-"));
     try {
       const task = loadTaskFixture();
-      // Simulate the "first attempt partially succeeded" state by seeding
-      // an active-lease row via the select mock. The activity should
-      // short-circuit, returning the existing lease WITHOUT calling
-      // createLease (which would throw `worktree-already-exists`).
       const existingRow = {
         id: "11111111-2222-4333-8444-555555555555",
         taskId: task.id,
@@ -154,12 +222,17 @@ describe("createWorktreeActivities.leaseWorktree", () => {
         maxLifetimeHours: 24,
       });
 
-      // No fresh insert happened — idempotent short-circuit.
+      // No fresh insert — short-circuit via the existing lease.
       expect(spies.insert).not.toHaveBeenCalled();
+      expect(spies.transaction).not.toHaveBeenCalled();
       expect(lease.id).toBe(existingRow.id);
-      expect(lease.worktreePath).toBe(existingRow.worktreePath);
-      expect(lease.branchName).toBe(existingRow.branchName);
-      expect(lease.baseSha).toBe(existingRow.baseSha);
+      // But the task row still gets stamped so Temporal retries / worker
+      // restarts leave the durable state consistent with the lease.
+      expect(spies.update).toHaveBeenCalledTimes(1);
+      expect(spies.set).toHaveBeenCalledWith({
+        branchName: existingRow.branchName,
+        worktreePath: existingRow.worktreePath,
+      });
     } finally {
       await repo.cleanup();
       await rm(worktreeRoot, { recursive: true, force: true });

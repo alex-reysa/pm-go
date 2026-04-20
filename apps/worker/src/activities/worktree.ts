@@ -1,5 +1,5 @@
 import type { Task, WorktreeLease } from "@pm-go/contracts";
-import { worktreeLeases, type PmGoDb } from "@pm-go/db";
+import { planTasks, worktreeLeases, type PmGoDb } from "@pm-go/db";
 import { and, eq } from "drizzle-orm";
 import {
   createLease,
@@ -56,6 +56,18 @@ export function createWorktreeActivities(deps: WorktreeActivityDeps) {
         )
         .limit(1);
       if (existing) {
+        // Re-entry path (Temporal retry or worker restart). The task row
+        // may still carry its planner-supplied branch_name from before
+        // the first lease landed; re-stamp it from the existing lease so
+        // subsequent activities (integrateTask) see the authoritative
+        // branch. Idempotent: overwrites with the same value on repeat.
+        await deps.db
+          .update(planTasks)
+          .set({
+            branchName: existing.branchName,
+            worktreePath: existing.worktreePath,
+          })
+          .where(eq(planTasks.id, input.task.id));
         return {
           id: existing.id,
           ...(existing.taskId !== null ? { taskId: existing.taskId } : {}),
@@ -71,18 +83,33 @@ export function createWorktreeActivities(deps: WorktreeActivityDeps) {
       }
       const lease = await createLease(input);
       try {
-        await deps.db.insert(worktreeLeases).values({
-          id: lease.id,
-          taskId: lease.taskId,
-          repoRoot: lease.repoRoot,
-          branchName: lease.branchName,
-          worktreePath: lease.worktreePath,
-          baseSha: lease.baseSha,
-          expiresAt: lease.expiresAt,
-          status: lease.status,
+        // Single transaction so the lease row and the task-row stamp
+        // commit together. If the plan_tasks update fails after the
+        // lease insert, both writes roll back and the outer catch
+        // reclaims the on-disk worktree — no orphan rows, no divergent
+        // branch_name.
+        await deps.db.transaction(async (tx) => {
+          await tx.insert(worktreeLeases).values({
+            id: lease.id,
+            taskId: lease.taskId,
+            repoRoot: lease.repoRoot,
+            branchName: lease.branchName,
+            worktreePath: lease.worktreePath,
+            baseSha: lease.baseSha,
+            expiresAt: lease.expiresAt,
+            status: lease.status,
+          });
+          await tx
+            .update(planTasks)
+            .set({
+              branchName: lease.branchName,
+              worktreePath: lease.worktreePath,
+            })
+            .where(eq(planTasks.id, input.task.id));
         });
       } catch (err) {
-        // Roll back the on-disk worktree so we don't leave orphans.
+        // Roll back the on-disk worktree so we don't leave orphans. The
+        // transaction itself rolls back both DB writes.
         await releaseLeasePkg({
           worktreePath: lease.worktreePath,
           repoRoot: lease.repoRoot,

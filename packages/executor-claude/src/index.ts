@@ -124,8 +124,17 @@ export interface CreateStubImplementerRunnerOptions {
   /**
    * Relative path inside the leased worktree to create and commit. The
    * path must not escape `worktreePath` (checked via `isInsideCwd`).
+   * Used when every task should write to the same path (phase-3/4 smoke).
    */
   writeFile?: { relativePath: string; contents: string };
+  /**
+   * Per-slug path map. Phase 5 runs multiple tasks with disjoint
+   * fileScopes inside a single worker boot; a global path would flag
+   * any task whose fileScope doesn't include that path as
+   * out-of-scope. When a task's slug is a key in `bySlug`, that path
+   * wins; otherwise the resolver falls back to `writeFile`.
+   */
+  writeFileBySlug?: { bySlug: Record<string, string>; contents: string };
   /** Commit message override; defaults to `feat(<slug>): stub implementer placeholder`. */
   commitMessage?: string;
 }
@@ -146,12 +155,16 @@ export function createStubImplementerRunner(
       const startedAt = new Date().toISOString();
       let finalCommitSha: string | undefined;
 
-      if (options.writeFile) {
-        const relPath = options.writeFile.relativePath;
+      // Resolve the write path per-call so a single worker boot can serve
+      // multiple tasks with disjoint fileScopes. Per-slug map wins over
+      // the global path; either absence is a no-op (the legacy behavior).
+      const resolved = resolveStubWriteFile(options, input.task.slug);
+      if (resolved) {
+        const relPath = resolved.relativePath;
         const absTarget = path.resolve(input.worktreePath, relPath);
         if (!isInsideCwdImpl(absTarget, input.worktreePath)) {
           throw new Error(
-            `createStubImplementerRunner: writeFile.relativePath '${relPath}' escapes worktreePath`,
+            `createStubImplementerRunner: write path '${relPath}' escapes worktreePath`,
           );
         }
         await mkdir(path.dirname(absTarget), { recursive: true });
@@ -159,7 +172,7 @@ export function createStubImplementerRunner(
         // contents. Append a cycle marker when reviewFeedback is present
         // so the second commit has a real diff — otherwise `git commit`
         // fails with "nothing to commit".
-        const baseContents = options.writeFile.contents;
+        const baseContents = resolved.contents;
         const contents = input.reviewFeedback
           ? `${baseContents}\n// fix cycle ${input.reviewFeedback.cycleNumber} — report ${input.reviewFeedback.reportId}\n`
           : baseContents;
@@ -240,6 +253,28 @@ function extractCommitErrorMessage(err: unknown): string {
     if (typeof v === "string") parts.push(v);
   }
   return parts.join("\n");
+}
+
+/**
+ * Pick the write path for a given task slug. Per-slug map beats the
+ * global path so Phase 5 can run multiple tasks with disjoint
+ * fileScopes inside a single worker boot. Returns `undefined` when no
+ * write configured — the runner becomes a pure no-op.
+ */
+function resolveStubWriteFile(
+  options: CreateStubImplementerRunnerOptions,
+  slug: string,
+): { relativePath: string; contents: string } | undefined {
+  if (options.writeFileBySlug) {
+    const bySlug = options.writeFileBySlug.bySlug[slug];
+    if (bySlug !== undefined) {
+      return { relativePath: bySlug, contents: options.writeFileBySlug.contents };
+    }
+  }
+  if (options.writeFile) {
+    return options.writeFile;
+  }
+  return undefined;
 }
 
 export { createClaudeImplementerRunner } from "./implementer-runner.js";

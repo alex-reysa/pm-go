@@ -196,6 +196,11 @@ async function main() {
  *   string to opt out of filesystem writes entirely — the workflow still
  *   succeeds and transitions to `in_review` because `commitAgentWork`
  *   handles an empty worktree gracefully.
+ * - `IMPLEMENTER_STUB_WRITE_FILE_PATH_BY_SLUG` — comma-separated
+ *   `slug=path,slug2=pathB` map. When present, the per-slug path beats
+ *   `IMPLEMENTER_STUB_WRITE_FILE_PATH` for any matching task. Required
+ *   by the Phase 5 smoke, which runs three tasks with disjoint fileScopes
+ *   inside a single worker boot.
  * - `IMPLEMENTER_STUB_WRITE_FILE_CONTENTS` — contents for the written
  *   file. Defaults to "stub implementer output\n".
  * - Default behavior (matching the historical Phase 3 config): write
@@ -203,21 +208,57 @@ async function main() {
  *   inside a task's fileScope — like Phase 4 smoke — must override the
  *   path explicitly.
  */
-function buildStubImplementerOptions(): { writeFile?: { relativePath: string; contents: string } } {
+function buildStubImplementerOptions(): {
+  writeFile?: { relativePath: string; contents: string };
+  writeFileBySlug?: { bySlug: Record<string, string>; contents: string };
+} {
   const explicitPath = process.env.IMPLEMENTER_STUB_WRITE_FILE_PATH;
   const explicitContents =
     process.env.IMPLEMENTER_STUB_WRITE_FILE_CONTENTS ?? "stub implementer output\n";
+  const perSlugRaw = process.env.IMPLEMENTER_STUB_WRITE_FILE_PATH_BY_SLUG;
 
-  // Empty-string opt-out — no filesystem writes. commitAgentWork handles
-  // the empty case and the task still reaches in_review.
-  if (explicitPath === "") {
-    return {};
+  const out: {
+    writeFile?: { relativePath: string; contents: string };
+    writeFileBySlug?: { bySlug: Record<string, string>; contents: string };
+  } = {};
+
+  if (perSlugRaw && perSlugRaw.trim().length > 0) {
+    const bySlug: Record<string, string> = {};
+    for (const entry of perSlugRaw.split(",")) {
+      const trimmed = entry.trim();
+      if (trimmed.length === 0) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq <= 0 || eq === trimmed.length - 1) {
+        console.warn(
+          `IMPLEMENTER_STUB_WRITE_FILE_PATH_BY_SLUG: ignoring malformed entry '${trimmed}' (expected slug=path)`,
+        );
+        continue;
+      }
+      const slug = trimmed.slice(0, eq).trim();
+      const pth = trimmed.slice(eq + 1).trim();
+      if (slug.length === 0 || pth.length === 0) continue;
+      bySlug[slug] = pth;
+    }
+    if (Object.keys(bySlug).length > 0) {
+      out.writeFileBySlug = { bySlug, contents: explicitContents };
+    }
   }
 
-  const relativePath = explicitPath ?? "NOTES.md";
-  return {
-    writeFile: { relativePath, contents: explicitContents },
-  };
+  // Empty-string opt-out — no filesystem writes (even if the per-slug
+  // map is empty). commitAgentWork handles the empty case.
+  if (explicitPath === "") {
+    return out;
+  }
+
+  // Only install a global fallback when an explicit path was provided
+  // OR no per-slug map exists. If both are set, per-slug takes
+  // precedence per-call (see resolveStubWriteFile), but we keep the
+  // global as the fallback for slugs not in the map.
+  const relativePath = explicitPath ?? (out.writeFileBySlug ? undefined : "NOTES.md");
+  if (relativePath !== undefined) {
+    out.writeFile = { relativePath, contents: explicitContents };
+  }
+  return out;
 }
 
 /**
@@ -310,6 +351,15 @@ function parseCompletionAuditorSmokeSequence(
 }
 
 function resolveFixturePath(): string {
+  // `PLANNER_STUB_FIXTURE_PATH` wins when set — the Phase 5 smoke points
+  // the stub planner at a dedicated 2-phase fixture with no-op
+  // testCommands and disjoint fileScopes. Absolute paths pass through;
+  // relative paths resolve against the repo root, matching the other
+  // env-var-configurable dirs (PLAN_ARTIFACT_DIR, WORKTREE_ROOT).
+  const override = process.env.PLANNER_STUB_FIXTURE_PATH;
+  if (override && override.trim().length > 0) {
+    return path.isAbsolute(override) ? override : resolveFromRepoRoot(override);
+  }
   // `import.meta.url` resolves to the compiled `dist/index.js` in prod and
   // to `src/index.ts` when run under tsx. Both live at apps/worker/{dist|src}
   // so the fixture lives 4 levels up from the compiled file:

@@ -128,7 +128,7 @@ describe("PhaseAuditWorkflow", () => {
     }
   });
 
-  it("advances main + propagates snapshot + completes phase on pass", async () => {
+  it("advances main + propagates snapshot + transitions next phase + completes phase on pass", async () => {
     activityFns.loadMergeRun.mockResolvedValue(makeMergeRun());
     activityFns.loadPlan.mockResolvedValue(makePlan());
     activityFns.loadPhase.mockResolvedValue(makePhase());
@@ -157,6 +157,13 @@ describe("PhaseAuditWorkflow", () => {
     expect(activityFns.stampPhaseBaseSnapshotId).toHaveBeenCalledWith({
       phaseId: "next-phase-id",
       snapshotId: SNAP_ID,
+    });
+    // Next phase must transition to 'executing' so /phases/:next/integrate
+    // is unblocked. Current phase must still reach 'completed'. Both
+    // updatePhaseStatus calls happen; assert both explicitly.
+    expect(activityFns.updatePhaseStatus).toHaveBeenCalledWith({
+      phaseId: "next-phase-id",
+      status: "executing",
     });
     expect(activityFns.updatePhaseStatus).toHaveBeenCalledWith({
       phaseId: PHASE_ID,
@@ -224,7 +231,7 @@ describe("PhaseAuditWorkflow", () => {
     ).rejects.toThrow(/integration_head_sha/);
   });
 
-  it("does not call stampPhaseBaseSnapshotId when there is no next phase", async () => {
+  it("does not touch the next phase when there is no next phase", async () => {
     activityFns.loadMergeRun.mockResolvedValue(makeMergeRun());
     activityFns.loadPlan.mockResolvedValue(makePlan());
     activityFns.loadPhase.mockResolvedValue(makePhase());
@@ -243,5 +250,12 @@ describe("PhaseAuditWorkflow", () => {
 
     expect(activityFns.stampPhaseBaseSnapshotId).not.toHaveBeenCalled();
     expect(activityFns.fastForwardMainViaUpdateRef).toHaveBeenCalled();
+    // Only the current-phase-completed transition fired; no next-phase
+    // transition because there is no next phase.
+    const updateCalls = activityFns.updatePhaseStatus.mock.calls;
+    const nextPhaseTransitions = updateCalls.filter(
+      (c) => (c[0] as { status: string }).status === "executing",
+    );
+    expect(nextPhaseTransitions).toHaveLength(0);
   });
 });

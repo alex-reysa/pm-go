@@ -1,0 +1,146 @@
+{
+  "id": "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+  "specDocumentId": "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+  "repoSnapshotId": "f0e1d2c3-b4a5-4768-99aa-bbccddeeff00",
+  "title": "Phase 5 smoke — two-phase plan",
+  "summary": "Two-phase fixture dedicated to exercising Phase 5's integration \u2192 audit \u2192 completion \u2192 release flow in stub mode. Task fileScopes are disjoint, testCommands are no-ops so validatePostMergeState passes in a fresh temp clone, and phase 1 starts 'pending' so PhaseAuditWorkflow must transition it to 'executing' after phase 0 passes.",
+  "status": "approved",
+  "phases": [
+    {
+      "id": "11111111-2222-4333-8444-555555555555",
+      "planId": "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      "index": 0,
+      "title": "Phase 5 smoke — phase 0",
+      "summary": "Two tasks with disjoint fileScopes so the stub implementer's per-slug path map can serve both without a fileScope violation.",
+      "status": "executing",
+      "integrationBranch": "integration/phase5-smoke/phase-0",
+      "baseSnapshotId": "f0e1d2c3-b4a5-4768-99aa-bbccddeeff00",
+      "taskIds": [
+        "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+      ],
+      "dependencyEdges": [],
+      "mergeOrder": [
+        "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+      ]
+    },
+    {
+      "id": "22222222-3333-4444-8555-666666666666",
+      "planId": "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      "index": 1,
+      "title": "Phase 5 smoke — phase 1",
+      "summary": "Single task that must fork from the post-phase-0 snapshot. Phase 1 starts 'pending' so the smoke proves PhaseAuditWorkflow flips it to 'executing' on phase-0 pass (Unblocker 4).",
+      "status": "pending",
+      "integrationBranch": "integration/phase5-smoke/phase-1",
+      "baseSnapshotId": "f0e1d2c3-b4a5-4768-99aa-bbccddeeff00",
+      "taskIds": ["cccccccc-dddd-4eee-8fff-000000000000"],
+      "dependencyEdges": [],
+      "mergeOrder": ["cccccccc-dddd-4eee-8fff-000000000000"]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      "planId": "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      "phaseId": "11111111-2222-4333-8444-555555555555",
+      "slug": "p5-task-a",
+      "title": "Phase 5 smoke task A",
+      "summary": "Writes phase5-smoke/task-a.txt under phase 0.",
+      "kind": "foundation",
+      "status": "pending",
+      "riskLevel": "low",
+      "fileScope": {
+        "includes": ["phase5-smoke/task-a.txt"]
+      },
+      "acceptanceCriteria": [
+        {
+          "id": "p5-ac-a",
+          "description": "phase5-smoke/task-a.txt exists on the integration head.",
+          "verificationCommands": ["true"],
+          "required": true
+        }
+      ],
+      "testCommands": ["true"],
+      "budget": { "maxWallClockMinutes": 5 },
+      "reviewerPolicy": {
+        "required": true,
+        "strictness": "standard",
+        "maxCycles": 1,
+        "reviewerWriteAccess": false,
+        "stopOnHighSeverityCount": 1
+      },
+      "requiresHumanApproval": false,
+      "maxReviewFixCycles": 1
+    },
+    {
+      "id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+      "planId": "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      "phaseId": "11111111-2222-4333-8444-555555555555",
+      "slug": "p5-task-b",
+      "title": "Phase 5 smoke task B",
+      "summary": "Writes phase5-smoke/task-b.txt under phase 0 (disjoint from task A).",
+      "kind": "foundation",
+      "status": "pending",
+      "riskLevel": "low",
+      "fileScope": {
+        "includes": ["phase5-smoke/task-b.txt"]
+      },
+      "acceptanceCriteria": [
+        {
+          "id": "p5-ac-b",
+          "description": "phase5-smoke/task-b.txt exists on the integration head.",
+          "verificationCommands": ["true"],
+          "required": true
+        }
+      ],
+      "testCommands": ["true"],
+      "budget": { "maxWallClockMinutes": 5 },
+      "reviewerPolicy": {
+        "required": true,
+        "strictness": "standard",
+        "maxCycles": 1,
+        "reviewerWriteAccess": false,
+        "stopOnHighSeverityCount": 1
+      },
+      "requiresHumanApproval": false,
+      "maxReviewFixCycles": 1
+    },
+    {
+      "id": "cccccccc-dddd-4eee-8fff-000000000000",
+      "planId": "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      "phaseId": "22222222-3333-4444-8555-666666666666",
+      "slug": "p5-task-c",
+      "title": "Phase 5 smoke task C",
+      "summary": "Writes phase5-smoke/task-c.txt under phase 1. Must fork from phase 0's post-merge snapshot (the sequential invariant).",
+      "kind": "implementation",
+      "status": "pending",
+      "riskLevel": "low",
+      "fileScope": {
+        "includes": ["phase5-smoke/task-c.txt"]
+      },
+      "acceptanceCriteria": [
+        {
+          "id": "p5-ac-c",
+          "description": "phase5-smoke/task-c.txt exists on the integration head and phase 0's files are preserved.",
+          "verificationCommands": ["true"],
+          "required": true
+        }
+      ],
+      "testCommands": ["true"],
+      "budget": { "maxWallClockMinutes": 5 },
+      "reviewerPolicy": {
+        "required": true,
+        "strictness": "standard",
+        "maxCycles": 1,
+        "reviewerWriteAccess": false,
+        "stopOnHighSeverityCount": 1
+      },
+      "requiresHumanApproval": false,
+      "maxReviewFixCycles": 1
+    }
+  ],
+  "risks": [],
+  "createdAt": "2026-04-19T09:00:00.000Z",
+  "updatedAt": "2026-04-19T09:00:00.000Z"
+}

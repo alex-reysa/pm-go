@@ -145,18 +145,27 @@ export async function PhaseAuditWorkflow(
       expectedCurrentSha: mergeRun.baseSha,
     });
 
-    // 2. Propagate post-merge snapshot to next phase's base.
-    if (mergeRun.postMergeSnapshotId !== undefined) {
-      const next = await loadNextPhase({
-        planId: input.planId,
-        currentPhaseIndex: phase.index,
-      });
-      if (next) {
+    // 2. Propagate post-merge snapshot to next phase's base + transition
+    //    the next phase from `pending` to `executing`. Without the status
+    //    transition, POST /phases/:next/integrate would 409 — the state
+    //    machine only allows `executing` or `integrating`. Stamp the
+    //    snapshot BEFORE the status flip so any observer that sees
+    //    `executing` also sees a valid base_snapshot_id.
+    const next = await loadNextPhase({
+      planId: input.planId,
+      currentPhaseIndex: phase.index,
+    });
+    if (next) {
+      if (mergeRun.postMergeSnapshotId !== undefined) {
         await stampPhaseBaseSnapshotId({
           phaseId: next.id,
           snapshotId: mergeRun.postMergeSnapshotId,
         });
       }
+      await updatePhaseStatus({
+        phaseId: next.id,
+        status: "executing",
+      });
     }
 
     // 3. Mark the phase completed, release the lease.
