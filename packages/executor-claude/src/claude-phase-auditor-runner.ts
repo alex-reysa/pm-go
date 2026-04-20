@@ -68,11 +68,12 @@ export const AUDITOR_CONTAINMENT_PATTERNS: Array<{
   // scripted code. Even inline snippets (`python3 -c 'open(...).read()'`)
   // trivially exfiltrate filesystem contents the existing cat-style
   // guards would block; ban the interpreter outright.
+  //
+  // Each non-shell pattern requires whitespace or end-of-line after
+  // the name (`\b...(?=\s|$)`) so path tokens like `node_modules/` or
+  // `python/script` used as arguments to an otherwise-safe command
+  // don't false-positive.
   // ==================================================================
-  // Interpreter patterns. Each requires whitespace or end-of-line after
-  // the name so we don't flag path tokens like `node_modules/` or
-  // `python/script` that happen to be arguments to an otherwise-safe
-  // command. `\b` plus `(?=\s|$)` = "interpreter invoked as a command."
   {
     name: "shell -c",
     re: /\b(?:sh|bash|zsh|dash|ksh)\s+(?:[^|\n]*\s)?-c\b/,
@@ -89,16 +90,18 @@ export const AUDITOR_CONTAINMENT_PATTERNS: Array<{
   // ==================================================================
   // File copiers / movers — exfiltration vectors that the cat-style
   // absolute-path guard doesn't cover (they take pairs of paths, not
-  // piped content).
+  // piped content). Each pattern requires whitespace or end-of-line
+  // after the verb so argument tokens like `'cp*'` in
+  // `find . -name 'cp*'` don't false-positive.
   // ==================================================================
-  { name: "cp", re: /\bcp\b/ },
-  { name: "mv", re: /\bmv\b/ },
-  { name: "dd", re: /\bdd\b/ },
+  { name: "cp", re: /\bcp(?=\s|$)/ },
+  { name: "mv", re: /\bmv(?=\s|$)/ },
+  { name: "dd", re: /\bdd(?=\s|$)/ },
   { name: "install(1)", re: /\binstall\s+-/ },
-  { name: "ln", re: /\bln\b/ },
-  { name: "tar", re: /\btar\b/ },
-  { name: "rsync", re: /\brsync\b/ },
-  { name: "scp", re: /\bscp\b/ },
+  { name: "ln", re: /\bln(?=\s|$)/ },
+  { name: "tar", re: /\btar(?=\s|$)/ },
+  { name: "rsync", re: /\brsync(?=\s|$)/ },
+  { name: "scp", re: /\bscp(?=\s|$)/ },
 
   // ==================================================================
   // Original containment patterns (absolute-path reads, find escapes,
@@ -123,6 +126,14 @@ export const AUDITOR_CONTAINMENT_PATTERNS: Array<{
     name: "read absolute path",
     re: /\b(?:cat|head|tail|less|more|nl|xxd|od|strings|base64|tr|cut|sort|uniq)\b[^|;&\n]*\s\/(?!dev\/(?:null|stdin|stdout|stderr)\b)/,
   },
+  // Relative-parent reads — `cat ../../../etc/passwd` climbs out of
+  // the auditor's cwd and would otherwise slip past the absolute-path
+  // guard (which requires a literal `/` right after whitespace, not
+  // `..`). Same verb list as the absolute-path pattern.
+  {
+    name: "read parent path",
+    re: /\b(?:cat|head|tail|less|more|nl|xxd|od|strings|base64|tr|cut|sort|uniq)\b[^|;&\n]*\s\.\.\//,
+  },
   // `find` walking an absolute path (anywhere under `/`) or the
   // worktree's parent. Auditors can still run `find .`, `find ./sub`,
   // `find -name` (cwd default).
@@ -134,6 +145,8 @@ export const AUDITOR_CONTAINMENT_PATTERNS: Array<{
     name: "ls absolute path",
     re: /\bls\b[^|;&\n]*\s\/(?!dev\/(?:null|stdin|stdout|stderr)\b)/,
   },
+  // `ls` climbing to a parent directory (`ls ../`, `ls ../../foo`).
+  { name: "ls parent path", re: /\bls\b[^|;&\n]*\s\.\.\// },
 ];
 
 /**

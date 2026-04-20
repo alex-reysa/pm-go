@@ -56,11 +56,13 @@ export async function fastForwardMainViaUpdateRef(
   const targetBranch = input.targetBranch ?? "main";
   const targetRef = `refs/heads/${targetBranch}`;
 
-  // Resolve the actual current ref BEFORE the ancestry pre-check. The
-  // idempotent fast path (already at target) must short-circuit before
-  // `git merge-base --is-ancestor expectedCurrentSha newSha` runs,
-  // because on retry `expectedCurrentSha` == old-main-sha and that is
-  // no longer an ancestor of main (since main IS newSha now).
+  // Resolve the actual current ref BEFORE the ancestry pre-check so
+  // the idempotent fast path (already at target) can short-circuit. On
+  // a Temporal retry after a successful update-ref, `actualCurrentSha`
+  // is `newSha` but `expectedCurrentSha` is still the pre-advance sha;
+  // the `actualCurrentSha !== expectedCurrentSha` guard below would
+  // otherwise throw main-advance-conflict on state we produced
+  // ourselves.
   let actualCurrentSha: string;
   try {
     const { stdout } = await execFileAsync("git", [

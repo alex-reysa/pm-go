@@ -238,6 +238,38 @@ describe("createClaudePhaseAuditorRunner — SDK query options", () => {
     expect(outside.behavior).toBe("deny");
   });
 
+  it("canUseTool denies relative-parent reads that climb out of the integration worktree", async () => {
+    // Regression: an earlier iteration of the containment denylist only
+    // caught absolute paths (`cat /etc/passwd`). A `../` prefix starts
+    // with `.`, not `/`, and slipped past the regex — letting an
+    // auditor read arbitrary files in REPO_ROOT's parent (other
+    // worktrees, `.ssh`, etc.). The `read parent path` + `ls parent
+    // path` patterns close that.
+    const runner = createClaudePhaseAuditorRunner({ apiKey: "test-key" });
+    await expect(runner.run(buildInput())).rejects.toThrow();
+    const canUseTool = queryMock.mock.calls[0]![0].options.canUseTool as (
+      tool: string,
+      toolInput: unknown,
+    ) => Promise<{ behavior: string; message?: string }>;
+
+    const cases: string[] = [
+      "cat ../secret.txt",
+      "cat ../../../etc/passwd",
+      "head -n 5 ../../other-repo/.env",
+      "tail ../../../Users/alejandro/.ssh/id_rsa",
+      "less ../foo",
+      "xxd ../bin/thing",
+      "base64 ../keys.bin",
+      "ls ../",
+      "ls -la ../../",
+      "ls ../sibling-worktree",
+    ];
+    for (const cmd of cases) {
+      const r = await canUseTool("Bash", { command: cmd });
+      expect(r.behavior, `expected deny for: ${cmd}`).toBe("deny");
+    }
+  });
+
   it("canUseTool denies Bash containment escapes (git -C elsewhere, printenv/env, absolute-path reads, find ..)", async () => {
     const runner = createClaudePhaseAuditorRunner({ apiKey: "test-key" });
     await expect(runner.run(buildInput())).rejects.toThrow();
@@ -350,6 +382,16 @@ describe("createClaudePhaseAuditorRunner — SDK query options", () => {
       "head -n 20 README.md",
       "ls packages/contracts/src",
       "pnpm test > /dev/null 2>&1",
+      // Regression: loose `\bcp\b` etc. matched these as file-copier
+      // invocations even though they're find arguments (glob tokens).
+      // Tightened patterns require invocation whitespace AFTER the
+      // verb so `cp*`, `mv-tmp*`, `*.tar.gz` inside quoted args don't
+      // false-positive. (Free-text quoted strings containing `cp `
+      // still trip the regex — auditors should use the Grep tool for
+      // content searches; Bash is for git / file ops.)
+      "find . -name 'cp*'",
+      "find . -name 'mv-tmp*'",
+      "find . -name '*.tar.gz'",
     ];
     for (const cmd of cases) {
       const r = await canUseTool("Bash", { command: cmd });
