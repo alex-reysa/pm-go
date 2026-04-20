@@ -28,6 +28,39 @@ export const PhaseStatusLiteralSchema = Type.Union([
 ]);
 
 /**
+ * Task status literal set. Mirrors `TaskStatus` in `plan.ts` —
+ * colocated like `PhaseStatusLiteralSchema` for the same reason
+ * (keep the events lane free of cross-lane imports).
+ */
+export const TaskStatusLiteralSchema = Type.Union([
+  Type.Literal("pending"),
+  Type.Literal("ready"),
+  Type.Literal("running"),
+  Type.Literal("in_review"),
+  Type.Literal("fixing"),
+  Type.Literal("ready_to_merge"),
+  Type.Literal("merged"),
+  Type.Literal("blocked"),
+  Type.Literal("failed"),
+]);
+
+/**
+ * Artifact kind literal set. Mirrors `Artifact['kind']` in
+ * `execution.ts`. Must stay in lockstep with `artifactKind` pgEnum
+ * in `packages/db/src/schema/artifacts.ts`.
+ */
+export const ArtifactKindLiteralSchema = Type.Union([
+  Type.Literal("plan_markdown"),
+  Type.Literal("review_report"),
+  Type.Literal("completion_audit_report"),
+  Type.Literal("completion_evidence_bundle"),
+  Type.Literal("test_report"),
+  Type.Literal("event_log"),
+  Type.Literal("patch_bundle"),
+  Type.Literal("pr_summary"),
+]);
+
+/**
  * TypeBox schema for `PhaseStatusChangedEvent`. Emitted whenever a
  * `phases.status` transition is observed by the worker activity
  * layer. The payload captures before + after so SSE clients can
@@ -52,14 +85,65 @@ export const PhaseStatusChangedEventSchema = Type.Object(
 );
 
 /**
- * Union of every known `WorkflowEvent` variant. Intentionally narrow
- * in this first commit — later emit points (task, merge, audit,
- * artifact) add new members here. Keeping it a `Type.Union` even
- * with a single member means validation is already discriminating
- * on `kind`, so extending it doesn't require re-plumbing callers.
+ * TypeBox schema for `TaskStatusChangedEvent`. Emitted when
+ * `plan_tasks.status` transitions. `phaseId` is denormalized for
+ * phase-scoped UI filters.
+ */
+export const TaskStatusChangedEventSchema = Type.Object(
+  {
+    id: UuidSchema,
+    planId: UuidSchema,
+    taskId: UuidSchema,
+    phaseId: UuidSchema,
+    kind: Type.Literal("task_status_changed"),
+    payload: Type.Object(
+      {
+        previousStatus: TaskStatusLiteralSchema,
+        nextStatus: TaskStatusLiteralSchema,
+      },
+      { additionalProperties: false },
+    ),
+    createdAt: Iso8601Schema,
+  },
+  { $id: "TaskStatusChangedEvent", additionalProperties: false },
+);
+
+/**
+ * TypeBox schema for `ArtifactPersistedEvent`. Emitted on insert
+ * into `artifacts`. The payload carries the artifact id, kind, and
+ * file:// URI; clients fetch content via `GET /artifacts/:id`.
+ */
+export const ArtifactPersistedEventSchema = Type.Object(
+  {
+    id: UuidSchema,
+    planId: UuidSchema,
+    kind: Type.Literal("artifact_persisted"),
+    payload: Type.Object(
+      {
+        artifactId: UuidSchema,
+        artifactKind: ArtifactKindLiteralSchema,
+        uri: Type.String({ minLength: 1 }),
+      },
+      { additionalProperties: false },
+    ),
+    createdAt: Iso8601Schema,
+  },
+  { $id: "ArtifactPersistedEvent", additionalProperties: false },
+);
+
+/**
+ * Union of every known `WorkflowEvent` variant. Validation
+ * discriminates on `kind` so a malformed variant fails against its
+ * specific member rather than falling through to an unknown-kind
+ * error. Add new emit points by appending here + widening the
+ * hand-written `WorkflowEvent` interface.
  */
 export const WorkflowEventSchema = Type.Union(
-  [PhaseStatusChangedEventSchema],
+  [
+    PhaseStatusChangedEventSchema,
+    TaskStatusChangedEventSchema,
+    ArtifactPersistedEventSchema,
+  ],
   { $id: "WorkflowEvent" },
 );
 

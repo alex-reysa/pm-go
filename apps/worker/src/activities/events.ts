@@ -18,37 +18,64 @@ export interface EventActivityDeps {
   db: PmGoDb;
 }
 
+/**
+ * Caller shape — the full `WorkflowEvent` discriminated union
+ * minus the host-controlled `id` + `createdAt` fields (both
+ * optional; defaults are generated here). Union preservation
+ * matters: callers TypeScript-narrow on `kind` and the activity
+ * internally switches on the same discriminant.
+ */
+export type EmitWorkflowEventInput = WorkflowEvent extends infer E
+  ? E extends { id: UUID; createdAt: string }
+    ? Omit<E, "id" | "createdAt"> &
+        Partial<Pick<E, "id" | "createdAt">>
+    : never
+  : never;
+
 export function createEventActivities(deps: EventActivityDeps) {
   const { db } = deps;
 
   return {
     /**
-     * Persist a single `WorkflowEvent`. Caller supplies everything
-     * except `id` + `createdAt` so the activity stays pure with
-     * respect to the event-kind union (no per-kind branching here).
+     * Persist a single `WorkflowEvent`. The caller supplies the
+     * variant-specific fields (`phaseId`, `taskId`, `payload`);
+     * `id` + `createdAt` default when omitted.
      *
-     * Best-effort: swallow + log any DB error so a failed emit
-     * can't block the workflow step that invoked it. The
-     * `workflow_events` table is a read model — callers shouldn't
-     * have to care about its health.
+     * The per-kind switch is load-bearing: each variant carries
+     * different subject ids, and the DB row needs the right
+     * `phaseId` / `taskId` columns set regardless of whether the
+     * caller spelled them on the input.
      */
     async emitWorkflowEvent(
-      input: Omit<WorkflowEvent, "id" | "createdAt"> &
-        Partial<Pick<WorkflowEvent, "id" | "createdAt">>,
+      input: EmitWorkflowEventInput,
     ): Promise<{ eventId: UUID | null }> {
       const id: UUID = input.id ?? randomUUID();
       const createdAt: string = input.createdAt ?? new Date().toISOString();
+
+      // Extract subject-id columns per variant. Kept as an explicit
+      // switch so a new variant is a compile error here until
+      // handled — the DB projection must mirror the contract.
+      let phaseId: UUID | null = null;
+      let taskId: UUID | null = null;
+      switch (input.kind) {
+        case "phase_status_changed":
+          phaseId = input.phaseId;
+          break;
+        case "task_status_changed":
+          taskId = input.taskId;
+          phaseId = input.phaseId;
+          break;
+        case "artifact_persisted":
+          // Plan-scoped; no phase or task subject.
+          break;
+      }
+
       try {
         await db.insert(workflowEvents).values({
           id,
           planId: input.planId,
-          // Subject ids: runtime-narrowed from the discriminated union.
-          // Only the phaseId carrier is emitted today; task/other
-          // subject ids live on future variants and get added here
-          // when those variants land.
-          phaseId:
-            input.kind === "phase_status_changed" ? input.phaseId : null,
-          taskId: null,
+          phaseId,
+          taskId,
           kind: input.kind,
           payload: input.payload,
           createdAt,

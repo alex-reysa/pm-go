@@ -7,4 +7,6 @@
 export {
   WorkflowEventSchema as WorkflowEventJsonSchema,
   PhaseStatusChangedEventSchema as PhaseStatusChangedEventJsonSchema,
+  TaskStatusChangedEventSchema as TaskStatusChangedEventJsonSchema,
+  ArtifactPersistedEventSchema as ArtifactPersistedEventJsonSchema,
 } from "../../validators/events/workflow-event.js";

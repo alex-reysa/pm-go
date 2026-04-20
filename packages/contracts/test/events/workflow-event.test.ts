@@ -16,7 +16,21 @@ const fixturePath = resolve(
   __dirname,
   "../../src/fixtures/events/workflow-event.json",
 );
+const taskStatusChangedFixturePath = resolve(
+  __dirname,
+  "../../src/fixtures/events/task-status-changed-event.json",
+);
+const artifactPersistedFixturePath = resolve(
+  __dirname,
+  "../../src/fixtures/events/artifact-persisted-event.json",
+);
 const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as unknown;
+const taskStatusChangedFixture = JSON.parse(
+  readFileSync(taskStatusChangedFixturePath, "utf8"),
+) as unknown;
+const artifactPersistedFixture = JSON.parse(
+  readFileSync(artifactPersistedFixturePath, "utf8"),
+) as unknown;
 
 type _WorkflowEventSubtypeCheck = Static<
   typeof WorkflowEventSchema
@@ -68,6 +82,43 @@ describe("validateWorkflowEvent", () => {
     const mutated = {
       ...(fixture as Record<string, unknown>),
       createdAt: "yesterday",
+    };
+    expect(validateWorkflowEvent(mutated)).toBe(false);
+  });
+
+  it("accepts the task_status_changed fixture", () => {
+    expect(validateWorkflowEvent(taskStatusChangedFixture)).toBe(true);
+  });
+
+  it("rejects task_status_changed payload whose nextStatus isn't a TaskStatus literal", () => {
+    const mutated = {
+      ...(taskStatusChangedFixture as Record<string, unknown>),
+      payload: { previousStatus: "pending", nextStatus: "approved" },
+    };
+    expect(validateWorkflowEvent(mutated)).toBe(false);
+  });
+
+  it("rejects task_status_changed missing taskId (subject required on variant)", () => {
+    const { taskId: _taskId, ...rest } = taskStatusChangedFixture as Record<
+      string,
+      unknown
+    >;
+    void _taskId;
+    expect(validateWorkflowEvent(rest)).toBe(false);
+  });
+
+  it("accepts the artifact_persisted fixture", () => {
+    expect(validateWorkflowEvent(artifactPersistedFixture)).toBe(true);
+  });
+
+  it("rejects artifact_persisted whose artifactKind isn't a valid Artifact kind", () => {
+    const base = artifactPersistedFixture as Record<string, unknown>;
+    const mutated = {
+      ...base,
+      payload: {
+        ...(base.payload as Record<string, unknown>),
+        artifactKind: "not_a_kind",
+      },
     };
     expect(validateWorkflowEvent(mutated)).toBe(false);
   });

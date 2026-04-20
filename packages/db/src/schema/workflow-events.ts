@@ -30,6 +30,8 @@ import { plans } from "./plans.js";
  */
 export const workflowEventKind = pgEnum("workflow_event_kind", [
   "phase_status_changed",
+  "task_status_changed",
+  "artifact_persisted",
 ]);
 
 export const workflowEvents = pgTable(
@@ -76,8 +78,11 @@ export type WorkflowEventsRow = typeof workflowEvents.$inferSelect;
 export type WorkflowEventsInsert = typeof workflowEvents.$inferInsert;
 
 /** Exposed for reference — future migrations extend this enum. */
-export const WORKFLOW_EVENT_KINDS = ["phase_status_changed"] as const;
-// Reference `text` + `workflowEventKind` so tsc --noEmit keeps the
-// import usable when a future commit expands the kind list.
+export const WORKFLOW_EVENT_KINDS = [
+  "phase_status_changed",
+  "task_status_changed",
+  "artifact_persisted",
+] as const;
+// Keep `text` referenced so tsc --noEmit doesn't flag the import
+// even when every column above uses a typed column helper.
 void text;
-void workflowEventKind;

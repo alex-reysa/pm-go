@@ -36,27 +36,67 @@ type WorkflowEventRow = typeof workflowEvents.$inferSelect;
 
 /**
  * Row → contract mapper. Applies the kind-specific subject id shape
- * the TypeBox validator expects (`phase_status_changed` requires a
- * non-null `phaseId`). Any row whose subject ids don't match its kind
- * is dropped — the contract is authoritative, the DB is just storage.
+ * the TypeBox validator expects (each variant has its own required
+ * subject ids). Any row whose subject ids don't match its kind is
+ * dropped — the contract is authoritative, the DB is just storage.
+ *
+ * Payload is cast, not re-validated: the insert path writes typed
+ * payloads from the worker activity layer; the DB enum + the
+ * emitting activity's typed input are the validation front. The
+ * `/events` read path could reject on mismatch via
+ * `validateWorkflowEvent`, but that doubles the cost per row and
+ * surfaces no new guarantee in the current single-writer setup.
  */
 function rowToEvent(row: WorkflowEventRow): WorkflowEvent | null {
-  if (row.kind === "phase_status_changed") {
-    if (row.phaseId === null) return null;
-    const payload = row.payload as WorkflowEvent["payload"];
-    return {
-      id: row.id,
-      planId: row.planId,
-      phaseId: row.phaseId,
-      kind: "phase_status_changed",
-      payload,
-      createdAt: toIso(row.createdAt),
-    };
+  switch (row.kind) {
+    case "phase_status_changed": {
+      if (row.phaseId === null) return null;
+      return {
+        id: row.id,
+        planId: row.planId,
+        phaseId: row.phaseId,
+        kind: "phase_status_changed",
+        payload: row.payload as Extract<
+          WorkflowEvent,
+          { kind: "phase_status_changed" }
+        >["payload"],
+        createdAt: toIso(row.createdAt),
+      };
+    }
+    case "task_status_changed": {
+      if (row.taskId === null || row.phaseId === null) return null;
+      return {
+        id: row.id,
+        planId: row.planId,
+        taskId: row.taskId,
+        phaseId: row.phaseId,
+        kind: "task_status_changed",
+        payload: row.payload as Extract<
+          WorkflowEvent,
+          { kind: "task_status_changed" }
+        >["payload"],
+        createdAt: toIso(row.createdAt),
+      };
+    }
+    case "artifact_persisted": {
+      return {
+        id: row.id,
+        planId: row.planId,
+        kind: "artifact_persisted",
+        payload: row.payload as Extract<
+          WorkflowEvent,
+          { kind: "artifact_persisted" }
+        >["payload"],
+        createdAt: toIso(row.createdAt),
+      };
+    }
+    default:
+      // Unknown kind — future variants land here. Drop rather than
+      // crash the replay so a partially-rolled-out deploy (new worker
+      // emitting a kind the API doesn't know yet) doesn't poison the
+      // stream.
+      return null;
   }
-  // Unknown kind — future variants land here. Drop rather than crash
-  // the replay so a partially-rolled-out deploy (new worker emitting
-  // a kind the API doesn't know yet) doesn't poison the stream.
-  return null;
 }
 
 export function createEventsRoute(deps: EventsRouteDeps) {

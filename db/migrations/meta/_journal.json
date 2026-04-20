@@ -64,6 +64,13 @@
       "when": 1776695001186,
       "tag": "0008_daily_mandroid",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1776696848301,
+      "tag": "0009_clear_speedball",
+      "breakpoints": true
     }
   ]
 }

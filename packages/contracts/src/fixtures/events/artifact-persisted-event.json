@@ -1,0 +1,11 @@
+{
+  "id": "44444444-5555-4666-8777-888888888888",
+  "planId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "kind": "artifact_persisted",
+  "payload": {
+    "artifactId": "55555555-6666-4777-8888-999999999999",
+    "artifactKind": "pr_summary",
+    "uri": "file:///var/pm-go/artifacts/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.pr-summary.md"
+  },
+  "createdAt": "2026-04-19T10:30:00.000Z"
+}

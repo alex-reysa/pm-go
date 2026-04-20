@@ -171,4 +171,114 @@ describe("GET /events", () => {
     expect(body.events[0]!.id).toBe(EVENT_ID_1);
     expect(body.lastEventId).toBe(EVENT_ID_1);
   });
+
+  it("maps task_status_changed rows with taskId+phaseId subject", async () => {
+    const { client } = makeMockTemporal();
+    const taskId = "cccccccc-dddd-4eee-8fff-000000000000";
+    const rows = [
+      {
+        id: EVENT_ID_1,
+        planId: PLAN_ID,
+        phaseId: PHASE_ID,
+        taskId,
+        kind: "task_status_changed",
+        payload: { previousStatus: "in_review", nextStatus: "ready_to_merge" },
+        createdAt: "2026-04-19T10:10:00.000Z",
+      },
+    ];
+    const db = makeMockDbForLookup([rows]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/events?planId=${PLAN_ID}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      events: Array<{
+        id: string;
+        kind: string;
+        taskId?: string;
+        phaseId?: string;
+      }>;
+    };
+    expect(body.events).toHaveLength(1);
+    expect(body.events[0]!.kind).toBe("task_status_changed");
+    expect(body.events[0]!.taskId).toBe(taskId);
+    expect(body.events[0]!.phaseId).toBe(PHASE_ID);
+  });
+
+  it("drops task_status_changed rows that lack taskId or phaseId", async () => {
+    const { client } = makeMockTemporal();
+    const rows = [
+      {
+        id: EVENT_ID_1,
+        planId: PLAN_ID,
+        phaseId: PHASE_ID,
+        taskId: null, // malformed — task_status_changed must have taskId
+        kind: "task_status_changed",
+        payload: { previousStatus: "pending", nextStatus: "running" },
+        createdAt: "2026-04-19T10:00:00.000Z",
+      },
+    ];
+    const db = makeMockDbForLookup([rows]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/events?planId=${PLAN_ID}`);
+    const body = (await res.json()) as { events: unknown[] };
+    expect(body.events).toEqual([]);
+  });
+
+  it("maps artifact_persisted rows (plan-scoped; no phase/task subject)", async () => {
+    const { client } = makeMockTemporal();
+    const artifactId = "eeeeeeee-ffff-4000-8111-222222222222";
+    const rows = [
+      {
+        id: EVENT_ID_1,
+        planId: PLAN_ID,
+        phaseId: null,
+        taskId: null,
+        kind: "artifact_persisted",
+        payload: {
+          artifactId,
+          artifactKind: "pr_summary",
+          uri: "file:///tmp/artifacts/x.md",
+        },
+        createdAt: "2026-04-19T11:00:00.000Z",
+      },
+    ];
+    const db = makeMockDbForLookup([rows]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/events?planId=${PLAN_ID}`);
+    const body = (await res.json()) as {
+      events: Array<{
+        id: string;
+        kind: string;
+        payload: { artifactId: string; artifactKind: string };
+      }>;
+    };
+    expect(body.events).toHaveLength(1);
+    expect(body.events[0]!.kind).toBe("artifact_persisted");
+    expect(body.events[0]!.payload.artifactId).toBe(artifactId);
+    expect(body.events[0]!.payload.artifactKind).toBe("pr_summary");
+  });
+
+  it("drops rows with unknown kinds instead of crashing (partial-rollout safety)", async () => {
+    const { client } = makeMockTemporal();
+    const rows = [
+      makeEventRow(EVENT_ID_1, "2026-04-19T10:00:00.000Z"),
+      {
+        id: EVENT_ID_2,
+        planId: PLAN_ID,
+        phaseId: PHASE_ID,
+        taskId: null,
+        kind: "some_future_kind_we_dont_know",
+        payload: {},
+        createdAt: "2026-04-19T10:00:05.000Z",
+      },
+    ];
+    const db = makeMockDbForLookup([rows]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/events?planId=${PLAN_ID}`);
+    const body = (await res.json()) as {
+      events: Array<{ id: string }>;
+    };
+    expect(body.events).toHaveLength(1);
+    expect(body.events[0]!.id).toBe(EVENT_ID_1);
+  });
 });

@@ -1,4 +1,5 @@
-import type { PhaseStatus, UUID } from "./plan.js";
+import type { PhaseStatus, TaskStatus, UUID } from "./plan.js";
+import type { Artifact } from "./execution.js";
 
 /**
  * Phase 6 workflow-event stream — a read-model projection of the
@@ -8,13 +9,15 @@ import type { PhaseStatus, UUID } from "./plan.js";
  * `completion_audit_reports`, and `artifacts` tables remain
  * authoritative.
  *
- * The kind union is intentionally narrow in this first commit —
- * Phase 6 Worker 1 lands `phase_status_changed` as the one real
- * emit point; later commits add task/merge/audit/artifact kinds.
- * New variants extend the discriminated union; consumers should
- * exhaustive-switch on `kind`.
+ * Union grows additively: each emit point the worker wires in adds
+ * a new variant + kind literal. Consumers exhaustive-switch on
+ * `kind` so a new variant is a compile error until explicitly
+ * handled — the tradeoff is better than stringly-typed payloads.
  */
-export type WorkflowEventKind = "phase_status_changed";
+export type WorkflowEventKind =
+  | "phase_status_changed"
+  | "task_status_changed"
+  | "artifact_persisted";
 
 /**
  * Shared shape for every `WorkflowEvent`. `planId` is always
@@ -48,7 +51,52 @@ export interface PhaseStatusChangedEvent extends WorkflowEventBase {
 }
 
 /**
+ * Emitted whenever a `plan_tasks.status` column transitions. Mirrors
+ * the phase-status shape so dashboard code can fold both into the
+ * same timeline component.
+ */
+export interface TaskStatusChangedEvent extends WorkflowEventBase {
+  kind: "task_status_changed";
+  taskId: UUID;
+  /**
+   * Phase the task belongs to. Denormalized onto the event so a
+   * phase-scoped UI can render task transitions without a join —
+   * the `phases` column on the row captures this for the same
+   * reason.
+   */
+  phaseId: UUID;
+  payload: {
+    previousStatus: TaskStatus;
+    nextStatus: TaskStatus;
+  };
+}
+
+/**
+ * Emitted when a new row lands in `artifacts`. Today that's the
+ * PR summary + evidence bundle from `FinalReleaseWorkflow`; future
+ * commits may add review-report or test-report artifacts. The event
+ * stream lets the release UI react without polling the artifacts
+ * table.
+ */
+export interface ArtifactPersistedEvent extends WorkflowEventBase {
+  kind: "artifact_persisted";
+  payload: {
+    artifactId: UUID;
+    artifactKind: Artifact["kind"];
+    /**
+     * `file://` URI for local artifacts today. Clients should go
+     * through `GET /artifacts/:id` to fetch content — the URI is
+     * here for debugging/audit, not direct fetch.
+     */
+    uri: string;
+  };
+}
+
+/**
  * Discriminated union of every Phase 6 workflow event. Extend by
  * adding a new variant and widening `WorkflowEventKind`.
  */
-export type WorkflowEvent = PhaseStatusChangedEvent;
+export type WorkflowEvent =
+  | PhaseStatusChangedEvent
+  | TaskStatusChangedEvent
+  | ArtifactPersistedEvent;

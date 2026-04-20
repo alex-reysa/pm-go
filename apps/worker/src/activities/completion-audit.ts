@@ -34,6 +34,7 @@ import {
   repoSnapshots,
   reviewReports,
   taskDependencies,
+  workflowEvents,
   worktreeLeases,
   type PmGoDb,
 } from "@pm-go/db";
@@ -287,6 +288,12 @@ export function createCompletionAuditActivities(
           createdAt: new Date().toISOString(),
         })
         .onConflictDoNothing({ target: artifacts.id });
+      await emitArtifactPersisted(db, {
+        planId: input.planId,
+        artifactId,
+        artifactKind: "pr_summary",
+        uri,
+      });
 
       return { artifactId, uri };
     },
@@ -354,10 +361,63 @@ export function createCompletionAuditActivities(
           createdAt: new Date().toISOString(),
         })
         .onConflictDoNothing({ target: artifacts.id });
+      await emitArtifactPersisted(db, {
+        planId: input.planId,
+        artifactId,
+        artifactKind: "completion_evidence_bundle",
+        uri,
+      });
 
       return { artifactId, uri };
     },
   };
+}
+
+/**
+ * Best-effort emit of an `artifact_persisted` event. Pulled into a
+ * module-level helper so the two artifact-write activities share
+ * one call shape. A failed insert logs and returns; the caller
+ * already has the artifact row committed and must not fail over
+ * a read-model projection.
+ */
+async function emitArtifactPersisted(
+  db: PmGoDb,
+  input: {
+    planId: UUID;
+    artifactId: UUID;
+    artifactKind:
+      | "plan_markdown"
+      | "review_report"
+      | "completion_audit_report"
+      | "completion_evidence_bundle"
+      | "test_report"
+      | "event_log"
+      | "patch_bundle"
+      | "pr_summary";
+    uri: string;
+  },
+): Promise<void> {
+  try {
+    await db.insert(workflowEvents).values({
+      id: randomUUID(),
+      planId: input.planId,
+      phaseId: null,
+      taskId: null,
+      kind: "artifact_persisted",
+      payload: {
+        artifactId: input.artifactId,
+        artifactKind: input.artifactKind,
+        uri: input.uri,
+      },
+      createdAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.warn(
+      `[events] artifact_persisted emit failed (artifactId=${input.artifactId}): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

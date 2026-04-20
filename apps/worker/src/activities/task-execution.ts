@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 
 import { eq } from "drizzle-orm";
@@ -8,7 +9,7 @@ import type {
   Task,
   TaskStatus,
 } from "@pm-go/contracts";
-import { planTasks, type PmGoDb } from "@pm-go/db";
+import { planTasks, workflowEvents, type PmGoDb } from "@pm-go/db";
 import type {
   ImplementerReviewFeedback,
   ImplementerRunner,
@@ -99,16 +100,56 @@ export function createTaskExecutionActivities(
      * Stamp the task's status. Workflow callers may pass the
      * workflow-local `"ready_for_review"` marker; this wrapper maps it
      * to the persistable `TaskStatus` before writing.
+     *
+     * Also projects the transition onto `workflow_events` as a
+     * `task_status_changed` event. Best-effort — mirrors the
+     * phase-status pattern in `createIntegrationActivities`. A failed
+     * read-model emit must never block the underlying task transition.
      */
     async updateTaskStatus(input: {
       taskId: string;
       status: TaskStatusTransition;
     }): Promise<void> {
       const dbStatus = toDbStatus(input.status);
+      // Read the prior status + subject ids BEFORE the UPDATE so the
+      // event carries accurate before/after. Single writer via this
+      // activity means the tiny window between select and update is
+      // acceptable for a read-model projection.
+      const [prev] = await deps.db
+        .select({
+          status: planTasks.status,
+          planId: planTasks.planId,
+          phaseId: planTasks.phaseId,
+        })
+        .from(planTasks)
+        .where(eq(planTasks.id, input.taskId))
+        .limit(1);
       await deps.db
         .update(planTasks)
         .set({ status: dbStatus })
         .where(eq(planTasks.id, input.taskId));
+      if (prev && prev.status !== dbStatus) {
+        try {
+          await deps.db.insert(workflowEvents).values({
+            id: randomUUID(),
+            planId: prev.planId,
+            phaseId: prev.phaseId,
+            taskId: input.taskId,
+            kind: "task_status_changed",
+            payload: {
+              previousStatus: prev.status,
+              nextStatus: dbStatus,
+            },
+            createdAt: new Date().toISOString(),
+          });
+        } catch (err) {
+          console.warn(
+            `[events] task_status_changed emit failed (taskId=${input.taskId}): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
     },
 
     /**
