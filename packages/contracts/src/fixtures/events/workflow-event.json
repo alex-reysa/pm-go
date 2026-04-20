@@ -1,0 +1,11 @@
+{
+  "id": "11111111-2222-4333-8444-555555555555",
+  "planId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "phaseId": "22222222-3333-4444-8555-666666666666",
+  "kind": "phase_status_changed",
+  "payload": {
+    "previousStatus": "integrating",
+    "nextStatus": "auditing"
+  },
+  "createdAt": "2026-04-19T10:00:00.000Z"
+}

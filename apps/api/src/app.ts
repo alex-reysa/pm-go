@@ -9,6 +9,7 @@ import {
   createCompletionAuditReportsRoute,
   createPlansRoute,
 } from "./routes/plans.js";
+import { createEventsRoute } from "./routes/events.js";
 import {
   createMergeRunsRoute,
   createPhaseAuditReportsRoute,
@@ -77,5 +78,6 @@ export function createApp(deps: AppDeps) {
     "/completion-audit-reports",
     createCompletionAuditReportsRoute({ db: deps.db }),
   );
+  app.route("/events", createEventsRoute({ db: deps.db }));
   return app;
 }

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 
 import type {
@@ -17,6 +18,7 @@ import {
   plans,
   repoSnapshots,
   taskDependencies,
+  workflowEvents,
   worktreeLeases,
   type PmGoDb,
 } from "@pm-go/db";
@@ -495,10 +497,49 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
         | "blocked"
         | "failed";
     }): Promise<void> {
+      // Read the current status + planId so we can (a) write the
+      // UPDATE, (b) emit a `phase_status_changed` event with
+      // before/after. Reading first then updating is not atomic,
+      // but this activity is the single writer to `phases.status`
+      // for orchestration flows; concurrent transitions require a
+      // human intervention. The event is a read-model projection,
+      // not a lock primitive, so a tiny race window is acceptable.
+      const [prev] = await db
+        .select({ status: phases.status, planId: phases.planId })
+        .from(phases)
+        .where(eq(phases.id, input.phaseId))
+        .limit(1);
       await db
         .update(phases)
         .set({ status: input.status })
         .where(eq(phases.id, input.phaseId));
+      // Only emit when the status actually changed AND we could
+      // resolve the plan. Skip silently otherwise — the read-model
+      // shouldn't carry no-op transitions.
+      if (prev && prev.status !== input.status) {
+        try {
+          await db.insert(workflowEvents).values({
+            id: randomUUID(),
+            planId: prev.planId,
+            phaseId: input.phaseId,
+            taskId: null,
+            kind: "phase_status_changed",
+            payload: {
+              previousStatus: prev.status,
+              nextStatus: input.status,
+            },
+            createdAt: new Date().toISOString(),
+          });
+        } catch (err) {
+          // Best-effort. A failed read-model emit must never block a
+          // phase transition — the phases row is already updated.
+          console.warn(
+            `[events] phase_status_changed emit failed (phaseId=${input.phaseId}): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
     },
 
     /**

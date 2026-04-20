@@ -16,6 +16,7 @@ export default {
     "./packages/db/src/schema/merge-runs.ts",
     "./packages/db/src/schema/phase-audit-reports.ts",
     "./packages/db/src/schema/completion-audit-reports.ts",
+    "./packages/db/src/schema/workflow-events.ts",
   ],
   out: "./db/migrations",
   dialect: "postgresql",
