@@ -8,11 +8,28 @@ to build next, in what order, and what "done" means for each phase.
 
 ## Current Status
 
-- `Phase 0` is effectively complete: repository scaffold, architecture docs,
-  core workflow specs, and initial shared contracts exist.
-- `Phase 1` is the active next phase.
-- Do not start UI-first work before the planner and worker runtime can run a
-  minimal end-to-end slice.
+- `Phase 0` — complete. Repo scaffold, architecture docs, workflow specs,
+  contract stubs.
+- `Phase 1a` — complete. Contracts package compiles, validators + JSON
+  Schemas + fixtures ship.
+- `Phase 1b` — complete. Local runtime (Postgres + Temporal via Docker,
+  worker, API) boots and talks to itself.
+- `Phase 2` — complete. Spec → plan vertical slice with deterministic
+  plan audit and golden-path rendering.
+- `Phase 3` — complete. Task execution slice: worktree leases, stub +
+  Claude implementer, diff-scope enforcement.
+- `Phase 4` — complete. Reviewer loop with fix cycles, policy decisions,
+  review-evidence persistence, P1 hardening (commit-sha columns,
+  state-machine preconditions, host-id rewriting).
+- `Phase 5` — complete. Phase integration + audit + completion + release.
+  Verified end-to-end by `pnpm smoke:phase5` (12 durable-state assertions
+  green, ~20s wall time on a clean stack). Last hardening commit
+  `51192a0`.
+- `Phase 6` — **active next**. Operator UI/API visibility layer,
+  backed by the now-verified Phase 5 API surface + on-disk artifacts.
+
+Do not start a new phase before the prior phase's smoke exits 0 on a
+clean stack.
 
 ## Delivery Rules
 
@@ -50,7 +67,7 @@ Exit criteria:
 
 Status:
 
-- next
+- complete
 
 Goals:
 
@@ -87,7 +104,7 @@ Exit criteria:
 
 Status:
 
-- pending
+- complete
 
 Goals:
 
@@ -121,7 +138,7 @@ Exit criteria:
 
 Status:
 
-- pending
+- complete
 
 Goals:
 
@@ -157,7 +174,7 @@ Exit criteria:
 
 Status:
 
-- pending
+- complete
 
 Goals:
 
@@ -202,7 +219,7 @@ Exit criteria:
 
 Status:
 
-- pending
+- complete
 
 Goals:
 
@@ -233,7 +250,7 @@ Exit criteria:
 
 Status:
 
-- pending
+- complete (smoke verified on clean stack; last hardening commit `51192a0`)
 
 Goals:
 
@@ -281,7 +298,7 @@ Exit criteria:
 
 Status:
 
-- pending
+- active next (hyper-prompt in `docs/roadmap/phase6-hyper-prompt.md`)
 
 Goals:
 

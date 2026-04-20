@@ -2,7 +2,18 @@
 
 Use [action-plan.md](./action-plan.md) as the execution document. This file remains the higher-level milestone view.
 
+## Status snapshot
+
+- Milestones 0–4 **complete**. The execution half of the MVP is done and
+  end-to-end-verified by `pnpm smoke:phase5` (2-phase plan → integration
+  → audit → completion → release in ~20s on stub mode).
+- Milestone 5 (Operator UI) is the active next milestone — it maps to
+  Phase 6 in `action-plan.md`.
+- Milestone 6 (Policy engine hardening) follows Milestone 5.
+
 ## Milestone 0: Repository Bootstrap
+
+Status: **complete**.
 
 Deliverables:
 
@@ -15,6 +26,8 @@ Exit criteria:
 - repo structure is stable enough to start implementation without re-laying foundations
 
 ## Milestone 1: Planner And Contracts
+
+Status: **complete** (Phases 1a, 1b, 2 in action-plan.md).
 
 Deliverables:
 
@@ -30,6 +43,8 @@ Exit criteria:
 
 ## Milestone 2: Durable Workflow Runtime
 
+Status: **complete** (Phase 1b in action-plan.md).
+
 Deliverables:
 
 - Temporal worker bootstrap
@@ -42,6 +57,8 @@ Exit criteria:
 
 ## Milestone 3: Claude Execution And Worktrees
 
+Status: **complete** (Phase 3 in action-plan.md).
+
 Deliverables:
 
 - Claude Agent SDK adapter
@@ -53,6 +70,12 @@ Exit criteria:
 - a bounded task can run inside its own worktree with recorded audit metadata
 
 ## Milestone 4: Reviewer Loop And Integration
+
+Status: **complete** (Phases 4 + 5 in action-plan.md). `pnpm smoke:phase5`
+exits 0 on a clean stack in ~20s and verifies all 12 durable-state
+invariants (two merge runs with post-merge snapshot linkage, two phase
+audits passing, one completion audit passing, main advanced twice via
+`git update-ref`, developer HEAD unchanged).
 
 Deliverables:
 
@@ -68,6 +91,9 @@ Exit criteria:
   manual git handling
 
 ## Milestone 5: Operator UI And Policy Controls
+
+Status: **active next** (Phase 6 hyper-prompt at
+`docs/roadmap/phase6-hyper-prompt.md`).
 
 Deliverables:
 
