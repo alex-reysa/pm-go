@@ -255,3 +255,53 @@ describe("GET /phases/:phaseId", () => {
     expect(body.latestPhaseAudit).toBeNull();
   });
 });
+
+describe("GET /phases?planId=", () => {
+  it("returns 400 when planId is not a UUID", async () => {
+    const { client } = makeMockTemporal();
+    const app = appWith(makeMockDbForLookup([]), client);
+    const res = await app.request("/phases?planId=not-a-uuid");
+    expect(res.status).toBe(400);
+  });
+
+  it("returns phase summary list ordered by index ascending", async () => {
+    const { client } = makeMockTemporal();
+    const rows = [
+      {
+        id: "ph-0",
+        planId: PLAN_ID,
+        index: 0,
+        title: "Phase 0",
+        summary: "",
+        status: "completed",
+        integrationBranch: "integration/x/phase-0",
+        phaseAuditReportId: "audit-0",
+        startedAt: "2026-04-19T00:00:00.000Z",
+        completedAt: "2026-04-19T00:10:00.000Z",
+      },
+      {
+        id: "ph-1",
+        planId: PLAN_ID,
+        index: 1,
+        title: "Phase 1",
+        summary: "",
+        status: "executing",
+        integrationBranch: "integration/x/phase-1",
+        phaseAuditReportId: null,
+        startedAt: "2026-04-19T00:10:01.000Z",
+        completedAt: null,
+      },
+    ];
+    const db = makeMockDbForLookup([rows]);
+    const app = appWith(db, client);
+    const res = await app.request(`/phases?planId=${PLAN_ID}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      planId: string;
+      phases: Array<{ id: string; index: number; status: string }>;
+    };
+    expect(body.planId).toBe(PLAN_ID);
+    expect(body.phases.map((p) => p.id)).toEqual(["ph-0", "ph-1"]);
+    expect(body.phases[0]!.status).toBe("completed");
+  });
+});

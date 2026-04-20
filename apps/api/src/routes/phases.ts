@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import type { Client as TemporalClient } from "@temporalio/client";
 
 import type {
@@ -37,6 +37,52 @@ function isUuid(value: unknown): value is UUID {
 
 export function createPhasesRoute(deps: PhasesRouteDeps) {
   const app = new Hono();
+
+  // GET /phases?planId=<uuid> — list phases for a plan, ordered by
+  // phase.index ascending. Narrow projection for dashboards — the
+  // detail view uses `GET /phases/:phaseId` for merge-run + audit
+  // inlines.
+  app.get("/", async (c) => {
+    const planId = c.req.query("planId");
+    if (!isUuid(planId)) {
+      return c.json({ error: "planId query param must be a UUID" }, 400);
+    }
+    const rows = await deps.db
+      .select({
+        id: phases.id,
+        planId: phases.planId,
+        index: phases.index,
+        title: phases.title,
+        summary: phases.summary,
+        status: phases.status,
+        integrationBranch: phases.integrationBranch,
+        phaseAuditReportId: phases.phaseAuditReportId,
+        startedAt: phases.startedAt,
+        completedAt: phases.completedAt,
+      })
+      .from(phases)
+      .where(eq(phases.planId, planId))
+      .orderBy(asc(phases.index));
+
+    return c.json(
+      {
+        planId,
+        phases: rows.map((r) => ({
+          id: r.id,
+          planId: r.planId,
+          index: r.index,
+          title: r.title,
+          summary: r.summary,
+          status: r.status,
+          integrationBranch: r.integrationBranch,
+          phaseAuditReportId: r.phaseAuditReportId,
+          startedAt: r.startedAt ? toIso(r.startedAt) : null,
+          completedAt: r.completedAt ? toIso(r.completedAt) : null,
+        })),
+      },
+      200,
+    );
+  });
 
   // POST /phases/:phaseId/integrate — start PhaseIntegrationWorkflow.
   // Precondition: phase.status must be `executing` (first run) OR

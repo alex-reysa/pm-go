@@ -53,6 +53,58 @@ function isUuid(value: unknown): value is UUID {
 export function createTasksRoute(deps: TasksRouteDeps) {
   const app = new Hono();
 
+  // GET /tasks?phaseId=<uuid> OR GET /tasks?planId=<uuid> — list
+  // tasks under either scope. One scope required; 400 when neither
+  // is a UUID. Narrow projection for dashboard rendering; callers
+  // that need the full `Task` use `GET /tasks/:id`.
+  app.get("/", async (c) => {
+    const phaseId = c.req.query("phaseId");
+    const planId = c.req.query("planId");
+    const byPhase = phaseId !== undefined;
+    const byPlan = planId !== undefined;
+    if (byPhase === byPlan) {
+      return c.json(
+        {
+          error:
+            "exactly one of phaseId or planId must be provided as a query param",
+        },
+        400,
+      );
+    }
+    if (byPhase && !isUuid(phaseId)) {
+      return c.json({ error: "phaseId must be a UUID" }, 400);
+    }
+    if (byPlan && !isUuid(planId)) {
+      return c.json({ error: "planId must be a UUID" }, 400);
+    }
+
+    const rows = await deps.db
+      .select({
+        id: planTasks.id,
+        planId: planTasks.planId,
+        phaseId: planTasks.phaseId,
+        slug: planTasks.slug,
+        title: planTasks.title,
+        status: planTasks.status,
+        riskLevel: planTasks.riskLevel,
+        kind: planTasks.kind,
+      })
+      .from(planTasks)
+      .where(
+        byPhase
+          ? eq(planTasks.phaseId, phaseId as string)
+          : eq(planTasks.planId, planId as string),
+      );
+
+    return c.json(
+      {
+        ...(byPhase ? { phaseId } : { planId }),
+        tasks: rows,
+      },
+      200,
+    );
+  });
+
   // POST /tasks/:taskId/run — start TaskExecutionWorkflow.
   //
   // Phase gate: the task's owning phase must be `executing`. Tasks in

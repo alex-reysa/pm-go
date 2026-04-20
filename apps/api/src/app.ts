@@ -9,6 +9,8 @@ import {
   createCompletionAuditReportsRoute,
   createPlansRoute,
 } from "./routes/plans.js";
+import { createAgentRunsRoute } from "./routes/agent-runs.js";
+import { createArtifactsRoute } from "./routes/artifacts.js";
 import { createEventsRoute } from "./routes/events.js";
 import {
   createMergeRunsRoute,
@@ -79,5 +81,10 @@ export function createApp(deps: AppDeps) {
     createCompletionAuditReportsRoute({ db: deps.db }),
   );
   app.route("/events", createEventsRoute({ db: deps.db }));
+  app.route("/agent-runs", createAgentRunsRoute({ db: deps.db }));
+  app.route(
+    "/artifacts",
+    createArtifactsRoute({ db: deps.db, artifactDir: deps.artifactDir }),
+  );
   return app;
 }

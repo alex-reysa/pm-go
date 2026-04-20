@@ -189,6 +189,99 @@ describe("POST /tasks/:taskId/run", () => {
   });
 });
 
+describe("GET /tasks (list)", () => {
+  const phaseId = "22222222-3333-4444-8555-666666666666";
+  const planId = "33333333-4444-4555-8666-777777777777";
+
+  it("returns 400 when neither phaseId nor planId is provided", async () => {
+    const { client } = makeMockTemporal();
+    const db = makeMockDbForLookup([]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request("/tasks");
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when BOTH phaseId and planId are provided (exclusive)", async () => {
+    const { client } = makeMockTemporal();
+    const db = makeMockDbForLookup([]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(
+      `/tasks?phaseId=${phaseId}&planId=${planId}`,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when phaseId is not a UUID", async () => {
+    const { client } = makeMockTemporal();
+    const db = makeMockDbForLookup([]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request("/tasks?phaseId=nope");
+    expect(res.status).toBe(400);
+  });
+
+  it("returns the task list under the phaseId scope", async () => {
+    const { client } = makeMockTemporal();
+    const rows = [
+      {
+        id: "t1",
+        planId,
+        phaseId,
+        slug: "task-a",
+        title: "Task A",
+        status: "ready_to_merge",
+        riskLevel: "low",
+        kind: "foundation",
+      },
+    ];
+    const db = makeMockDbForLookup([rows]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks?phaseId=${phaseId}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      phaseId: string;
+      tasks: Array<{ id: string; slug: string }>;
+    };
+    expect(body.phaseId).toBe(phaseId);
+    expect(body.tasks.map((t) => t.slug)).toEqual(["task-a"]);
+  });
+
+  it("returns the task list under the planId scope when phaseId is absent", async () => {
+    const { client } = makeMockTemporal();
+    const rows = [
+      {
+        id: "t1",
+        planId,
+        phaseId,
+        slug: "task-a",
+        title: "Task A",
+        status: "ready_to_merge",
+        riskLevel: "low",
+        kind: "foundation",
+      },
+      {
+        id: "t2",
+        planId,
+        phaseId: "44444444-5555-4666-8777-888888888888",
+        slug: "task-b",
+        title: "Task B",
+        status: "pending",
+        riskLevel: "low",
+        kind: "implementation",
+      },
+    ];
+    const db = makeMockDbForLookup([rows]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks?planId=${planId}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      planId: string;
+      tasks: Array<{ slug: string }>;
+    };
+    expect(body.planId).toBe(planId);
+    expect(body.tasks).toHaveLength(2);
+  });
+});
+
 describe("GET /tasks/:taskId", () => {
   it("returns 404 when the task row is missing", async () => {
     const { client } = makeMockTemporal();

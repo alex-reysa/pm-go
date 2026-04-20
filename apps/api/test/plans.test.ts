@@ -38,25 +38,21 @@ function makeMockDbForLookup(rowsPerSelect: unknown[][]) {
   let i = 0;
   const select = vi.fn().mockImplementation(() => {
     const rows = rowsPerSelect[i++] ?? [];
-    // Route handlers vary between terminal forms — `.where(...).limit(n)`
-    // for single-row + `.where(...).orderBy(col).limit(n)` for "latest
-    // by createdAt". The chain exposes both so a single mock matches
-    // every call pattern without a bespoke per-route shape.
-    const orderByChain: Promise<unknown[]> & {
-      limit?: (n: number) => Promise<unknown[]>;
-    } = Object.assign(Promise.resolve(rows), {
-      limit: (_n: number) => Promise.resolve(rows),
-    });
-    const orderBy = vi.fn().mockImplementation(() => orderByChain);
-    const whereChain: Promise<unknown[]> & {
-      limit?: (n: number) => Promise<unknown[]>;
-      orderBy?: typeof orderBy;
-    } = Object.assign(Promise.resolve(rows), {
-      limit: (_n: number) => Promise.resolve(rows),
-      orderBy,
-    });
-    const where = vi.fn().mockImplementation(() => whereChain);
-    const from = vi.fn().mockImplementation(() => ({ where }));
+    // Self-referencing thenable: every chain method returns the same
+    // object so callers can terminate anywhere — `.where(...).limit(n)`
+    // for single-row lookups, `.where(...).orderBy(col).limit(n)` for
+    // "latest by createdAt", and `.from(...).orderBy(...)` (no where)
+    // for plain listings like `GET /plans`. Matches the full Drizzle
+    // builder shape; each node is awaitable.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const chain: any = {
+      then: (resolve: (v: unknown[]) => void) => resolve(rows),
+    };
+    chain.where = vi.fn().mockReturnValue(chain);
+    chain.orderBy = vi.fn().mockReturnValue(chain);
+    chain.innerJoin = vi.fn().mockReturnValue(chain);
+    chain.limit = vi.fn().mockResolvedValue(rows);
+    const from = vi.fn().mockImplementation(() => chain);
     return { from };
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -120,6 +116,71 @@ function planToRows(plan: Plan) {
   );
   return { planRow, phaseRows, taskRows, edgeRows };
 }
+
+describe("GET /plans", () => {
+  it("returns the summary list ordered by updatedAt DESC", async () => {
+    const { client } = makeMockTemporal();
+    const rows = [
+      {
+        id: "11111111-2222-4333-8444-aaaaaaaaaaaa",
+        title: "Newer plan",
+        summary: "s2",
+        status: "executing",
+        risks: [],
+        completionAuditReportId: null,
+        createdAt: "2026-04-19T00:00:00.000Z",
+        updatedAt: "2026-04-19T01:00:00.000Z",
+      },
+      {
+        id: "22222222-3333-4444-8555-bbbbbbbbbbbb",
+        title: "Older plan",
+        summary: "s1",
+        status: "completed",
+        risks: [],
+        completionAuditReportId: "cccccccc-dddd-4eee-8fff-000000000000",
+        createdAt: "2026-04-17T00:00:00.000Z",
+        updatedAt: "2026-04-17T01:00:00.000Z",
+      },
+    ];
+    const db = makeMockDbForLookup([rows]);
+    const app = createApp({
+      temporal: client,
+      taskQueue: "pm-go-worker",
+      db,
+      artifactDir: "./artifacts/plans",
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/repo/.worktrees",
+      maxLifetimeHours: 24,
+    });
+
+    const res = await app.request("/plans");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      plans: Array<{ id: string; title: string; status: string }>;
+    };
+    expect(body.plans).toHaveLength(2);
+    expect(body.plans[0]!.title).toBe("Newer plan");
+    expect(body.plans[1]!.title).toBe("Older plan");
+  });
+
+  it("returns an empty array when no plans exist", async () => {
+    const { client } = makeMockTemporal();
+    const db = makeMockDbForLookup([[]]);
+    const app = createApp({
+      temporal: client,
+      taskQueue: "pm-go-worker",
+      db,
+      artifactDir: "./artifacts/plans",
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/repo/.worktrees",
+      maxLifetimeHours: 24,
+    });
+    const res = await app.request("/plans");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { plans: unknown[] };
+    expect(body.plans).toEqual([]);
+  });
+});
 
 describe("POST /plans", () => {
   it("starts the workflow and returns 202 with planId === specDocumentId", async () => {

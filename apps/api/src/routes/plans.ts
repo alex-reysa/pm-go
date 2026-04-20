@@ -53,6 +53,44 @@ function isUuid(value: unknown): value is UUID {
 export function createPlansRoute(deps: PlansRouteDeps) {
   const app = new Hono();
 
+  // GET /plans — summary list ordered by updatedAt DESC.
+  //
+  // Deliberately a narrow projection (id/title/status/risks/
+  // updatedAt/completionAuditReportId) so a dashboard landing page
+  // renders in a single round-trip without pulling full phase/task
+  // trees. Callers who need the full `Plan` use `GET /plans/:id`.
+  app.get("/", async (c) => {
+    const rows = await deps.db
+      .select({
+        id: plans.id,
+        title: plans.title,
+        summary: plans.summary,
+        status: plans.status,
+        risks: plans.risks,
+        completionAuditReportId: plans.completionAuditReportId,
+        createdAt: plans.createdAt,
+        updatedAt: plans.updatedAt,
+      })
+      .from(plans)
+      .orderBy(desc(plans.updatedAt));
+
+    return c.json(
+      {
+        plans: rows.map((row) => ({
+          id: row.id,
+          title: row.title,
+          summary: row.summary,
+          status: row.status,
+          risks: (row.risks ?? []) as Risk[],
+          completionAuditReportId: row.completionAuditReportId,
+          createdAt: toIso(row.createdAt),
+          updatedAt: toIso(row.updatedAt),
+        })),
+      },
+      200,
+    );
+  });
+
   // POST /plans — start SpecToPlanWorkflow
   app.post("/", async (c) => {
     const body = (await c.req.json().catch(() => null)) as {
