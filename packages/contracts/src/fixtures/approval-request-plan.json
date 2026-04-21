@@ -1,0 +1,9 @@
+{
+  "id": "11111111-2222-4333-8444-555555555558",
+  "planId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "subject": "plan",
+  "riskBand": "high",
+  "status": "pending",
+  "requestedBy": "orchestrator",
+  "requestedAt": "2026-04-21T14:02:00.000Z"
+}

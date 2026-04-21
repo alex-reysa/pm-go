@@ -194,6 +194,19 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@5.9.3))(terser@5.46.1)
 
+  packages/policy-engine:
+    dependencies:
+      '@pm-go/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@5.9.3))(terser@5.46.1)
+
   packages/repo-intelligence:
     dependencies:
       '@pm-go/contracts':
