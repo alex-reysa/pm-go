@@ -26,6 +26,7 @@ import {
   type PmGoDb,
 } from "@pm-go/db";
 
+import { approveSubject } from "./approvals.js";
 import { toIso } from "../lib/timestamps.js";
 
 /**
@@ -384,6 +385,40 @@ export function createPlansRoute(deps: PlansRouteDeps) {
       },
       202,
     );
+  });
+
+  // POST /plans/:planId/approve — Phase 7. Plan-scoped approval flip,
+  // mirrors POST /tasks/:taskId/approve. 409 when no pending
+  // approval_requests row for the plan exists.
+  app.post("/:planId/approve", async (c) => {
+    const planId = c.req.param("planId");
+    if (!isUuid(planId)) {
+      return c.json({ error: "planId must be a UUID" }, 400);
+    }
+    const body = (await c.req.json().catch(() => null)) as {
+      approvedBy?: unknown;
+    } | null;
+    const approvedBy =
+      body &&
+      typeof body.approvedBy === "string" &&
+      body.approvedBy.trim().length > 0
+        ? body.approvedBy
+        : undefined;
+
+    const updated = await approveSubject(
+      deps.db,
+      { kind: "plan", planId },
+      approvedBy,
+    );
+    if (!updated) {
+      return c.json(
+        {
+          error: `no pending plan-scoped approval_requests row for plan ${planId}`,
+        },
+        409,
+      );
+    }
+    return c.json({ planId, approval: updated }, 200);
   });
 
   return app;

@@ -184,17 +184,19 @@ describe("persistPlan", () => {
     expect(calls.transaction).toBe(1);
 
     // 1 plan + N phases + M tasks + K edges inserts (no pre-existing edges
-    // in this mock, so no delete calls fire).
+    // in this mock, so no delete calls fire). Phase 7 adds +1 for the
+    // span sink that fires after persistPlanImpl returns.
     const edgeCount = planFixture.phases.reduce(
       (n, p) => n + p.dependencyEdges.length,
       0,
     );
     const expectedInserts =
       1 + planFixture.phases.length + planFixture.tasks.length + edgeCount;
-    expect(calls.insert).toHaveLength(expectedInserts);
+    expect(calls.insert).toHaveLength(expectedInserts + 1);
 
-    // Every insert chain reaches `.onConflictDoUpdate(...)` — the idempotent
-    // shape the spec requires.
+    // Every domain insert chain reaches `.onConflictDoUpdate(...)` — the
+    // idempotent shape the spec requires. The span sink does NOT call
+    // onConflictDoUpdate so the count stays at expectedInserts.
     expect(calls.onConflictDoUpdate).toHaveLength(expectedInserts);
 
     // Plan values carry the expected field mapping.
@@ -236,12 +238,13 @@ describe("persistPlan", () => {
         uniqueEdgeKeys.add(`${edge.fromTaskId}:${edge.toTaskId}`);
       }
     }
+    // Phase 7 adds +1 for the span sink emitted after persistPlanImpl.
     const expectedInserts =
       1 +
       plan.phases.length +
       plan.tasks.length +
       uniqueEdgeKeys.size;
-    expect(calls.insert).toHaveLength(expectedInserts);
+    expect(calls.insert).toHaveLength(expectedInserts + 1);
   });
 
   it("deletes stale dependency edges that are not in the new edge set", async () => {

@@ -85,6 +85,13 @@
       "when": 1777000001000,
       "tag": "0011_budget_reports",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1777000002000,
+      "tag": "0012_workflow_events_trace_columns",
+      "breakpoints": true
     }
   ]
 }

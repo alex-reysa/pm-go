@@ -1,6 +1,10 @@
 import type {
   AgentRun,
+  ApprovalDecision,
+  ApprovalRequest,
   Artifact,
+  BudgetDecision,
+  BudgetReport,
   CompletionAuditReport,
   FileScope,
   MergeRun,
@@ -12,7 +16,9 @@ import type {
   RepoSnapshot,
   ReviewFinding,
   ReviewReport,
+  Span,
   SpecDocument,
+  StopDecision,
   StoredReviewReport,
   Task,
   TaskStatus,
@@ -308,4 +314,108 @@ export interface TaskExecutionActivities {
     baseSha: string;
     reviewFeedback?: RunImplementerReviewFeedback;
   }): Promise<{ agentRun: AgentRun; finalCommitSha?: string }>;
+}
+
+/**
+ * Phase 7 — Worker 4. Policy-gate activities.
+ *
+ * The four pure-function evaluators in `@pm-go/policy-engine`
+ * (evaluateBudgetGate / evaluateApprovalGate / evaluateRetryDecision /
+ * evaluateStopCondition) live behind these activity interfaces because
+ * Temporal workflows must not perform I/O. Each activity loads the live
+ * state required by the evaluator from the durable store, calls the
+ * pure function, and returns the decision plus, where necessary, the
+ * persisted side-effect (e.g. the `approvalRequestId` for a freshly
+ * created `approval_requests` row).
+ *
+ * Workflow callers proxy these and either branch on the decision (e.g.
+ * transition the task to `blocked`, persist a `policy_decisions` row)
+ * or block on a follow-up `isApproved` poll (the approval gate path).
+ */
+export interface PolicyEngineActivities {
+  /**
+   * Pre-flight budget gate for a single task. Loads the task row + every
+   * `agent_runs` row associated with it, calls
+   * `evaluateBudgetGate(task, runs)`, and returns the pure decision.
+   * On `ok: false` the workflow is expected to (a) update the task to
+   * `blocked` via `updateTaskStatus` and (b) persist a
+   * `policy_decisions` row via `persistPolicyDecision` (existing
+   * `ReviewActivities`). Both side-effects live in the workflow so
+   * Temporal can record them as discrete activity invocations.
+   */
+  evaluateBudgetGateActivity(input: {
+    taskId: UUID;
+  }): Promise<BudgetDecision>;
+
+  /**
+   * Pre-merge approval gate for a single task in a phase being
+   * integrated. Loads the task + the highest-priority `Risk` row from
+   * its plan that names the task's risk level, calls
+   * `evaluateApprovalGate(risk, task)`, and — when the decision says
+   * approval is required — inserts a fresh `approval_requests` row with
+   * `status='pending'`. Returns the decision plus the
+   * `approvalRequestId` so the workflow can poll on it.
+   *
+   * The activity is idempotent on Temporal retries: it looks for an
+   * existing `pending` row for the same plan/task before inserting.
+   */
+  evaluateApprovalGateActivity(input: {
+    taskId: UUID;
+  }): Promise<{
+    decision: ApprovalDecision;
+    approvalRequestId?: UUID;
+  }>;
+
+  /**
+   * Plan-level stop condition. Loads the plan + the supplied task's
+   * review-cycle count + outstanding review findings, calls
+   * `evaluateStopCondition(plan, cycles, findings, limits)`, and
+   * returns the pure decision. The workflow is expected to persist a
+   * `policy_decisions` row citing the reason on `stop: true`.
+   */
+  evaluateStopConditionActivity(input: {
+    planId: UUID;
+    /** Optional task scope — review-cycle count is task-scoped. */
+    taskId?: UUID;
+  }): Promise<StopDecision>;
+
+  /**
+   * Idempotently persist an `approval_requests` row with an explicit
+   * status (typically `pending`). Returns the row id. This is exposed
+   * separately from `evaluateApprovalGateActivity` so the API
+   * `POST /plans/:id/approve` and `POST /tasks/:id/approve` paths can
+   * write through the same primitive.
+   */
+  persistApprovalRequest(request: ApprovalRequest): Promise<UUID>;
+
+  /**
+   * Aggregate every `agent_runs` row for the plan, build a
+   * `BudgetReport` snapshot, persist it onto `budget_reports`, and
+   * return the row. Called from the orchestrator at phase-integration
+   * and plan-completion time as well as from `GET /plans/:id/budget-report`.
+   */
+  persistBudgetReport(input: { planId: UUID }): Promise<BudgetReport>;
+
+  /**
+   * Cheap polling helper used by workflows blocked on a pending
+   * approval. Returns true when the matching `approval_requests` row's
+   * status flips to `approved`, false otherwise (or when the row was
+   * `rejected` — the workflow caller is expected to escalate).
+   */
+  isApproved(input: {
+    approvalRequestId: UUID;
+  }): Promise<{ approved: boolean; rejected: boolean }>;
+}
+
+/**
+ * Phase 7 — Worker 4. Span-persistence activity.
+ *
+ * Most spans flow through `withSpan` automatically (the writer is
+ * constructed inside each wrapped activity). This interface exists for
+ * the minority case where a span's open and close need to be disjoint
+ * (e.g. an operator action recorded from the API surface). Workers may
+ * call `persistSpan` directly with a fully-formed `Span` payload.
+ */
+export interface SpanPersistenceActivities {
+  persistSpan(input: { planId: UUID; span: Span }): Promise<void>;
 }

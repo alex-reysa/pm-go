@@ -15,6 +15,7 @@ import type {
   ImplementerRunner,
 } from "@pm-go/executor-claude";
 import { runImplementer as runImplementerPkg } from "@pm-go/planner";
+import { createSpanWriter, withSpan } from "@pm-go/observability";
 
 const execFileAsync = promisify(execFile);
 
@@ -124,32 +125,58 @@ export function createTaskExecutionActivities(
         .from(planTasks)
         .where(eq(planTasks.id, input.taskId))
         .limit(1);
-      await deps.db
-        .update(planTasks)
-        .set({ status: dbStatus })
-        .where(eq(planTasks.id, input.taskId));
-      if (prev && prev.status !== dbStatus) {
-        try {
-          await deps.db.insert(workflowEvents).values({
-            id: randomUUID(),
-            planId: prev.planId,
-            phaseId: prev.phaseId,
-            taskId: input.taskId,
-            kind: "task_status_changed",
-            payload: {
-              previousStatus: prev.status,
-              nextStatus: dbStatus,
-            },
-            createdAt: new Date().toISOString(),
-          });
-        } catch (err) {
-          console.warn(
-            `[events] task_status_changed emit failed (taskId=${input.taskId}): ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        }
+      if (!prev) {
+        // Task missing — treat the UPDATE as a no-op and skip the span
+        // (no plan to scope it to). Mirrors integration.updatePhaseStatus.
+        await deps.db
+          .update(planTasks)
+          .set({ status: dbStatus })
+          .where(eq(planTasks.id, input.taskId));
+        return;
       }
+      const sink = createSpanWriter({
+        db: deps.db,
+        planId: prev.planId,
+      }).writeSpan;
+      await withSpan(
+        "worker.activities.task-execution.updateTaskStatus",
+        {
+          planId: prev.planId,
+          phaseId: prev.phaseId,
+          taskId: input.taskId,
+          previousStatus: prev.status,
+          nextStatus: dbStatus,
+        },
+        async () => {
+          await deps.db
+            .update(planTasks)
+            .set({ status: dbStatus })
+            .where(eq(planTasks.id, input.taskId));
+          if (prev.status !== dbStatus) {
+            try {
+              await deps.db.insert(workflowEvents).values({
+                id: randomUUID(),
+                planId: prev.planId,
+                phaseId: prev.phaseId,
+                taskId: input.taskId,
+                kind: "task_status_changed",
+                payload: {
+                  previousStatus: prev.status,
+                  nextStatus: dbStatus,
+                },
+                createdAt: new Date().toISOString(),
+              });
+            } catch (err) {
+              console.warn(
+                `[events] task_status_changed emit failed (taskId=${input.taskId}): ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          }
+        },
+        { sink },
+      );
     },
 
     /**

@@ -10,7 +10,9 @@ export type Route =
   | { name: "plans" }
   | { name: "plan"; planId: UUID }
   | { name: "task"; planId: UUID; taskId: UUID }
-  | { name: "release"; planId: UUID };
+  | { name: "release"; planId: UUID }
+  // Phase 7 — operator approvals screen.
+  | { name: "approvals"; planId: UUID };
 
 /**
  * Actions that the confirm modal gates before firing against the API.
@@ -26,7 +28,10 @@ export type PendingAction =
   | { kind: "integrate-phase"; phaseId: UUID; label: string }
   | { kind: "audit-phase"; phaseId: UUID; label: string }
   | { kind: "complete-plan"; planId: UUID; label: string }
-  | { kind: "release-plan"; planId: UUID; label: string };
+  | { kind: "release-plan"; planId: UUID; label: string }
+  // Phase 7 — operator approve flips the matching approval_requests row.
+  | { kind: "approve-task"; taskId: UUID; label: string }
+  | { kind: "approve-plan"; planId: UUID; label: string };
 
 /**
  * Plan-detail cursor position, lifted to the app shell so it survives

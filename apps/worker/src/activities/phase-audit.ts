@@ -27,6 +27,7 @@ import {
   type PhaseAuditorRunner,
 } from "@pm-go/executor-claude";
 import { runPhaseAuditor as runPhaseAuditorPkg } from "@pm-go/planner";
+import { createSpanWriter, withSpan } from "@pm-go/observability";
 import type { StoredMergeRun } from "@pm-go/temporal-activities";
 
 const execFileAsync = promisify(execFile);
@@ -125,23 +126,36 @@ export function createPhaseAuditActivities(deps: PhaseAuditActivityDeps) {
     },
 
     async persistPhaseAuditReport(report: PhaseAuditReport): Promise<UUID> {
-      await db
-        .insert(phaseAuditReports)
-        .values({
-          id: report.id,
-          phaseId: report.phaseId,
+      const sink = createSpanWriter({ db, planId: report.planId }).writeSpan;
+      return withSpan(
+        "worker.activities.phase-audit.persistPhaseAuditReport",
+        {
           planId: report.planId,
-          mergeRunId: report.mergeRunId,
-          auditorRunId: report.auditorRunId,
-          mergedHeadSha: report.mergedHeadSha,
+          phaseId: report.phaseId,
+          reportId: report.id,
           outcome: report.outcome,
-          checklist: report.checklist,
-          findings: report.findings,
-          summary: report.summary,
-          createdAt: report.createdAt,
-        })
-        .onConflictDoNothing({ target: phaseAuditReports.id });
-      return report.id;
+        },
+        async () => {
+          await db
+            .insert(phaseAuditReports)
+            .values({
+              id: report.id,
+              phaseId: report.phaseId,
+              planId: report.planId,
+              mergeRunId: report.mergeRunId,
+              auditorRunId: report.auditorRunId,
+              mergedHeadSha: report.mergedHeadSha,
+              outcome: report.outcome,
+              checklist: report.checklist,
+              findings: report.findings,
+              summary: report.summary,
+              createdAt: report.createdAt,
+            })
+            .onConflictDoNothing({ target: phaseAuditReports.id });
+          return report.id;
+        },
+        { sink },
+      );
     },
 
     async loadLatestPhaseAuditForPhase(

@@ -17,6 +17,9 @@ const activityFns = {
   persistAgentRun: vi.fn(),
   persistCompletionAuditReport: vi.fn(),
   stampPlanCompletionAudit: vi.fn(),
+  // Phase 7 — stop-condition gate + budget snapshot.
+  evaluateStopConditionActivity: vi.fn(async () => ({ stop: false })),
+  persistBudgetReport: vi.fn(async () => ({ id: "budget-report-id" })),
 };
 
 vi.mock("@temporalio/workflow", () => ({
@@ -152,6 +155,13 @@ describe("CompletionAuditWorkflow", () => {
       fn.mockReset();
       fn.mockResolvedValue(undefined);
     }
+    // Phase 7 defaults — stop condition clear, budget snapshot succeeds.
+    activityFns.evaluateStopConditionActivity.mockResolvedValue({
+      stop: false,
+    });
+    activityFns.persistBudgetReport.mockResolvedValue({
+      id: "budget-report-id",
+    });
   });
 
   it("stamps plan completed on pass", async () => {

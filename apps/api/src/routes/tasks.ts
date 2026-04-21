@@ -26,6 +26,7 @@ import {
   type PmGoDb,
 } from "@pm-go/db";
 
+import { approveSubject } from "./approvals.js";
 import { toIso } from "../lib/timestamps.js";
 
 /**
@@ -467,6 +468,43 @@ export function createTasksRoute(deps: TasksRouteDeps) {
       },
       202,
     );
+  });
+
+  // POST /tasks/:taskId/approve — Phase 7. Flips the latest pending
+  // approval_requests row for this task to `approved`, so the matching
+  // PhaseIntegrationWorkflow's poll loop unblocks on its next tick.
+  // 404 when no row exists for the task; 409 when none are pending
+  // (already approved/rejected — operator should investigate the
+  // existing decided row before re-driving).
+  app.post("/:taskId/approve", async (c) => {
+    const taskId = c.req.param("taskId");
+    if (!isUuid(taskId)) {
+      return c.json({ error: "taskId must be a UUID" }, 400);
+    }
+    const body = (await c.req.json().catch(() => null)) as {
+      approvedBy?: unknown;
+    } | null;
+    const approvedBy =
+      body &&
+      typeof body.approvedBy === "string" &&
+      body.approvedBy.trim().length > 0
+        ? body.approvedBy
+        : undefined;
+
+    const updated = await approveSubject(
+      deps.db,
+      { kind: "task", taskId },
+      approvedBy,
+    );
+    if (!updated) {
+      return c.json(
+        {
+          error: `no pending approval_requests row for task ${taskId}`,
+        },
+        409,
+      );
+    }
+    return c.json({ taskId, approval: updated }, 200);
   });
 
   // GET /tasks/:taskId/review-reports — chronological list of reports.

@@ -17,6 +17,12 @@ export default {
     "./packages/db/src/schema/phase-audit-reports.ts",
     "./packages/db/src/schema/completion-audit-reports.ts",
     "./packages/db/src/schema/workflow-events.ts",
+    // Phase 7 (Worker 1) — additive durable tables. Registered here so
+    // `pnpm db:generate` regenerates Drizzle snapshots that include
+    // approval_requests + budget_reports alongside the trace columns
+    // added to workflow_events by migration 0012.
+    "./packages/db/src/schema/approval-requests.ts",
+    "./packages/db/src/schema/budget-reports.ts",
   ],
   out: "./db/migrations",
   dialect: "postgresql",

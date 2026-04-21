@@ -21,7 +21,10 @@ export type TuiAction =
   | { kind: "integrate-phase" }
   | { kind: "audit-phase" }
   | { kind: "complete-plan" }
-  | { kind: "release-plan" };
+  | { kind: "release-plan" }
+  // Phase 7 — operator approve action. Disabled when no pending
+  // approval_requests row exists for the selected task.
+  | { kind: "approve-task" };
 
 /**
  * Each binding is a space-separated sequence of tokens. A token is
@@ -53,6 +56,10 @@ export const KEYBINDS: readonly KeyBinding[] = [
   { chord: "g a",    action: { kind: "audit-phase" },       label: "ga audit" },
   { chord: "g c",    action: { kind: "complete-plan" },     label: "gc complete" },
   { chord: "g R",    action: { kind: "release-plan" },      label: "gR release" },
+  // Phase 7 — operator approve. Capital `A` deliberately distinct
+  // from the lowercase `a` audit chord so a typo doesn't fire the
+  // wrong action mid-merge.
+  { chord: "g A",    action: { kind: "approve-task" },      label: "gA approve" },
 ];
 
 /**

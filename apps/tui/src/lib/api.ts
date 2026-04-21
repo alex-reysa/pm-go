@@ -1,5 +1,7 @@
 import type {
   AgentRun,
+  ApprovalRequest,
+  BudgetReport,
   CompletionAuditReport,
   Phase,
   Plan,
@@ -111,6 +113,11 @@ export interface ApiClient {
   auditPhase(phaseId: UUID): Promise<void>;
   completePlan(planId: UUID): Promise<void>;
   releasePlan(planId: UUID): Promise<void>;
+  // Phase 7 — approval ledger + budget snapshots.
+  listApprovals(planId: UUID): Promise<ApprovalRequest[]>;
+  approveTask(taskId: UUID): Promise<void>;
+  approvePlan(planId: UUID): Promise<void>;
+  getBudgetReport(planId: UUID): Promise<BudgetReport>;
 }
 
 export interface CreateApiClientOptions {
@@ -200,6 +207,19 @@ export function createApiClient(opts: CreateApiClientOptions): ApiClient {
     auditPhase: (id) => postEmpty(`/phases/${id}/audit`),
     completePlan: (id) => postEmpty(`/plans/${id}/complete`),
     releasePlan: (id) => postEmpty(`/plans/${id}/release`),
+    // Phase 7
+    async listApprovals(planId) {
+      const body = await getJson<{
+        planId: UUID;
+        approvals: ApprovalRequest[];
+      }>(`/approvals?planId=${encodeURIComponent(planId)}`);
+      return body.approvals;
+    },
+    approveTask: (id) => postEmpty(`/tasks/${id}/approve`),
+    approvePlan: (id) => postEmpty(`/plans/${id}/approve`),
+    async getBudgetReport(planId) {
+      return getJson<BudgetReport>(`/plans/${planId}/budget-report`);
+    },
   };
 }
 

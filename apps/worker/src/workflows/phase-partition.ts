@@ -5,6 +5,10 @@ import type {
   PhasePartitionWorkflowResult,
   Task,
 } from "@pm-go/contracts";
+import {
+  retryPolicyFor,
+  temporalRetryFromConfig,
+} from "@pm-go/temporal-workflows";
 
 /**
  * Activity surface for PhasePartitionWorkflow. The workflow is a
@@ -36,12 +40,7 @@ interface PhasePartitionActivityInterface {
 const { loadPhase, loadPhaseTasks, runPhasePartitionChecks, updatePhaseStatus } =
   proxyActivities<PhasePartitionActivityInterface>({
     startToCloseTimeout: "2 minutes",
-    retry: {
-      maximumAttempts: 3,
-      initialInterval: "2 seconds",
-      backoffCoefficient: 2,
-      maximumInterval: "30 seconds",
-    },
+    retry: temporalRetryFromConfig(retryPolicyFor("PhasePartitionWorkflow")),
   });
 
 /**

@@ -110,9 +110,12 @@ describe("createWorktreeActivities.leaseWorktree", () => {
 
       expect(lease.status).toBe("active");
       expect(existsSync(lease.worktreePath)).toBe(true);
-      // Both writes happen inside the same transaction.
+      // Both lease+task writes happen inside the same transaction.
+      // Phase 7 adds a separate `db.insert(workflowEvents)` call after
+      // the transaction commits (the span sink), so insert spies fire
+      // twice total: once for the lease row, once for the span.
       expect(spies.transaction).toHaveBeenCalledTimes(1);
-      expect(spies.insert).toHaveBeenCalledTimes(1);
+      expect(spies.insert).toHaveBeenCalledTimes(2);
       expect(spies.insertValues).toHaveBeenCalledWith(
         expect.objectContaining({
           id: lease.id,
@@ -222,8 +225,12 @@ describe("createWorktreeActivities.leaseWorktree", () => {
         maxLifetimeHours: 24,
       });
 
-      // No fresh insert — short-circuit via the existing lease.
-      expect(spies.insert).not.toHaveBeenCalled();
+      // No fresh worktree-lease insert — short-circuit via the
+      // existing lease. Phase 7 wraps leaseWorktree in `withSpan`, which
+      // emits a `workflow_events` row through `db.insert(workflowEvents)`
+      // — so the spy is called exactly once for the span sink, with
+      // workflow_events as the table.
+      expect(spies.insert).toHaveBeenCalledTimes(1);
       expect(spies.transaction).not.toHaveBeenCalled();
       expect(lease.id).toBe(existingRow.id);
       // But the task row still gets stamped so Temporal retries / worker

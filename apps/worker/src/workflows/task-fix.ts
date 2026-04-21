@@ -10,6 +10,10 @@ import type {
   TaskStatus,
   WorktreeLease,
 } from "@pm-go/contracts";
+import {
+  retryPolicyFor,
+  temporalRetryFromConfig,
+} from "@pm-go/temporal-workflows";
 
 type StoredReviewReport = ReviewReport & {
   cycleNumber: number;
@@ -60,12 +64,7 @@ const {
   diffWorktreeAgainstScope,
 } = proxyActivities<TaskFixActivityInterface>({
   startToCloseTimeout: "15 minutes",
-  retry: {
-    maximumAttempts: 3,
-    initialInterval: "2 seconds",
-    backoffCoefficient: 2,
-    maximumInterval: "30 seconds",
-  },
+  retry: temporalRetryFromConfig(retryPolicyFor("TaskFixWorkflow")),
 });
 
 /**

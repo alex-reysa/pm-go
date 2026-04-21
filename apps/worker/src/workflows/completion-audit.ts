@@ -7,9 +7,14 @@ import type {
   Phase,
   PhaseAuditReport,
   Plan,
+  StopDecision,
   UUID,
 } from "@pm-go/contracts";
 import type { StoredMergeRun } from "@pm-go/temporal-activities";
+import {
+  retryPolicyFor,
+  temporalRetryFromConfig,
+} from "@pm-go/temporal-workflows";
 
 type PlanStatus =
   | "draft"
@@ -43,6 +48,12 @@ interface CompletionAuditActivityInterface {
     reportId: UUID;
     planStatus: PlanStatus;
   }): Promise<void>;
+  // Phase 7 — stop-condition gate at the release threshold.
+  evaluateStopConditionActivity(input: {
+    planId: UUID;
+    taskId?: UUID;
+  }): Promise<StopDecision>;
+  persistBudgetReport(input: { planId: UUID }): Promise<{ id: UUID }>;
 }
 
 const {
@@ -54,14 +65,11 @@ const {
   persistAgentRun,
   persistCompletionAuditReport,
   stampPlanCompletionAudit,
+  evaluateStopConditionActivity,
+  persistBudgetReport,
 } = proxyActivities<CompletionAuditActivityInterface>({
   startToCloseTimeout: "45 minutes",
-  retry: {
-    maximumAttempts: 3,
-    initialInterval: "2 seconds",
-    backoffCoefficient: 2,
-    maximumInterval: "30 seconds",
-  },
+  retry: temporalRetryFromConfig(retryPolicyFor("CompletionAuditWorkflow")),
 });
 
 /**
@@ -107,6 +115,19 @@ export async function CompletionAuditWorkflow(
     );
   }
 
+  // Phase 7 — stop condition. If the plan has tripped a structural
+  // limit (high-severity findings, exhausted phase reruns), bail
+  // non-retryably so a re-driven /complete doesn't burn another
+  // auditor run on a doomed plan. The decision is best-effort
+  // observability — no blocking transition here.
+  const stop = await evaluateStopConditionActivity({ planId: input.planId });
+  if (stop.stop) {
+    throw ApplicationFailure.nonRetryable(
+      `CompletionAuditWorkflow: stop_condition_met — ${stop.reason}`,
+      "StopConditionMet",
+    );
+  }
+
   const auditor = await runCompletionAuditor({
     plan,
     finalPhase,
@@ -124,6 +145,11 @@ export async function CompletionAuditWorkflow(
     reportId: auditor.report.id,
     planStatus: nextPlanStatus,
   });
+
+  // Phase 7: snapshot the plan-wide budget at the completion-audit
+  // checkpoint so /budget-report serves a fresh row even if no
+  // integration ran since the last snapshot. Best-effort.
+  await persistBudgetReport({ planId: input.planId }).catch(() => undefined);
 
   return {
     planId: input.planId,

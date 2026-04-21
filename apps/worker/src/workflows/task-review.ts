@@ -10,6 +10,10 @@ import type {
   TaskStatus,
   WorktreeLease,
 } from "@pm-go/contracts";
+import {
+  retryPolicyFor,
+  temporalRetryFromConfig,
+} from "@pm-go/temporal-workflows";
 
 import { evaluateReviewPolicy } from "./review-policy.js";
 
@@ -63,12 +67,7 @@ const {
   persistPolicyDecision,
 } = proxyActivities<TaskReviewActivityInterface>({
   startToCloseTimeout: "15 minutes",
-  retry: {
-    maximumAttempts: 3,
-    initialInterval: "2 seconds",
-    backoffCoefficient: 2,
-    maximumInterval: "30 seconds",
-  },
+  retry: temporalRetryFromConfig(retryPolicyFor("TaskReviewWorkflow")),
 });
 
 /**

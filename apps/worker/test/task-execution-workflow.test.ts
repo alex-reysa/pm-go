@@ -17,6 +17,10 @@ const activityFns = {
   persistAgentRun: vi.fn(),
   commitAgentWork: vi.fn(),
   diffWorktreeAgainstScope: vi.fn(),
+  // Phase 7 — pre-flight budget gate. Default to ok:true so existing
+  // happy-path assertions stay green; budget-block tests override.
+  evaluateBudgetGateActivity: vi.fn(async () => ({ ok: true })),
+  persistPolicyDecision: vi.fn(async () => "policy-decision-id"),
 };
 
 vi.mock("@temporalio/workflow", () => ({
@@ -84,6 +88,11 @@ const BASE_INPUT = {
 
 beforeEach(() => {
   for (const fn of Object.values(activityFns)) fn.mockReset();
+  // Phase 7 default: budget gate passes so the existing happy-path
+  // tests stay closed over their original assertions. Tests that
+  // exercise the budget-blocked branch override this in-line.
+  activityFns.evaluateBudgetGateActivity.mockResolvedValue({ ok: true });
+  activityFns.persistPolicyDecision.mockResolvedValue("policy-decision-id");
 });
 
 describe("TaskExecutionWorkflow", () => {

@@ -4,6 +4,7 @@ import React, { useCallback, useState } from "react";
 
 import type { UUID } from "@pm-go/contracts";
 
+import { ApprovalsScreen } from "./screens/approvals.js";
 import { ConfirmModal } from "./components/confirm-modal.js";
 import { Footer } from "./components/footer.js";
 import { Header } from "./components/header.js";
@@ -192,6 +193,14 @@ function renderScreen(
           onRequestAction={onRequestAction}
         />
       );
+    case "approvals":
+      return (
+        <ApprovalsScreen
+          planId={route.planId}
+          onBack={() => onBackToPlanDetail(route.planId)}
+          onRequestAction={onRequestAction}
+        />
+      );
     default:
       return assertNever(route);
   }
@@ -226,6 +235,12 @@ async function executeAction(
       return;
     case "release-plan":
       await runtime.api.releasePlan(action.planId);
+      return;
+    case "approve-task":
+      await runtime.api.approveTask(action.taskId);
+      return;
+    case "approve-plan":
+      await runtime.api.approvePlan(action.planId);
       return;
   }
 }

@@ -18,6 +18,8 @@ import {
   createPhasesRoute,
 } from "./routes/phases.js";
 import { createTasksRoute } from "./routes/tasks.js";
+import { createApprovalsRoute } from "./routes/approvals.js";
+import { createBudgetReportsRoute } from "./routes/budget-reports.js";
 
 export interface AppDeps {
   temporal: TemporalClient;
@@ -86,5 +88,10 @@ export function createApp(deps: AppDeps) {
     "/artifacts",
     createArtifactsRoute({ db: deps.db, artifactDir: deps.artifactDir }),
   );
+  // Phase 7 — additive routes for the approval ledger + budget snapshots.
+  // Mounted under `/approvals` and `/plans` (the latter shares the
+  // existing prefix; the budget-report sub-route is `/plans/:id/budget-report`).
+  app.route("/approvals", createApprovalsRoute({ db: deps.db }));
+  app.route("/plans", createBudgetReportsRoute({ db: deps.db }));
   return app;
 }

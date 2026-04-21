@@ -7,6 +7,10 @@ import type {
   SpecToPlanWorkflowInput,
   SpecToPlanWorkflowResult,
 } from "@pm-go/contracts";
+import {
+  retryPolicyFor,
+  temporalRetryFromConfig,
+} from "@pm-go/temporal-workflows";
 
 /**
  * The workflow sandbox forbids dynamic I/O imports — `@pm-go/db`,
@@ -53,12 +57,7 @@ const {
   persistArtifact,
 } = proxyActivities<SpecToPlanActivities>({
   startToCloseTimeout: "5 minutes",
-  retry: {
-    maximumAttempts: 3,
-    initialInterval: "2 seconds",
-    backoffCoefficient: 2,
-    maximumInterval: "30 seconds",
-  },
+  retry: temporalRetryFromConfig(retryPolicyFor("SpecToPlanWorkflow")),
 });
 
 /**

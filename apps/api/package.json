@@ -13,7 +13,9 @@
   "dependencies": {
     "@pm-go/contracts": "workspace:*",
     "@pm-go/db": "workspace:*",
+    "@pm-go/observability": "workspace:*",
     "@pm-go/planner": "workspace:*",
+    "@pm-go/policy-engine": "workspace:*",
     "@pm-go/repo-intelligence": "workspace:*",
     "@hono/node-server": "^1.13.0",
     "@temporalio/client": "^1.11.0",
