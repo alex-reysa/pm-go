@@ -49,7 +49,7 @@ importers:
         version: 1.16.0
       drizzle-orm:
         specifier: ^0.38.0
-        version: 0.38.4(@types/pg@8.20.0)(@types/react@18.3.28)(pg@8.20.0)(react@18.3.1)
+        version: 0.38.4(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(@types/react@18.3.28)(pg@8.20.0)(react@18.3.1)
       hono:
         specifier: ^4.7.0
         version: 4.12.14
@@ -99,6 +99,9 @@ importers:
       '@pm-go/executor-claude':
         specifier: workspace:*
         version: link:../../packages/executor-claude
+      '@pm-go/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
       '@pm-go/planner':
         specifier: workspace:*
         version: link:../../packages/planner
@@ -125,7 +128,7 @@ importers:
         version: 1.16.0
       drizzle-orm:
         specifier: ^0.38.0
-        version: 0.38.4(@types/pg@8.20.0)(@types/react@18.3.28)(pg@8.20.0)(react@18.3.1)
+        version: 0.38.4(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(@types/react@18.3.28)(pg@8.20.0)(react@18.3.1)
       pg:
         specifier: ^8.13.0
         version: 8.20.0
@@ -147,7 +150,7 @@ importers:
         version: link:../contracts
       drizzle-orm:
         specifier: ^0.38.0
-        version: 0.38.4(@types/pg@8.20.0)(@types/react@18.3.28)(pg@8.20.0)(react@18.3.1)
+        version: 0.38.4(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(@types/react@18.3.28)(pg@8.20.0)(react@18.3.1)
       pg:
         specifier: ^8.13.0
         version: 8.20.0
@@ -170,6 +173,28 @@ importers:
       '@pm-go/contracts':
         specifier: workspace:*
         version: link:../contracts
+    devDependencies:
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@5.9.3))(terser@5.46.1)
+
+  packages/observability:
+    dependencies:
+      '@opentelemetry/api':
+        specifier: ^1.9.0
+        version: 1.9.1
+      '@pm-go/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@pm-go/db':
+        specifier: workspace:*
+        version: link:../db
+      drizzle-orm:
+        specifier: ^0.38.0
+        version: 0.38.4(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(@types/react@18.3.28)(pg@8.20.0)(react@18.3.1)
     devDependencies:
       typescript:
         specifier: ^5.6.3
@@ -1086,6 +1111,10 @@ packages:
 
   '@open-draft/until@2.1.0':
     resolution: {integrity: sha512-U69T3ItWHvLwGg5eJ0n3I62nWuE6ilHlmz7zM0npLBRvPRd7e6NYmg54vvRtP5mZG7kZqZCFVdsTWo7BPtBujg==}
+
+  '@opentelemetry/api@1.9.1':
+    resolution: {integrity: sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q==}
+    engines: {node: '>=8.0.0'}
 
   '@petamoriken/float16@3.9.3':
     resolution: {integrity: sha512-8awtpHXCx/bNpFt4mt2xdkgtgVvKqty8VbjHI/WWWQuEw+KLzFot3f4+LkQY9YmOtq7A5GdOnqoIC8Pdygjk2g==}
@@ -3445,6 +3474,8 @@ snapshots:
 
   '@open-draft/until@2.1.0': {}
 
+  '@opentelemetry/api@1.9.1': {}
+
   '@petamoriken/float16@3.9.3': {}
 
   '@protobufjs/aspromise@1.1.2': {}
@@ -4035,8 +4066,9 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  drizzle-orm@0.38.4(@types/pg@8.20.0)(@types/react@18.3.28)(pg@8.20.0)(react@18.3.1):
+  drizzle-orm@0.38.4(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(@types/react@18.3.28)(pg@8.20.0)(react@18.3.1):
     optionalDependencies:
+      '@opentelemetry/api': 1.9.1
       '@types/pg': 8.20.0
       '@types/react': 18.3.28
       pg: 8.20.0

@@ -32,6 +32,11 @@ export const workflowEventKind = pgEnum("workflow_event_kind", [
   "phase_status_changed",
   "task_status_changed",
   "artifact_persisted",
+  // Phase 7: span emitted by `@pm-go/observability`'s `withSpan` wrapper.
+  // `trace_id` / `span_id` below carry the correlation keys; `payload`
+  // carries the `Span` contract shape. Added via migration 0012 with
+  // ALTER TYPE … ADD VALUE — cheap and backward-compatible.
+  "span_emitted",
 ]);
 
 export const workflowEvents = pgTable(
@@ -59,6 +64,12 @@ export const workflowEvents = pgTable(
     })
       .notNull()
       .defaultNow(),
+    // Phase 7 trace correlation. Nullable because legacy rows predate
+    // the column and because not every future event kind will carry a
+    // span (e.g. operator-initiated approvals arrive without an OTel
+    // context). `trace_id` is indexed for plan-agnostic trace replay.
+    traceId: text("trace_id"),
+    spanId: text("span_id"),
   },
   (table) => ({
     // Plan-scoped chronological replay is the primary access pattern
@@ -71,6 +82,9 @@ export const workflowEvents = pgTable(
     ),
     // Secondary index for phase-scoped queries (drill-down in the UI).
     phaseIdx: index("workflow_events_phase_idx").on(table.phaseId),
+    // Phase 7: trace-scoped lookup (e.g. "show me every event in trace
+    // X" across plans). Non-unique — a trace fans out over many rows.
+    traceIdx: index("workflow_events_trace_idx").on(table.traceId),
   }),
 );
 
@@ -82,7 +96,5 @@ export const WORKFLOW_EVENT_KINDS = [
   "phase_status_changed",
   "task_status_changed",
   "artifact_persisted",
+  "span_emitted",
 ] as const;
-// Keep `text` referenced so tsc --noEmit doesn't flag the import
-// even when every column above uses a typed column helper.
-void text;
