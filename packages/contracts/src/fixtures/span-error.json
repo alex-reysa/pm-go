@@ -1,0 +1,14 @@
+{
+  "traceId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "spanId": "22222222-3333-4444-8555-666666666666",
+  "name": "worker.activities.events.emitWorkflowEvent",
+  "startedAt": "2026-04-21T10:01:00.000Z",
+  "finishedAt": "2026-04-21T10:01:00.013Z",
+  "durationMs": 13,
+  "status": "error",
+  "errorMessage": "connection reset by peer",
+  "attrs": {
+    "planId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    "kind": "phase_status_changed"
+  }
+}
