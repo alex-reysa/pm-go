@@ -20,6 +20,7 @@ import {
   taskDependencies,
   type PmGoDb,
 } from "@pm-go/db";
+import { createSpanWriter, withSpan } from "@pm-go/observability";
 
 export interface PlanPersistenceDeps {
   db: PmGoDb;
@@ -53,7 +54,59 @@ export function createPlanPersistenceActivities(
 
   return {
     async persistPlan(plan: Plan): Promise<PersistPlanResult> {
-      return db.transaction(async (tx) => {
+      const sink = createSpanWriter({ db, planId: plan.id }).writeSpan;
+      return withSpan(
+        "worker.activities.plan-persistence.persistPlan",
+        {
+          planId: plan.id,
+          phaseCount: plan.phases.length,
+          taskCount: plan.tasks.length,
+        },
+        async () => persistPlanImpl(db, plan),
+        { sink },
+      );
+    },
+
+    async persistAgentRun(run: AgentRun): Promise<string> {
+      return persistAgentRunImpl(db, run);
+    },
+
+    async persistArtifact(artifact: Artifact): Promise<string> {
+      const planId = artifact.planId;
+      const sink = planId
+        ? createSpanWriter({ db, planId }).writeSpan
+        : undefined;
+      return withSpan(
+        "worker.activities.plan-persistence.persistArtifact",
+        {
+          ...(planId ? { planId } : {}),
+          ...(artifact.taskId ? { taskId: artifact.taskId } : {}),
+          kind: artifact.kind,
+        },
+        async () => persistArtifactImpl(db, artifact),
+        sink ? { sink } : {},
+      );
+    },
+
+    async loadSpecDocument(specDocumentId: string): Promise<SpecDocument> {
+      return loadSpecDocumentImpl(db, specDocumentId);
+    },
+
+    async loadRepoSnapshot(repoSnapshotId: string): Promise<RepoSnapshot> {
+      return loadRepoSnapshotImpl(db, repoSnapshotId);
+    },
+  };
+}
+
+// Underscore-prefixed implementations factored out so the wrapped
+// `withSpan` callable closes over a stable function reference; keeps
+// each public method body short while preserving the original logic
+// verbatim.
+async function persistPlanImpl(
+  db: PmGoDb,
+  plan: Plan,
+): Promise<PersistPlanResult> {
+  return db.transaction(async (tx) => {
         // 1. Plan row — upsert by id so re-planning cycles update in place.
         await tx
           .insert(plans)
@@ -237,43 +290,68 @@ export function createPlanPersistenceActivities(
           taskCount: plan.tasks.length,
         };
       });
+}
+
+async function persistAgentRunImpl(db: PmGoDb, run: AgentRun): Promise<string> {
+  // Contract-optional fields land as NULL, not the string "undefined".
+  // Using explicit `?? null` keeps Drizzle's insert-arg type happy under
+  // `exactOptionalPropertyTypes`, which forbids passing `undefined`
+  // where the column is typed as `string | null`.
+  const values = {
+    id: run.id,
+    taskId: run.taskId ?? null,
+    workflowRunId: run.workflowRunId,
+    role: run.role,
+    depth: run.depth,
+    status: run.status,
+    riskLevel: run.riskLevel,
+    executor: run.executor,
+    model: run.model,
+    promptVersion: run.promptVersion,
+    sessionId: run.sessionId ?? null,
+    parentSessionId: run.parentSessionId ?? null,
+    permissionMode: run.permissionMode,
+    budgetUsdCap:
+      run.budgetUsdCap !== undefined ? String(run.budgetUsdCap) : null,
+    maxTurnsCap: run.maxTurnsCap ?? null,
+    turns: run.turns ?? null,
+    inputTokens: run.inputTokens ?? null,
+    outputTokens: run.outputTokens ?? null,
+    cacheCreationTokens: run.cacheCreationTokens ?? null,
+    cacheReadTokens: run.cacheReadTokens ?? null,
+    costUsd: run.costUsd !== undefined ? String(run.costUsd) : null,
+    stopReason: run.stopReason ?? null,
+    outputFormatSchemaRef: run.outputFormatSchemaRef ?? null,
+    startedAt: run.startedAt ?? null,
+    completedAt: run.completedAt ?? null,
+  };
+
+  // Resolve the owning planId via the linked task (if any) so the span
+  // sink has a valid FK target. agent_runs without a task linkage are
+  // plan-level (e.g. planner runs) and skip the span — `withSpan`
+  // tolerates a missing sink.
+  let planId: string | null = null;
+  if (run.taskId) {
+    const [taskRow] = await db
+      .select({ planId: planTasks.planId })
+      .from(planTasks)
+      .where(eq(planTasks.id, run.taskId))
+      .limit(1);
+    planId = taskRow?.planId ?? null;
+  }
+  const sink = planId
+    ? createSpanWriter({ db, planId }).writeSpan
+    : undefined;
+
+  return withSpan(
+    "worker.activities.plan-persistence.persistAgentRun",
+    {
+      ...(planId ? { planId } : {}),
+      ...(run.taskId ? { taskId: run.taskId } : {}),
+      role: run.role,
+      runId: run.id,
     },
-
-    async persistAgentRun(run: AgentRun): Promise<string> {
-      // Contract-optional fields land as NULL, not the string "undefined".
-      // Using explicit `?? null` keeps Drizzle's insert-arg type happy under
-      // `exactOptionalPropertyTypes`, which forbids passing `undefined`
-      // where the column is typed as `string | null`.
-      const values = {
-        id: run.id,
-        taskId: run.taskId ?? null,
-        workflowRunId: run.workflowRunId,
-        role: run.role,
-        depth: run.depth,
-        status: run.status,
-        riskLevel: run.riskLevel,
-        executor: run.executor,
-        model: run.model,
-        promptVersion: run.promptVersion,
-        sessionId: run.sessionId ?? null,
-        parentSessionId: run.parentSessionId ?? null,
-        permissionMode: run.permissionMode,
-        // numeric columns accept string for precise decimal encoding.
-        budgetUsdCap:
-          run.budgetUsdCap !== undefined ? String(run.budgetUsdCap) : null,
-        maxTurnsCap: run.maxTurnsCap ?? null,
-        turns: run.turns ?? null,
-        inputTokens: run.inputTokens ?? null,
-        outputTokens: run.outputTokens ?? null,
-        cacheCreationTokens: run.cacheCreationTokens ?? null,
-        cacheReadTokens: run.cacheReadTokens ?? null,
-        costUsd: run.costUsd !== undefined ? String(run.costUsd) : null,
-        stopReason: run.stopReason ?? null,
-        outputFormatSchemaRef: run.outputFormatSchemaRef ?? null,
-        startedAt: run.startedAt ?? null,
-        completedAt: run.completedAt ?? null,
-      };
-
+    async () => {
       await db
         .insert(agentRuns)
         .values(values)
@@ -306,74 +384,82 @@ export function createPlanPersistenceActivities(
             completedAt: values.completedAt,
           },
         });
-
       return run.id;
     },
+    sink ? { sink } : {},
+  );
+}
 
-    async persistArtifact(artifact: Artifact): Promise<string> {
-      // Artifacts are append-only: no upsert, no onConflict behaviour. A
-      // duplicate id surfaces as a DB error, which is the correct signal
-      // that the caller attempted to re-emit an immutable artifact.
-      await db.insert(artifacts).values({
-        id: artifact.id,
-        taskId: artifact.taskId ?? null,
-        planId: artifact.planId ?? null,
-        kind: artifact.kind,
-        uri: artifact.uri,
-        createdAt: artifact.createdAt,
-      });
-      return artifact.id;
-    },
+async function persistArtifactImpl(
+  db: PmGoDb,
+  artifact: Artifact,
+): Promise<string> {
+  // Artifacts are append-only: no upsert, no onConflict behaviour. A
+  // duplicate id surfaces as a DB error, which is the correct signal
+  // that the caller attempted to re-emit an immutable artifact.
+  await db.insert(artifacts).values({
+    id: artifact.id,
+    taskId: artifact.taskId ?? null,
+    planId: artifact.planId ?? null,
+    kind: artifact.kind,
+    uri: artifact.uri,
+    createdAt: artifact.createdAt,
+  });
+  return artifact.id;
+}
 
-    async loadSpecDocument(specDocumentId: string): Promise<SpecDocument> {
-      const rows = await db
-        .select()
-        .from(specDocuments)
-        .where(eq(specDocuments.id, specDocumentId))
-        .limit(1);
-      const row = rows[0];
-      if (!row) {
-        throw new Error(
-          `loadSpecDocument: no spec_documents row with id ${specDocumentId}`,
-        );
-      }
-      return {
-        id: row.id,
-        title: row.title,
-        source: row.source,
-        body: row.body,
-        createdAt: row.createdAt,
-      };
-    },
-
-    async loadRepoSnapshot(repoSnapshotId: string): Promise<RepoSnapshot> {
-      const rows = await db
-        .select()
-        .from(repoSnapshots)
-        .where(eq(repoSnapshots.id, repoSnapshotId))
-        .limit(1);
-      const row = rows[0];
-      if (!row) {
-        throw new Error(
-          `loadRepoSnapshot: no repo_snapshots row with id ${repoSnapshotId}`,
-        );
-      }
-      // `exactOptionalPropertyTypes` forbids `repoUrl: undefined` on the
-      // contract shape, so only attach the key when it has a value.
-      return {
-        id: row.id,
-        repoRoot: row.repoRoot,
-        ...(row.repoUrl !== null ? { repoUrl: row.repoUrl } : {}),
-        defaultBranch: row.defaultBranch,
-        headSha: row.headSha,
-        languageHints: row.languageHints,
-        frameworkHints: row.frameworkHints,
-        buildCommands: row.buildCommands,
-        testCommands: row.testCommands,
-        ciConfigPaths: row.ciConfigPaths,
-        capturedAt: row.capturedAt,
-      };
-    },
+async function loadSpecDocumentImpl(
+  db: PmGoDb,
+  specDocumentId: string,
+): Promise<SpecDocument> {
+  const rows = await db
+    .select()
+    .from(specDocuments)
+    .where(eq(specDocuments.id, specDocumentId))
+    .limit(1);
+  const row = rows[0];
+  if (!row) {
+    throw new Error(
+      `loadSpecDocument: no spec_documents row with id ${specDocumentId}`,
+    );
+  }
+  return {
+    id: row.id,
+    title: row.title,
+    source: row.source,
+    body: row.body,
+    createdAt: row.createdAt,
   };
 }
 
+async function loadRepoSnapshotImpl(
+  db: PmGoDb,
+  repoSnapshotId: string,
+): Promise<RepoSnapshot> {
+  const rows = await db
+    .select()
+    .from(repoSnapshots)
+    .where(eq(repoSnapshots.id, repoSnapshotId))
+    .limit(1);
+  const row = rows[0];
+  if (!row) {
+    throw new Error(
+      `loadRepoSnapshot: no repo_snapshots row with id ${repoSnapshotId}`,
+    );
+  }
+  // `exactOptionalPropertyTypes` forbids `repoUrl: undefined` on the
+  // contract shape, so only attach the key when it has a value.
+  return {
+    id: row.id,
+    repoRoot: row.repoRoot,
+    ...(row.repoUrl !== null ? { repoUrl: row.repoUrl } : {}),
+    defaultBranch: row.defaultBranch,
+    headSha: row.headSha,
+    languageHints: row.languageHints,
+    frameworkHints: row.frameworkHints,
+    buildCommands: row.buildCommands,
+    testCommands: row.testCommands,
+    ciConfigPaths: row.ciConfigPaths,
+    capturedAt: row.capturedAt,
+  };
+}

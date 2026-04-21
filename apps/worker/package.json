@@ -16,6 +16,7 @@
     "@pm-go/executor-claude": "workspace:*",
     "@pm-go/observability": "workspace:*",
     "@pm-go/planner": "workspace:*",
+    "@pm-go/policy-engine": "workspace:*",
     "@pm-go/repo-intelligence": "workspace:*",
     "@pm-go/temporal-activities": "workspace:*",
     "@pm-go/temporal-workflows": "workspace:*",

@@ -30,6 +30,7 @@ import {
 } from "@pm-go/worktree-manager";
 import type { StoredMergeRun } from "@pm-go/temporal-activities";
 import { collectRepoSnapshot as collectSnapshot } from "@pm-go/repo-intelligence";
+import { createSpanWriter, withSpan } from "@pm-go/observability";
 import { and, eq, inArray } from "drizzle-orm";
 
 const execFileAsync = promisify(execFile);
@@ -391,38 +392,46 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
     },
 
     async persistMergeRun(run: StoredMergeRun): Promise<UUID> {
-      await db
-        .insert(mergeRuns)
-        .values({
-          id: run.id,
-          planId: run.planId,
-          phaseId: run.phaseId,
-          integrationBranch: run.integrationBranch,
-          baseSha: run.baseSha,
-          integrationLeaseId: run.integrationLeaseId ?? null,
-          mergedTaskIds: run.mergedTaskIds,
-          failedTaskId: run.failedTaskId ?? null,
-          integrationHeadSha: run.integrationHeadSha ?? null,
-          postMergeSnapshotId: run.postMergeSnapshotId ?? null,
-          startedAt: run.startedAt,
-          completedAt: run.completedAt ?? null,
-        })
-        // NOTE: `postMergeSnapshotId` intentionally omitted from the set
-        // clause. The stamp comes exclusively from
-        // `capturePostMergeSnapshotAndStamp`, which runs AFTER this
-        // persist. On a Temporal retry where this activity fires a
-        // second time, we must not zap an already-stamped snapshot id
-        // with null.
-        .onConflictDoUpdate({
-          target: mergeRuns.id,
-          set: {
-            mergedTaskIds: run.mergedTaskIds,
-            failedTaskId: run.failedTaskId ?? null,
-            integrationHeadSha: run.integrationHeadSha ?? null,
-            completedAt: run.completedAt ?? null,
-          },
-        });
-      return run.id;
+      const sink = createSpanWriter({ db, planId: run.planId }).writeSpan;
+      return withSpan(
+        "worker.activities.integration.persistMergeRun",
+        { planId: run.planId, phaseId: run.phaseId, mergeRunId: run.id },
+        async () => {
+          await db
+            .insert(mergeRuns)
+            .values({
+              id: run.id,
+              planId: run.planId,
+              phaseId: run.phaseId,
+              integrationBranch: run.integrationBranch,
+              baseSha: run.baseSha,
+              integrationLeaseId: run.integrationLeaseId ?? null,
+              mergedTaskIds: run.mergedTaskIds,
+              failedTaskId: run.failedTaskId ?? null,
+              integrationHeadSha: run.integrationHeadSha ?? null,
+              postMergeSnapshotId: run.postMergeSnapshotId ?? null,
+              startedAt: run.startedAt,
+              completedAt: run.completedAt ?? null,
+            })
+            // NOTE: `postMergeSnapshotId` intentionally omitted from the set
+            // clause. The stamp comes exclusively from
+            // `capturePostMergeSnapshotAndStamp`, which runs AFTER this
+            // persist. On a Temporal retry where this activity fires a
+            // second time, we must not zap an already-stamped snapshot id
+            // with null.
+            .onConflictDoUpdate({
+              target: mergeRuns.id,
+              set: {
+                mergedTaskIds: run.mergedTaskIds,
+                failedTaskId: run.failedTaskId ?? null,
+                integrationHeadSha: run.integrationHeadSha ?? null,
+                completedAt: run.completedAt ?? null,
+              },
+            });
+          return run.id;
+        },
+        { sink },
+      );
     },
 
     async loadMergeRun(id: UUID): Promise<StoredMergeRun | null> {
@@ -474,15 +483,40 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
      * replay-safe).
      */
     async markTaskMerged(input: { taskId: UUID }): Promise<void> {
-      await db
-        .update(planTasks)
-        .set({ status: "merged" })
-        .where(
-          and(
-            eq(planTasks.id, input.taskId),
-            eq(planTasks.status, "ready_to_merge"),
-          ),
-        );
+      const [taskRow] = await db
+        .select({ planId: planTasks.planId })
+        .from(planTasks)
+        .where(eq(planTasks.id, input.taskId))
+        .limit(1);
+      if (!taskRow) {
+        await db
+          .update(planTasks)
+          .set({ status: "merged" })
+          .where(
+            and(
+              eq(planTasks.id, input.taskId),
+              eq(planTasks.status, "ready_to_merge"),
+            ),
+          );
+        return;
+      }
+      const sink = createSpanWriter({ db, planId: taskRow.planId }).writeSpan;
+      await withSpan(
+        "worker.activities.integration.markTaskMerged",
+        { planId: taskRow.planId, taskId: input.taskId },
+        async () => {
+          await db
+            .update(planTasks)
+            .set({ status: "merged" })
+            .where(
+              and(
+                eq(planTasks.id, input.taskId),
+                eq(planTasks.status, "ready_to_merge"),
+              ),
+            );
+        },
+        { sink },
+      );
     },
 
     async updatePhaseStatus(input: {
@@ -509,37 +543,59 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
         .from(phases)
         .where(eq(phases.id, input.phaseId))
         .limit(1);
-      await db
-        .update(phases)
-        .set({ status: input.status })
-        .where(eq(phases.id, input.phaseId));
-      // Only emit when the status actually changed AND we could
-      // resolve the plan. Skip silently otherwise — the read-model
-      // shouldn't carry no-op transitions.
-      if (prev && prev.status !== input.status) {
-        try {
-          await db.insert(workflowEvents).values({
-            id: randomUUID(),
-            planId: prev.planId,
-            phaseId: input.phaseId,
-            taskId: null,
-            kind: "phase_status_changed",
-            payload: {
-              previousStatus: prev.status,
-              nextStatus: input.status,
-            },
-            createdAt: new Date().toISOString(),
-          });
-        } catch (err) {
-          // Best-effort. A failed read-model emit must never block a
-          // phase transition — the phases row is already updated.
-          console.warn(
-            `[events] phase_status_changed emit failed (phaseId=${input.phaseId}): ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        }
+      if (!prev) {
+        // Phase row missing — caller likely passed a stale id. Update
+        // is a no-op; skip the span (no plan to scope it to) and the
+        // event projection.
+        await db
+          .update(phases)
+          .set({ status: input.status })
+          .where(eq(phases.id, input.phaseId));
+        return;
       }
+      const sink = createSpanWriter({ db, planId: prev.planId }).writeSpan;
+      await withSpan(
+        "worker.activities.integration.updatePhaseStatus",
+        {
+          planId: prev.planId,
+          phaseId: input.phaseId,
+          previousStatus: prev.status,
+          nextStatus: input.status,
+        },
+        async () => {
+          await db
+            .update(phases)
+            .set({ status: input.status })
+            .where(eq(phases.id, input.phaseId));
+          // Only emit when the status actually changed. Skip silently
+          // otherwise — the read-model shouldn't carry no-op transitions.
+          if (prev.status !== input.status) {
+            try {
+              await db.insert(workflowEvents).values({
+                id: randomUUID(),
+                planId: prev.planId,
+                phaseId: input.phaseId,
+                taskId: null,
+                kind: "phase_status_changed",
+                payload: {
+                  previousStatus: prev.status,
+                  nextStatus: input.status,
+                },
+                createdAt: new Date().toISOString(),
+              });
+            } catch (err) {
+              // Best-effort. A failed read-model emit must never block
+              // a phase transition — the phases row is already updated.
+              console.warn(
+                `[events] phase_status_changed emit failed (phaseId=${input.phaseId}): ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          }
+        },
+        { sink },
+      );
     },
 
     /**
@@ -570,20 +626,68 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
       phaseId: UUID;
       reportId: UUID;
     }): Promise<void> {
-      await db
-        .update(phases)
-        .set({ phaseAuditReportId: input.reportId })
-        .where(eq(phases.id, input.phaseId));
+      const [phaseRow] = await db
+        .select({ planId: phases.planId })
+        .from(phases)
+        .where(eq(phases.id, input.phaseId))
+        .limit(1);
+      if (!phaseRow) {
+        await db
+          .update(phases)
+          .set({ phaseAuditReportId: input.reportId })
+          .where(eq(phases.id, input.phaseId));
+        return;
+      }
+      const sink = createSpanWriter({ db, planId: phaseRow.planId }).writeSpan;
+      await withSpan(
+        "worker.activities.integration.stampPhaseAuditReportId",
+        {
+          planId: phaseRow.planId,
+          phaseId: input.phaseId,
+          reportId: input.reportId,
+        },
+        async () => {
+          await db
+            .update(phases)
+            .set({ phaseAuditReportId: input.reportId })
+            .where(eq(phases.id, input.phaseId));
+        },
+        { sink },
+      );
     },
 
     async stampPhaseBaseSnapshotId(input: {
       phaseId: UUID;
       snapshotId: UUID;
     }): Promise<void> {
-      await db
-        .update(phases)
-        .set({ baseSnapshotId: input.snapshotId })
-        .where(eq(phases.id, input.phaseId));
+      const [phaseRow] = await db
+        .select({ planId: phases.planId })
+        .from(phases)
+        .where(eq(phases.id, input.phaseId))
+        .limit(1);
+      if (!phaseRow) {
+        await db
+          .update(phases)
+          .set({ baseSnapshotId: input.snapshotId })
+          .where(eq(phases.id, input.phaseId));
+        return;
+      }
+      const sink = createSpanWriter({ db, planId: phaseRow.planId }).writeSpan;
+      await withSpan(
+        "worker.activities.integration.stampPhaseBaseSnapshotId",
+        {
+          planId: phaseRow.planId,
+          phaseId: input.phaseId,
+          snapshotId: input.snapshotId,
+        },
+        async () => {
+          await db
+            .update(phases)
+            .set({ baseSnapshotId: input.snapshotId })
+            .where(eq(phases.id, input.phaseId));
+        },
+        { sink },
+      );
     },
   };
 }

@@ -6,10 +6,12 @@ import type {
 } from "@pm-go/contracts";
 import type { StoredReviewReport } from "@pm-go/temporal-activities";
 import {
+  planTasks,
   policyDecisions,
   reviewReports,
   type PmGoDb,
 } from "@pm-go/db";
+import { createSpanWriter, withSpan } from "@pm-go/observability";
 
 export interface ReviewPersistenceDeps {
   db: PmGoDb;
@@ -47,21 +49,37 @@ export function createReviewPersistenceActivities(
 
   return {
     async persistReviewReport(report: StoredReviewReport): Promise<UUID> {
-      await db
-        .insert(reviewReports)
-        .values({
-          id: report.id,
+      const planId = await resolvePlanIdForTask(db, report.taskId);
+      const sink = planId
+        ? createSpanWriter({ db, planId }).writeSpan
+        : undefined;
+      return withSpan(
+        "worker.activities.review-persistence.persistReviewReport",
+        {
+          ...(planId ? { planId } : {}),
           taskId: report.taskId,
-          reviewerRunId: report.reviewerRunId,
+          reportId: report.id,
           outcome: report.outcome,
-          findings: report.findings,
-          cycleNumber: report.cycleNumber,
-          reviewedBaseSha: report.reviewedBaseSha,
-          reviewedHeadSha: report.reviewedHeadSha,
-          createdAt: report.createdAt,
-        })
-        .onConflictDoNothing({ target: reviewReports.id });
-      return report.id;
+        },
+        async () => {
+          await db
+            .insert(reviewReports)
+            .values({
+              id: report.id,
+              taskId: report.taskId,
+              reviewerRunId: report.reviewerRunId,
+              outcome: report.outcome,
+              findings: report.findings,
+              cycleNumber: report.cycleNumber,
+              reviewedBaseSha: report.reviewedBaseSha,
+              reviewedHeadSha: report.reviewedHeadSha,
+              createdAt: report.createdAt,
+            })
+            .onConflictDoNothing({ target: reviewReports.id });
+          return report.id;
+        },
+        sink ? { sink } : {},
+      );
     },
 
     async loadReviewReport(
@@ -118,22 +136,59 @@ export function createReviewPersistenceActivities(
       // NOTHING keeps Temporal retries idempotent without masking
       // bookkeeping errors (a duplicate id with different fields still
       // surfaces when the caller tries to update via a separate code path).
-      await db
-        .insert(policyDecisions)
-        .values({
-          id: decision.id,
+      // Span sink: scope by the plan inferred from the subject. Tasks
+      // resolve through plan_tasks; plan-scoped decisions use the
+      // subjectId verbatim.
+      let planId: string | undefined;
+      if (decision.subjectType === "task") {
+        const resolved = await resolvePlanIdForTask(db, decision.subjectId);
+        planId = resolved ?? undefined;
+      } else if (decision.subjectType === "plan") {
+        planId = decision.subjectId;
+      }
+      const sink = planId
+        ? createSpanWriter({ db, planId }).writeSpan
+        : undefined;
+      return withSpan(
+        "worker.activities.review-persistence.persistPolicyDecision",
+        {
+          ...(planId ? { planId } : {}),
           subjectType: decision.subjectType,
           subjectId: decision.subjectId,
-          riskLevel: decision.riskLevel,
           decision: decision.decision,
-          reason: decision.reason,
-          actor: decision.actor,
-          createdAt: decision.createdAt,
-        })
-        .onConflictDoNothing({ target: policyDecisions.id });
-      return decision.id;
+        },
+        async () => {
+          await db
+            .insert(policyDecisions)
+            .values({
+              id: decision.id,
+              subjectType: decision.subjectType,
+              subjectId: decision.subjectId,
+              riskLevel: decision.riskLevel,
+              decision: decision.decision,
+              reason: decision.reason,
+              actor: decision.actor,
+              createdAt: decision.createdAt,
+            })
+            .onConflictDoNothing({ target: policyDecisions.id });
+          return decision.id;
+        },
+        sink ? { sink } : {},
+      );
     },
   };
+}
+
+async function resolvePlanIdForTask(
+  db: PmGoDb,
+  taskId: UUID,
+): Promise<string | null> {
+  const [row] = await db
+    .select({ planId: planTasks.planId })
+    .from(planTasks)
+    .where(eq(planTasks.id, taskId))
+    .limit(1);
+  return row?.planId ?? null;
 }
 
 type ReviewReportsRow = typeof reviewReports.$inferSelect;

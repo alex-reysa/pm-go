@@ -46,6 +46,7 @@ import {
   renderPrSummaryMarkdown,
   runCompletionAuditor as runCompletionAuditorPkg,
 } from "@pm-go/planner";
+import { createSpanWriter, withSpan } from "@pm-go/observability";
 import type { StoredMergeRun } from "@pm-go/temporal-activities";
 
 const execFileAsync = promisify(execFile);
@@ -161,23 +162,36 @@ export function createCompletionAuditActivities(
     async persistCompletionAuditReport(
       report: CompletionAuditReport,
     ): Promise<UUID> {
-      await db
-        .insert(completionAuditReports)
-        .values({
-          id: report.id,
+      const sink = createSpanWriter({ db, planId: report.planId }).writeSpan;
+      return withSpan(
+        "worker.activities.completion-audit.persistCompletionAuditReport",
+        {
           planId: report.planId,
           finalPhaseId: report.finalPhaseId,
-          mergeRunId: report.mergeRunId,
-          auditorRunId: report.auditorRunId,
-          auditedHeadSha: report.auditedHeadSha,
+          reportId: report.id,
           outcome: report.outcome,
-          checklist: report.checklist,
-          findings: report.findings,
-          summary: report.summary,
-          createdAt: report.createdAt,
-        })
-        .onConflictDoNothing({ target: completionAuditReports.id });
-      return report.id;
+        },
+        async () => {
+          await db
+            .insert(completionAuditReports)
+            .values({
+              id: report.id,
+              planId: report.planId,
+              finalPhaseId: report.finalPhaseId,
+              mergeRunId: report.mergeRunId,
+              auditorRunId: report.auditorRunId,
+              auditedHeadSha: report.auditedHeadSha,
+              outcome: report.outcome,
+              checklist: report.checklist,
+              findings: report.findings,
+              summary: report.summary,
+              createdAt: report.createdAt,
+            })
+            .onConflictDoNothing({ target: completionAuditReports.id });
+          return report.id;
+        },
+        { sink },
+      );
     },
 
     async loadCompletionAuditReport(
@@ -208,169 +222,209 @@ export function createCompletionAuditActivities(
         | "completed"
         | "failed";
     }): Promise<void> {
-      await db.transaction(async (tx) => {
-        await tx
-          .update(plans)
-          .set({
-            completionAuditReportId: input.reportId,
-            status: input.planStatus,
-            updatedAt: new Date().toISOString(),
-          })
-          .where(eq(plans.id, input.planId));
-      });
+      const sink = createSpanWriter({ db, planId: input.planId }).writeSpan;
+      await withSpan(
+        "worker.activities.completion-audit.stampPlanCompletionAudit",
+        {
+          planId: input.planId,
+          reportId: input.reportId,
+          planStatus: input.planStatus,
+        },
+        async () => {
+          await db.transaction(async (tx) => {
+            await tx
+              .update(plans)
+              .set({
+                completionAuditReportId: input.reportId,
+                status: input.planStatus,
+                updatedAt: new Date().toISOString(),
+              })
+              .where(eq(plans.id, input.planId));
+          });
+        },
+        { sink },
+      );
     },
 
     async renderAndPersistPrSummary(input: {
       planId: UUID;
       completionAuditReportId: UUID;
     }): Promise<{ artifactId: UUID; uri: string }> {
-      const plan = await reconstructPlan(db, input.planId);
-      if (!plan) {
-        throw new Error(
-          `renderAndPersistPrSummary: plan ${input.planId} not found`,
-        );
-      }
-      const completionAudit = await loadCompletionAuditReportRow(
-        db,
-        input.completionAuditReportId,
+      const sink = createSpanWriter({ db, planId: input.planId }).writeSpan;
+      return withSpan(
+        "worker.activities.completion-audit.renderAndPersistPrSummary",
+        { planId: input.planId, completionAuditReportId: input.completionAuditReportId },
+        () => renderAndPersistPrSummaryImpl(db, artifactDir, input),
+        { sink },
       );
-      if (!completionAudit) {
-        throw new Error(
-          `renderAndPersistPrSummary: completion audit ${input.completionAuditReportId} not found`,
-        );
-      }
-
-      const [phaseAuditsRows, mergeRunsRows, evidenceBundleRow] =
-        await Promise.all([
-          db
-            .select()
-            .from(phaseAuditReports)
-            .where(eq(phaseAuditReports.planId, input.planId)),
-          db.select().from(mergeRuns).where(eq(mergeRuns.planId, input.planId)),
-          db
-            .select()
-            .from(artifacts)
-            .where(
-              and(
-                eq(artifacts.planId, input.planId),
-                eq(artifacts.kind, "completion_evidence_bundle"),
-              ),
-            )
-            .orderBy(desc(artifacts.createdAt))
-            .limit(1),
-        ]);
-
-      const phaseAudits = phaseAuditsRows.map(rowToPhaseAuditReport);
-      const mergeRunContracts = mergeRunsRows.map(rowToMergeRun);
-      const evidenceBundleId = evidenceBundleRow[0]?.id;
-
-      const md = renderPrSummaryMarkdown(plan, completionAudit, {
-        phaseAudits,
-        mergeRuns: mergeRunContracts,
-        ...(evidenceBundleId !== undefined
-          ? { evidenceBundleArtifactId: evidenceBundleId }
-          : {}),
-      });
-
-      await mkdir(artifactDir, { recursive: true });
-      const filePath = path.join(artifactDir, `${input.planId}.pr-summary.md`);
-      await writeFile(filePath, md, "utf8");
-
-      const artifactId = randomUUID();
-      const uri = pathToFileURL(path.resolve(filePath)).href;
-      await db
-        .insert(artifacts)
-        .values({
-          id: artifactId,
-          planId: input.planId,
-          kind: "pr_summary",
-          uri,
-          createdAt: new Date().toISOString(),
-        })
-        .onConflictDoNothing({ target: artifacts.id });
-      await emitArtifactPersisted(db, {
-        planId: input.planId,
-        artifactId,
-        artifactKind: "pr_summary",
-        uri,
-      });
-
-      return { artifactId, uri };
     },
 
     async persistCompletionEvidenceBundle(input: {
       planId: UUID;
       completionAuditReportId: UUID;
     }): Promise<{ artifactId: UUID; uri: string }> {
-      const [phaseAuditsRows, mergeRunsRows, planTaskRows] = await Promise.all([
-        db
-          .select({ id: phaseAuditReports.id })
-          .from(phaseAuditReports)
-          .where(eq(phaseAuditReports.planId, input.planId)),
-        db
-          .select({ id: mergeRuns.id })
-          .from(mergeRuns)
-          .where(eq(mergeRuns.planId, input.planId)),
-        db
-          .select({ id: planTasks.id })
-          .from(planTasks)
-          .where(eq(planTasks.planId, input.planId)),
-      ]);
-
-      const taskIds = planTaskRows.map((r) => r.id);
-      const [reviewRows, policyRows] = await Promise.all([
-        taskIds.length > 0
-          ? db
-              .select({ id: reviewReports.id })
-              .from(reviewReports)
-              .where(inArray(reviewReports.taskId, taskIds))
-          : Promise.resolve([] as { id: UUID }[]),
-        taskIds.length > 0
-          ? db
-              .select({ id: policyDecisions.id })
-              .from(policyDecisions)
-              .where(inArray(policyDecisions.subjectId, taskIds))
-          : Promise.resolve([] as { id: UUID }[]),
-      ]);
-
-      const bundle = {
-        planId: input.planId,
-        completionAuditReportId: input.completionAuditReportId,
-        phaseAuditReportIds: phaseAuditsRows.map((r) => r.id),
-        mergeRunIds: mergeRunsRows.map((r) => r.id),
-        reviewReportIds: reviewRows.map((r) => r.id),
-        policyDecisionIds: policyRows.map((r) => r.id),
-      };
-
-      await mkdir(artifactDir, { recursive: true });
-      const filePath = path.join(
-        artifactDir,
-        `${input.planId}.evidence-bundle.json`,
+      const sink = createSpanWriter({ db, planId: input.planId }).writeSpan;
+      return withSpan(
+        "worker.activities.completion-audit.persistCompletionEvidenceBundle",
+        { planId: input.planId, completionAuditReportId: input.completionAuditReportId },
+        () => persistCompletionEvidenceBundleImpl(db, artifactDir, input),
+        { sink },
       );
-      await writeFile(filePath, `${JSON.stringify(bundle, null, 2)}\n`, "utf8");
-
-      const artifactId = randomUUID();
-      const uri = pathToFileURL(path.resolve(filePath)).href;
-      await db
-        .insert(artifacts)
-        .values({
-          id: artifactId,
-          planId: input.planId,
-          kind: "completion_evidence_bundle",
-          uri,
-          createdAt: new Date().toISOString(),
-        })
-        .onConflictDoNothing({ target: artifacts.id });
-      await emitArtifactPersisted(db, {
-        planId: input.planId,
-        artifactId,
-        artifactKind: "completion_evidence_bundle",
-        uri,
-      });
-
-      return { artifactId, uri };
     },
   };
+}
+
+async function renderAndPersistPrSummaryImpl(
+  db: PmGoDb,
+  artifactDir: string,
+  input: { planId: UUID; completionAuditReportId: UUID },
+): Promise<{ artifactId: UUID; uri: string }> {
+  const plan = await reconstructPlan(db, input.planId);
+  if (!plan) {
+    throw new Error(
+      `renderAndPersistPrSummary: plan ${input.planId} not found`,
+    );
+  }
+  const completionAudit = await loadCompletionAuditReportRow(
+    db,
+    input.completionAuditReportId,
+  );
+  if (!completionAudit) {
+    throw new Error(
+      `renderAndPersistPrSummary: completion audit ${input.completionAuditReportId} not found`,
+    );
+  }
+
+  const [phaseAuditsRows, mergeRunsRows, evidenceBundleRow] =
+    await Promise.all([
+      db
+        .select()
+        .from(phaseAuditReports)
+        .where(eq(phaseAuditReports.planId, input.planId)),
+      db.select().from(mergeRuns).where(eq(mergeRuns.planId, input.planId)),
+      db
+        .select()
+        .from(artifacts)
+        .where(
+          and(
+            eq(artifacts.planId, input.planId),
+            eq(artifacts.kind, "completion_evidence_bundle"),
+          ),
+        )
+        .orderBy(desc(artifacts.createdAt))
+        .limit(1),
+    ]);
+
+  const phaseAudits = phaseAuditsRows.map(rowToPhaseAuditReport);
+  const mergeRunContracts = mergeRunsRows.map(rowToMergeRun);
+  const evidenceBundleId = evidenceBundleRow[0]?.id;
+
+  const md = renderPrSummaryMarkdown(plan, completionAudit, {
+    phaseAudits,
+    mergeRuns: mergeRunContracts,
+    ...(evidenceBundleId !== undefined
+      ? { evidenceBundleArtifactId: evidenceBundleId }
+      : {}),
+  });
+
+  await mkdir(artifactDir, { recursive: true });
+  const filePath = path.join(artifactDir, `${input.planId}.pr-summary.md`);
+  await writeFile(filePath, md, "utf8");
+
+  const artifactId = randomUUID();
+  const uri = pathToFileURL(path.resolve(filePath)).href;
+  await db
+    .insert(artifacts)
+    .values({
+      id: artifactId,
+      planId: input.planId,
+      kind: "pr_summary",
+      uri,
+      createdAt: new Date().toISOString(),
+    })
+    .onConflictDoNothing({ target: artifacts.id });
+  await emitArtifactPersisted(db, {
+    planId: input.planId,
+    artifactId,
+    artifactKind: "pr_summary",
+    uri,
+  });
+
+  return { artifactId, uri };
+}
+
+async function persistCompletionEvidenceBundleImpl(
+  db: PmGoDb,
+  artifactDir: string,
+  input: { planId: UUID; completionAuditReportId: UUID },
+): Promise<{ artifactId: UUID; uri: string }> {
+  const [phaseAuditsRows, mergeRunsRows, planTaskRows] = await Promise.all([
+    db
+      .select({ id: phaseAuditReports.id })
+      .from(phaseAuditReports)
+      .where(eq(phaseAuditReports.planId, input.planId)),
+    db
+      .select({ id: mergeRuns.id })
+      .from(mergeRuns)
+      .where(eq(mergeRuns.planId, input.planId)),
+    db
+      .select({ id: planTasks.id })
+      .from(planTasks)
+      .where(eq(planTasks.planId, input.planId)),
+  ]);
+
+  const taskIds = planTaskRows.map((r) => r.id);
+  const [reviewRows, policyRows] = await Promise.all([
+    taskIds.length > 0
+      ? db
+          .select({ id: reviewReports.id })
+          .from(reviewReports)
+          .where(inArray(reviewReports.taskId, taskIds))
+      : Promise.resolve([] as { id: UUID }[]),
+    taskIds.length > 0
+      ? db
+          .select({ id: policyDecisions.id })
+          .from(policyDecisions)
+          .where(inArray(policyDecisions.subjectId, taskIds))
+      : Promise.resolve([] as { id: UUID }[]),
+  ]);
+
+  const bundle = {
+    planId: input.planId,
+    completionAuditReportId: input.completionAuditReportId,
+    phaseAuditReportIds: phaseAuditsRows.map((r) => r.id),
+    mergeRunIds: mergeRunsRows.map((r) => r.id),
+    reviewReportIds: reviewRows.map((r) => r.id),
+    policyDecisionIds: policyRows.map((r) => r.id),
+  };
+
+  await mkdir(artifactDir, { recursive: true });
+  const filePath = path.join(
+    artifactDir,
+    `${input.planId}.evidence-bundle.json`,
+  );
+  await writeFile(filePath, `${JSON.stringify(bundle, null, 2)}\n`, "utf8");
+
+  const artifactId = randomUUID();
+  const uri = pathToFileURL(path.resolve(filePath)).href;
+  await db
+    .insert(artifacts)
+    .values({
+      id: artifactId,
+      planId: input.planId,
+      kind: "completion_evidence_bundle",
+      uri,
+      createdAt: new Date().toISOString(),
+    })
+    .onConflictDoNothing({ target: artifacts.id });
+  await emitArtifactPersisted(db, {
+    planId: input.planId,
+    artifactId,
+    artifactKind: "completion_evidence_bundle",
+    uri,
+  });
+
+  return { artifactId, uri };
 }
 
 /**

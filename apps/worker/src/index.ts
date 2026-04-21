@@ -30,13 +30,16 @@ import {
 } from "@pm-go/executor-claude";
 
 import { createCompletionAuditActivities } from "./activities/completion-audit.js";
+import { createEventActivities } from "./activities/events.js";
 import { createIntegrationActivities } from "./activities/integration.js";
 import { createPhaseAuditActivities } from "./activities/phase-audit.js";
 import { createPlannerActivities } from "./activities/planner.js";
 import { createPlanPersistenceActivities } from "./activities/plan-persistence.js";
+import { createPolicyActivities } from "./activities/policy.js";
 import { createRepoIntelligenceActivities } from "./activities/repo-intelligence.js";
 import { createReviewActivities } from "./activities/reviewer.js";
 import { createReviewPersistenceActivities } from "./activities/review-persistence.js";
+import { createSpanActivities } from "./activities/spans.js";
 import { createSpecIntakeActivities } from "./activities/spec-intake.js";
 import { createTaskExecutionActivities } from "./activities/task-execution.js";
 import { createWorktreeActivities } from "./activities/worktree.js";
@@ -150,6 +153,17 @@ async function main() {
     completionAuditorRunner,
     artifactDir,
   });
+  // Phase 7: policy-engine + observability + events activities. The
+  // policy factory loads durable inputs, calls the pure evaluators in
+  // `@pm-go/policy-engine`, and persists side-effect rows
+  // (`approval_requests`, `budget_reports`). The spans factory exposes
+  // `persistSpan` for the disjoint open/close case (the typical path
+  // is `withSpan` already inline in each wrapped activity). The events
+  // factory was implicit in the activity bag before — registering it
+  // explicitly here keeps the surface discoverable.
+  const policy = createPolicyActivities({ db });
+  const spans = createSpanActivities({ db });
+  const events = createEventActivities({ db });
 
   // Named-property merge — each factory exposes a disjoint set of names so
   // the spread is side-effect-free and collision-free. If a collision ever
@@ -168,6 +182,9 @@ async function main() {
     ...integration,
     ...phaseAudit,
     ...completionAudit,
+    ...policy,
+    ...spans,
+    ...events,
   };
 
   const worker = await Worker.create({

@@ -38,9 +38,15 @@ importers:
       '@pm-go/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@pm-go/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
       '@pm-go/planner':
         specifier: workspace:*
         version: link:../../packages/planner
+      '@pm-go/policy-engine':
+        specifier: workspace:*
+        version: link:../../packages/policy-engine
       '@pm-go/repo-intelligence':
         specifier: workspace:*
         version: link:../../packages/repo-intelligence
@@ -105,6 +111,9 @@ importers:
       '@pm-go/planner':
         specifier: workspace:*
         version: link:../../packages/planner
+      '@pm-go/policy-engine':
+        specifier: workspace:*
+        version: link:../../packages/policy-engine
       '@pm-go/repo-intelligence':
         specifier: workspace:*
         version: link:../../packages/repo-intelligence
