@@ -1,5 +1,6 @@
 import type {
   AgentRun,
+  CompletionAuditReport,
   Phase,
   Plan,
   Risk,
@@ -43,12 +44,14 @@ export type AgentRunListItem = Omit<AgentRun, "events">;
 export interface PlanDetail {
   plan: Plan;
   artifactIds: UUID[];
-  latestCompletionAudit: {
-    id: UUID;
-    outcome: "pass" | "changes_requested" | "blocked";
-    readyForRelease: boolean;
-    createdAt: string;
-  } | null;
+  /**
+   * The most recent `completion_audit_reports` row for this plan, or
+   * null if `/plans/:id/complete` hasn't run. The shape mirrors the
+   * contract's `CompletionAuditReport` (id, outcome, summary, etc.)
+   * so release-screen code can render findings + checklist without
+   * re-fetching.
+   */
+  latestCompletionAudit: CompletionAuditReport | null;
 }
 
 export interface ReplayedEvents {

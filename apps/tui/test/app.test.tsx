@@ -165,7 +165,10 @@ describe("App", () => {
     await tick();
     stdin.write("\r");
     await tick(40);
-    expect(lastFrame() ?? "").toContain("Worker 3 fills this");
+    // Plan detail renders the fetched plan (empty fixture → "plan has
+    // no phases yet") plus the events tail marker.
+    expect(lastFrame() ?? "").toContain("Under test");
+    expect(lastFrame() ?? "").toContain("Events");
 
     stdin.write("\u001B"); // esc
     await tick(40);
