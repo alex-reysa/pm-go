@@ -1,0 +1,11 @@
+{
+  "name": "@pm-go/sample-repos",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Static TypeScript sample-repo fixtures for the Phase 7 matrix/chaos harness. Each subdirectory under this package is a self-contained mini-project the harness copies into a tmpdir before running a phase5-shape smoke against stub executors. No runtime code lives here.",
+  "scripts": {
+    "typecheck": "echo '[sample-repos] fixtures are not typechecked by the workspace' && exit 0",
+    "test": "echo '[sample-repos] no tests' && exit 0"
+  }
+}

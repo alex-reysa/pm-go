@@ -316,3 +316,21 @@ export {
   type StubCompletionAuditorSequenceEntry,
   type ClaudeCompletionAuditorRunnerConfig,
 } from "./completion-auditor-runner.js";
+
+// Phase 7 W3 — stub failure-mode wrappers. Activated exclusively by env
+// var; transparent pass-through when unset. See
+// docs/phases/phase7-harness.md for the invocation contract.
+export {
+  wrapImplementerRunnerWithFailureMode,
+  resolveImplementerStubFailureMode,
+  tryMergeBranchOntoMain,
+  type ImplementerStubFailureMode,
+  type ImplementerStubFailureOptions,
+} from "./implementer-stub-failures.js";
+
+export {
+  wrapReviewerRunnerWithFailureMode,
+  resolveReviewerStubFailureMode,
+  type ReviewerStubFailureMode,
+  type ReviewerStubFailureOptions,
+} from "./reviewer-stub-failures.js";

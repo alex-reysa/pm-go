@@ -1,0 +1,10 @@
+{
+  "name": "phase7-fixture-single-package",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Phase 7 matrix fixture: the simplest shape — a single npm package with one source file. Exercises the orchestrator's happy-path when nothing exotic is happening in the target repo.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit"
+  }
+}
