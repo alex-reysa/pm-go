@@ -298,7 +298,16 @@ Exit criteria:
 
 Status:
 
-- active next (hyper-prompt in `docs/roadmap/phase6-hyper-prompt.md`)
+- active (hyper-prompt in `docs/roadmap/phase6-hyper-prompt.md`)
+- Worker 1 (events + contracts + additive read API + SSE live-tail) landed on `main` at `7aa108d`
+
+Phase 6 pivot (2026-04-21): the operator UI is a **terminal** dashboard in
+`apps/tui`, built on [Ink](https://github.com/vadimdemedes/ink). The Next.js
+`apps/web` surface is deferred to a post-MVP phase. Rationale: an MVP
+single-operator system iterates faster as a TUI, composes with the
+existing shell/smoke workflow, and consumes `@pm-go/contracts` directly. The
+API surface Worker 1 built (list endpoints + SSE `/events` + artifact
+streaming) is unchanged.
 
 Goals:
 
@@ -306,25 +315,19 @@ Goals:
 
 Work items:
 
-1. Build plan and task dashboards in `apps/web`.
-2. Add task detail views for scope, branch/worktree, review findings, and test
-   evidence.
-3. Add approvals and retry controls.
-4. Add merge queue and integration status views.
-5. Add completion audit and release-readiness views.
-6. Add SSE or equivalent event streaming from the API.
+1. Ship the `@pm-go/tui` runtime + data layer (Worker 2).
+2. Fill task/phase/plan screens with operator controls (Worker 3).
+3. Add `scripts/phase6-smoke.sh` + docs + delete the `apps/web` stub (Worker 4).
 
 Deliverables:
 
-- plan overview
-- task detail screens
-- findings UI
-- approval controls
-- release-readiness view
+- plans list + plan detail screens + SSE event tail in the terminal
+- keybind-driven operator controls (run/review/fix task, integrate/audit phase, complete/release plan)
+- `pnpm tui` runs the dashboard; `pnpm smoke:phase6` exits 0
 
 Exit criteria:
 
-- an operator can monitor and control a run from UI plus API alone
+- an operator can monitor and control a run from the TUI plus API alone
 
 ## Phase 7: Policy And Reliability Hardening
 

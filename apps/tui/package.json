@@ -1,0 +1,30 @@
+{
+  "name": "@pm-go/tui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "bin": {
+    "pm-go-tui": "./dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.tsx",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@pm-go/contracts": "workspace:*",
+    "@tanstack/react-query": "^5.62.0",
+    "ink": "^5.0.1",
+    "ink-select-input": "^6.0.0",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "ink-testing-library": "^4.0.0",
+    "msw": "^2.6.0"
+  }
+}
