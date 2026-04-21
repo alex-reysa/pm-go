@@ -1,0 +1,22 @@
+{
+  "id": "22222222-3333-4444-8555-666666666666",
+  "planId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "totalUsd": 3.4218,
+  "totalTokens": 412500,
+  "totalWallClockMinutes": 27.5,
+  "perTaskBreakdown": [
+    {
+      "taskId": "cccccccc-dddd-4eee-8fff-000000000000",
+      "totalUsd": 1.8742,
+      "totalTokens": 230000,
+      "totalWallClockMinutes": 14.5
+    },
+    {
+      "taskId": "cccccccc-dddd-4eee-8fff-000000000001",
+      "totalUsd": 1.5476,
+      "totalTokens": 182500,
+      "totalWallClockMinutes": 13.0
+    }
+  ],
+  "generatedAt": "2026-04-21T15:30:00.000Z"
+}

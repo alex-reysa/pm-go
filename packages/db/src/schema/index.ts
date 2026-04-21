@@ -13,3 +13,5 @@ export * from "./merge-runs.js";
 export * from "./phase-audit-reports.js";
 export * from "./completion-audit-reports.js";
 export * from "./workflow-events.js";
+export * from "./approval-requests.js";
+export * from "./budget-reports.js";
