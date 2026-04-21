@@ -25,7 +25,8 @@
     "smoke:phase2": "bash scripts/phase2-smoke.sh",
     "smoke:phase3": "bash scripts/phase3-smoke.sh",
     "smoke:phase4": "bash scripts/phase4-smoke.sh",
-    "smoke:phase5": "bash scripts/phase5-smoke.sh"
+    "smoke:phase5": "bash scripts/phase5-smoke.sh",
+    "smoke:phase6": "bash scripts/phase6-smoke.sh"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

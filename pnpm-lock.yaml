@@ -88,8 +88,6 @@ importers:
         specifier: ^2.6.0
         version: 2.13.4(@types/node@22.19.17)(typescript@5.9.3)
 
-  apps/web: {}
-
   apps/worker:
     dependencies:
       '@pm-go/contracts':

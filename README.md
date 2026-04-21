@@ -15,7 +15,7 @@ This scaffold focuses on structure and development contracts first. The main del
 
 ## Repository Map
 
-- `apps/web`: Next.js UI for plans, tasks, findings, and merge visibility
+- `apps/tui`: Ink-based terminal operator dashboard for plans, tasks, findings, and release readiness
 - `apps/api`: Node control-plane API for orchestration commands and event streaming
 - `apps/worker`: Temporal worker process
 - `packages/contracts`: schema-first domain types shared across the system

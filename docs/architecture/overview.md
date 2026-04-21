@@ -32,9 +32,9 @@ This keeps workflow state out of model context and makes failures resumable.
 
 ## Runtime Topology
 
-### `apps/web`
+### `apps/tui`
 
-Operator-facing Next.js UI for plan inspection, task monitoring, findings, approvals, and merge visibility.
+Operator-facing terminal UI (Ink 5 + React 18) for plan inspection, task monitoring, findings, and release readiness. Consumes the same HTTP + SSE surface `apps/api` exposes; contains no orchestration logic. A browser-based surface is post-MVP (see `docs/phases/phase6.md`).
 
 ### `apps/api`
 
