@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { UUID, WorkflowEvent } from "@pm-go/contracts";
 import { workflowEvents, type PmGoDb } from "@pm-go/db";
+import { createSpanWriter, withSpan } from "@pm-go/observability";
 
 /**
  * Phase 6 workflow-event emission activity. Consumed by the
@@ -49,50 +50,64 @@ export function createEventActivities(deps: EventActivityDeps) {
     async emitWorkflowEvent(
       input: EmitWorkflowEventInput,
     ): Promise<{ eventId: UUID | null }> {
-      const id: UUID = input.id ?? randomUUID();
-      const createdAt: string = input.createdAt ?? new Date().toISOString();
+      // Phase 7 W2 proof-of-wire: every `emitWorkflowEvent` call now
+      // emits a correlated span row on `workflow_events`. `withSpan`
+      // is wrapping-only — it cannot change the return value or the
+      // error-throwing semantics of the wrapped callable. The span
+      // sink is plan-scoped (each call creates its own writer so the
+      // FK on `workflow_events.plan_id` stays valid).
+      const sink = createSpanWriter({ db, planId: input.planId }).writeSpan;
+      return withSpan(
+        "worker.activities.events.emitWorkflowEvent",
+        { planId: input.planId, kind: input.kind },
+        async () => {
+          const id: UUID = input.id ?? randomUUID();
+          const createdAt: string = input.createdAt ?? new Date().toISOString();
 
-      // Extract subject-id columns per variant. Kept as an explicit
-      // switch so a new variant is a compile error here until
-      // handled — the DB projection must mirror the contract.
-      let phaseId: UUID | null = null;
-      let taskId: UUID | null = null;
-      switch (input.kind) {
-        case "phase_status_changed":
-          phaseId = input.phaseId;
-          break;
-        case "task_status_changed":
-          taskId = input.taskId;
-          phaseId = input.phaseId;
-          break;
-        case "artifact_persisted":
-          // Plan-scoped; no phase or task subject.
-          break;
-      }
+          // Extract subject-id columns per variant. Kept as an explicit
+          // switch so a new variant is a compile error here until
+          // handled — the DB projection must mirror the contract.
+          let phaseId: UUID | null = null;
+          let taskId: UUID | null = null;
+          switch (input.kind) {
+            case "phase_status_changed":
+              phaseId = input.phaseId;
+              break;
+            case "task_status_changed":
+              taskId = input.taskId;
+              phaseId = input.phaseId;
+              break;
+            case "artifact_persisted":
+              // Plan-scoped; no phase or task subject.
+              break;
+          }
 
-      try {
-        await db.insert(workflowEvents).values({
-          id,
-          planId: input.planId,
-          phaseId,
-          taskId,
-          kind: input.kind,
-          payload: input.payload,
-          createdAt,
-        });
-        return { eventId: id };
-      } catch (err) {
-        // Best-effort: surface once in the worker log, never rethrow.
-        // The projection missing an event is strictly less bad than a
-        // phase transition rolling back because a read-model insert
-        // blew up.
-        console.warn(
-          `[events] emit failed (kind=${input.kind} planId=${input.planId}): ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-        return { eventId: null };
-      }
+          try {
+            await db.insert(workflowEvents).values({
+              id,
+              planId: input.planId,
+              phaseId,
+              taskId,
+              kind: input.kind,
+              payload: input.payload,
+              createdAt,
+            });
+            return { eventId: id };
+          } catch (err) {
+            // Best-effort: surface once in the worker log, never rethrow.
+            // The projection missing an event is strictly less bad than a
+            // phase transition rolling back because a read-model insert
+            // blew up.
+            console.warn(
+              `[events] emit failed (kind=${input.kind} planId=${input.planId}): ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+            return { eventId: null };
+          }
+        },
+        { sink },
+      );
     },
   };
 }
