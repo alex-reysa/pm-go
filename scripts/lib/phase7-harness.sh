@@ -72,11 +72,22 @@ phase7_run_inprocess_smoke() {
 #   Drive the chaos harness against a prepared fixture repo. <mode> is one
 #   of merge_conflict | review_rejection | worker_kill. Env-var activation
 #   mirrors the documented invocation pattern in docs/phases/phase7-harness.md.
+#
+#   merge_conflict / review_rejection: set the relevant STUB_FAILURE env
+#   var at the outer invocation — the driver runs a single pass and the
+#   failure mode fires inside it.
+#
+#   worker_kill: the outer invocation does NOT set the failure env. The
+#   driver spawns a child with IMPLEMENTER_STUB_FAILURE=worker_kill
+#   (that child crashes), then a second child with PHASE7_CHAOS_RESUME=1
+#   (that child completes). This two-sub-process shape is what
+#   simulates the worker restart; pushing the env var onto the outer
+#   invocation would collapse that shape into a single crash.
 phase7_run_inprocess_chaos() {
   local mode="$1"
   local repo="$2"
   case "$mode" in
-    merge_conflict|worker_kill)
+    merge_conflict)
       IMPLEMENTER_STUB_FAILURE="$mode" \
       PHASE7_FIXTURE_REPO="$repo" \
       PHASE7_CHAOS_MODE="$mode" \
@@ -84,6 +95,11 @@ phase7_run_inprocess_chaos() {
       ;;
     review_rejection)
       REVIEWER_STUB_FAILURE="$mode" \
+      PHASE7_FIXTURE_REPO="$repo" \
+      PHASE7_CHAOS_MODE="$mode" \
+        pnpm -s exec tsx "$PHASE7_DEV_REPO_ROOT/scripts/lib/phase7-inprocess-chaos.ts"
+      ;;
+    worker_kill)
       PHASE7_FIXTURE_REPO="$repo" \
       PHASE7_CHAOS_MODE="$mode" \
         pnpm -s exec tsx "$PHASE7_DEV_REPO_ROOT/scripts/lib/phase7-inprocess-chaos.ts"

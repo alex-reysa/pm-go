@@ -112,15 +112,41 @@ policy engine lands:
 
 ```ts
 import {
+  createStubImplementerRunner,
+  createStubReviewerRunner,
   wrapImplementerRunnerWithFailureMode,
   wrapReviewerRunnerWithFailureMode,
 } from "@pm-go/executor-claude";
 
+// Mode defaults to env-var lookup; pass { mode: "..." } to override.
 const impl = wrapImplementerRunnerWithFailureMode(
   createStubImplementerRunner(opts),
-  process.env.IMPLEMENTER_STUB_FAILURE,
+);
+const reviewer = wrapReviewerRunnerWithFailureMode(
+  createStubReviewerRunner({ sequence: ["pass"] }),
 );
 ```
 
-The wrapper is a no-op when the env var is unset, so production call
-sites that import the wrapper are safe in non-chaos builds.
+When neither `IMPLEMENTER_STUB_FAILURE` nor `REVIEWER_STUB_FAILURE` is
+set, both wrappers return the inner runner reference unchanged — so
+production call sites that import the wrapper unconditionally pay no
+runtime cost.
+
+## Worker 4 hand-off
+
+When Worker 4 wires the failure-mode harness into the real activity
+layer, the contract it should preserve:
+
+- The **env-var trigger** stays the source of truth — Worker 4 should
+  not introduce a feature-flag in code.
+- The **state-file shape** written by `scripts/lib/phase7-inprocess-chaos.ts`
+  (`mode`, `taskStatus`, `blockedReason`, `cyclesAttempted`,
+  `policyDecisionHint`) is intentionally a JSON mirror of the
+  `plan_tasks` row + the policy-decision breadcrumb Worker 1's contract
+  introduces. Worker 4 can swap this harness's state file for SQL
+  reads against the live DB without changing the bash assertions.
+- The chaos harness's `tryMergeBranchOntoMain` helper is a stub-only
+  approximation — Worker 4 should route through the real
+  `packages/integration-engine/` once that integration lands and DELETE
+  the helper from `implementer-stub-failures.ts` (or leave it for
+  test-only usage; it has no production callers).
