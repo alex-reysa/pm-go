@@ -1,5 +1,12 @@
-import { ApplicationFailure, proxyActivities, uuid4 } from "@temporalio/workflow";
+import {
+  ApplicationFailure,
+  condition,
+  proxyActivities,
+  sleep,
+  uuid4,
+} from "@temporalio/workflow";
 import type {
+  ApprovalDecision,
   MergeRun,
   Phase,
   PhaseIntegrationWorkflowInput,
@@ -9,6 +16,10 @@ import type {
   WorktreeLease,
 } from "@pm-go/contracts";
 import type { StoredMergeRun } from "@pm-go/temporal-activities";
+import {
+  retryPolicyFor,
+  temporalRetryFromConfig,
+} from "@pm-go/temporal-workflows";
 
 type PhaseStatus =
   | "pending"
@@ -64,6 +75,16 @@ interface PhaseIntegrationActivityInterface {
     status: PhaseStatus;
   }): Promise<void>;
   releaseIntegrationLease(input: { leaseId: UUID }): Promise<void>;
+  // Phase 7 — approval gate.
+  evaluateApprovalGateActivity(input: { taskId: UUID }): Promise<{
+    decision: ApprovalDecision;
+    approvalRequestId?: UUID;
+  }>;
+  isApproved(input: {
+    approvalRequestId: UUID;
+  }): Promise<{ approved: boolean; rejected: boolean }>;
+  // Phase 7 — budget snapshot at integration time.
+  persistBudgetReport(input: { planId: UUID }): Promise<{ id: UUID }>;
 }
 
 const {
@@ -79,15 +100,23 @@ const {
   markTaskMerged,
   updatePhaseStatus,
   releaseIntegrationLease,
+  evaluateApprovalGateActivity,
+  isApproved,
+  persistBudgetReport,
 } = proxyActivities<PhaseIntegrationActivityInterface>({
   startToCloseTimeout: "20 minutes",
-  retry: {
-    maximumAttempts: 3,
-    initialInterval: "2 seconds",
-    backoffCoefficient: 2,
-    maximumInterval: "30 seconds",
-  },
+  retry: temporalRetryFromConfig(retryPolicyFor("PhaseIntegrationWorkflow")),
 });
+
+/**
+ * Phase 7: maximum wall time the integration workflow will block
+ * waiting for an operator approval before giving up. 24 hours covers
+ * a single business cycle; longer waits should be re-driven via a
+ * fresh integrate POST after the approval lands.
+ */
+const APPROVAL_WAIT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+/** Polling interval for `isApproved` while the approval gate blocks. */
+const APPROVAL_POLL_INTERVAL_MS = 5_000;
 
 const MAX_MERGE_RETRY_ATTEMPTS_PER_TASK = 2;
 
@@ -124,6 +153,62 @@ export async function PhaseIntegrationWorkflow(
       `phase partition invariants violated: ${partition.reasons.join("; ")}`,
       "PhasePartitionInvariantError",
     );
+  }
+
+  // Phase 7 — approval gate. For every task in this phase, ask the
+  // policy engine whether human approval is required. The activity
+  // inserts an `approval_requests` row (status='pending') if so;
+  // we then block the workflow on `isApproved` polling until the row
+  // flips to 'approved'. The wait is capped at APPROVAL_WAIT_TIMEOUT_MS
+  // so a forgotten approval doesn't keep the worker tied up
+  // indefinitely. Idempotent on Temporal retries — the activity reuses
+  // any existing pending row before inserting.
+  for (const taskId of phase.mergeOrder) {
+    const gate = await evaluateApprovalGateActivity({ taskId });
+    if (!gate.decision.required || !gate.approvalRequestId) continue;
+    const approvalRequestId = gate.approvalRequestId;
+
+    const startedWaitingAt = Date.now();
+    let approved = false;
+    let rejected = false;
+    while (Date.now() - startedWaitingAt < APPROVAL_WAIT_TIMEOUT_MS) {
+      const status = await isApproved({ approvalRequestId });
+      if (status.approved) {
+        approved = true;
+        break;
+      }
+      if (status.rejected) {
+        rejected = true;
+        break;
+      }
+      // condition() with a timeout means "wait up to N ms or until the
+      // predicate becomes true". Used here as a Temporal-friendly
+      // sleep — the predicate stays false because approvals come from
+      // outside the workflow.
+      await condition(() => false, APPROVAL_POLL_INTERVAL_MS);
+      // sleep for 0ms to keep the timer monotonic on retries.
+      await sleep(0);
+    }
+    if (rejected) {
+      await updatePhaseStatus({
+        phaseId: input.phaseId,
+        status: "blocked",
+      }).catch(() => undefined);
+      throw ApplicationFailure.nonRetryable(
+        `phase ${input.phaseId} blocked: approval rejected for task ${taskId} (request ${approvalRequestId})`,
+        "ApprovalRejectedError",
+      );
+    }
+    if (!approved) {
+      await updatePhaseStatus({
+        phaseId: input.phaseId,
+        status: "blocked",
+      }).catch(() => undefined);
+      throw ApplicationFailure.nonRetryable(
+        `phase ${input.phaseId} blocked: approval timeout for task ${taskId} (request ${approvalRequestId})`,
+        "ApprovalTimeoutError",
+      );
+    }
   }
 
   // Flip phase to integrating BEFORE creating the lease so an observer
@@ -241,6 +326,13 @@ export async function PhaseIntegrationWorkflow(
       phaseId: input.phaseId,
       status: "auditing",
     });
+
+    // Phase 7: capture a plan-wide budget snapshot at integration time
+    // so the operator-facing /plans/:id/budget-report endpoint always
+    // has a fresh row to serve. Best-effort — a failed snapshot must
+    // not block the auditing transition. The activity itself span-wraps
+    // its DB write so failures are observable.
+    await persistBudgetReport({ planId: phase.planId }).catch(() => undefined);
 
     return {
       phaseId: input.phaseId,

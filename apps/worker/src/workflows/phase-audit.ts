@@ -9,6 +9,10 @@ import type {
   UUID,
 } from "@pm-go/contracts";
 import type { StoredMergeRun } from "@pm-go/temporal-activities";
+import {
+  retryPolicyFor,
+  temporalRetryFromConfig,
+} from "@pm-go/temporal-workflows";
 
 type PhaseStatus =
   | "pending"
@@ -71,12 +75,7 @@ const {
   releaseIntegrationLease,
 } = proxyActivities<PhaseAuditActivityInterface>({
   startToCloseTimeout: "30 minutes",
-  retry: {
-    maximumAttempts: 3,
-    initialInterval: "2 seconds",
-    backoffCoefficient: 2,
-    maximumInterval: "30 seconds",
-  },
+  retry: temporalRetryFromConfig(retryPolicyFor("PhaseAuditWorkflow")),
 });
 
 /**

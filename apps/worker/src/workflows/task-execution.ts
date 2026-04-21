@@ -1,13 +1,19 @@
-import { proxyActivities } from "@temporalio/workflow";
+import { proxyActivities, uuid4 } from "@temporalio/workflow";
 import type {
   AgentRun,
+  BudgetDecision,
   FileScope,
+  PolicyDecision,
   Task,
   TaskExecutionWorkflowInput,
   TaskExecutionWorkflowResult,
   TaskStatus,
   WorktreeLease,
 } from "@pm-go/contracts";
+import {
+  retryPolicyFor,
+  temporalRetryFromConfig,
+} from "@pm-go/temporal-workflows";
 
 /**
  * Union of durable `TaskStatus` plus the workflow-local `"ready_for_review"`
@@ -52,13 +58,18 @@ interface TaskExecutionActivityInterface {
     baseSha: string;
     fileScope: FileScope;
   }): Promise<{ changedFiles: string[]; violations: string[] }>;
+  // Phase 7 — policy gate + decision persistence.
+  evaluateBudgetGateActivity(input: {
+    taskId: string;
+  }): Promise<BudgetDecision>;
+  persistPolicyDecision(decision: PolicyDecision): Promise<string>;
 }
 
-// Cap retries explicitly. Same pattern as SpecToPlanWorkflow — bounded
-// attempts with exponential backoff keep transient blips recoverable
-// without infinite retry storms on fatal errors. The startToClose
-// timeout is deliberately longer than the planner's because real
-// implementer runs can chew through their budget for up to 15 minutes.
+// Phase 7: retry policy comes from the centralized PHASE7_RETRY_POLICIES
+// catalog in `@pm-go/temporal-workflows`. The startToClose timeout
+// stays workflow-local because it captures the maximum activity wall
+// time, which is task-execution-specific (real implementer runs can
+// chew through their budget for up to 15 minutes).
 const {
   loadTask,
   updateTaskStatus,
@@ -67,14 +78,11 @@ const {
   persistAgentRun,
   commitAgentWork,
   diffWorktreeAgainstScope,
+  evaluateBudgetGateActivity,
+  persistPolicyDecision,
 } = proxyActivities<TaskExecutionActivityInterface>({
   startToCloseTimeout: "15 minutes",
-  retry: {
-    maximumAttempts: 3,
-    initialInterval: "2 seconds",
-    backoffCoefficient: 2,
-    maximumInterval: "30 seconds",
-  },
+  retry: temporalRetryFromConfig(retryPolicyFor("TaskExecutionWorkflow")),
 });
 
 /**
@@ -97,6 +105,38 @@ export async function TaskExecutionWorkflow(
   input: TaskExecutionWorkflowInput,
 ): Promise<TaskExecutionWorkflowResult> {
   const task = await loadTask({ taskId: input.taskId });
+
+  // Phase 7 — pre-flight budget gate. Looks at every prior agent_run
+  // for this task; if cumulative spend already exceeds the task's
+  // budget, transition to `blocked` + persist a policy_decisions row
+  // citing the overrun and bail. The first ever invocation of a task
+  // is a no-op pass (no prior runs, nothing to count).
+  const budgetDecision = await evaluateBudgetGateActivity({
+    taskId: input.taskId,
+  });
+  if (!budgetDecision.ok) {
+    await updateTaskStatus({ taskId: input.taskId, status: "blocked" });
+    await persistPolicyDecision({
+      id: uuid4(),
+      subjectType: "task",
+      subjectId: input.taskId,
+      riskLevel: task.riskLevel,
+      decision: "budget_exceeded",
+      reason: formatBudgetReason(budgetDecision),
+      actor: "system",
+      createdAt: new Date().toISOString(),
+    });
+    return {
+      taskId: input.taskId,
+      status: "blocked",
+      leaseId: "",
+      branchName: "",
+      worktreePath: "",
+      agentRunId: "",
+      changedFiles: [],
+      fileScopeViolations: [],
+    };
+  }
 
   await updateTaskStatus({ taskId: input.taskId, status: "running" });
 
@@ -181,4 +221,21 @@ export async function TaskExecutionWorkflow(
     }).catch(() => undefined);
     throw err;
   }
+}
+
+/**
+ * Render the short `policy_decisions.reason` text for a budget overrun.
+ * Joined dimensions surface as comma-separated entries — operators
+ * skim this on the TUI without expanding the full policy_decisions row.
+ */
+function formatBudgetReason(decision: BudgetDecision): string {
+  if (decision.ok) return "ok";
+  const parts: string[] = [];
+  if (decision.over.usd !== undefined)
+    parts.push(`+${decision.over.usd}usd`);
+  if (decision.over.tokens !== undefined)
+    parts.push(`+${decision.over.tokens}tok`);
+  if (decision.over.wallClockMinutes !== undefined)
+    parts.push(`+${decision.over.wallClockMinutes}min`);
+  return `budget_exceeded: ${parts.join(", ")}`;
 }

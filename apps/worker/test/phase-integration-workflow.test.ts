@@ -14,12 +14,23 @@ const activityFns = {
   markTaskMerged: vi.fn(),
   updatePhaseStatus: vi.fn(),
   releaseIntegrationLease: vi.fn(),
+  // Phase 7 — approval gate + budget snapshot. Defaults pass through;
+  // approval-blocked tests override evaluateApprovalGateActivity.
+  evaluateApprovalGateActivity: vi.fn(async () => ({
+    decision: { required: false },
+  })),
+  isApproved: vi.fn(async () => ({ approved: true, rejected: false })),
+  persistBudgetReport: vi.fn(async () => ({ id: "budget-report-id" })),
 };
 
 let uuidCounter = 0;
 vi.mock("@temporalio/workflow", () => ({
   proxyActivities: () => activityFns,
   uuid4: () => `mock-merge-run-${++uuidCounter}`,
+  // Approval-gate poll loop uses condition() + sleep(). Provide
+  // immediate-resolve stubs so the test never spends real time waiting.
+  condition: async (_predicate: () => boolean, _ms?: number) => false,
+  sleep: async (_ms: number) => undefined,
   ApplicationFailure: {
     nonRetryable: (message: string, type: string) => {
       const err = new Error(message) as Error & {
@@ -101,6 +112,19 @@ describe("PhaseIntegrationWorkflow", () => {
       fn.mockResolvedValue(undefined);
     }
     uuidCounter = 0;
+    // Phase 7 defaults — approval gate clear, isApproved true,
+    // budget snapshot succeeds. Tests that exercise the approval-blocked
+    // path override evaluateApprovalGateActivity in-line.
+    activityFns.evaluateApprovalGateActivity.mockResolvedValue({
+      decision: { required: false },
+    });
+    activityFns.isApproved.mockResolvedValue({
+      approved: true,
+      rejected: false,
+    });
+    activityFns.persistBudgetReport.mockResolvedValue({
+      id: "budget-report-id",
+    });
   });
 
   it("merges every task and flips phase to auditing on happy path", async () => {

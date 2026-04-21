@@ -5,6 +5,10 @@ import type {
   FinalReleaseWorkflowResult,
   UUID,
 } from "@pm-go/contracts";
+import {
+  retryPolicyFor,
+  temporalRetryFromConfig,
+} from "@pm-go/temporal-workflows";
 
 interface FinalReleaseActivityInterface {
   loadCompletionAuditReport(
@@ -26,12 +30,7 @@ const {
   renderAndPersistPrSummary,
 } = proxyActivities<FinalReleaseActivityInterface>({
   startToCloseTimeout: "5 minutes",
-  retry: {
-    maximumAttempts: 3,
-    initialInterval: "2 seconds",
-    backoffCoefficient: 2,
-    maximumInterval: "30 seconds",
-  },
+  retry: temporalRetryFromConfig(retryPolicyFor("FinalReleaseWorkflow")),
 });
 
 /**

@@ -255,7 +255,11 @@ describe("createPhaseAuditActivities.persistPhaseAuditReport", () => {
     const id = await activities.persistPhaseAuditReport(report);
 
     expect(id).toBe(report.id);
-    expect(spies.insert).toHaveBeenCalledTimes(1);
+    // Phase 7: withSpan emits a `span_emitted` row on the same insert
+    // primitive. The phase_audit_reports row is the first call; the
+    // span row is the second. Assert the original write happened by
+    // checking the call args, not the count.
+    expect(spies.insert).toHaveBeenCalled();
     expect(spies.insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         id: report.id,
