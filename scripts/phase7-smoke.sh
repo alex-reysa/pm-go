@@ -43,7 +43,7 @@ cd "$DEV_REPO_ROOT"
 : "${PHASE_AUDITOR_SMOKE_SEQUENCE:=pass,pass}"
 : "${COMPLETION_AUDITOR_SMOKE_SEQUENCE:=pass}"
 : "${PLANNER_STUB_FIXTURE_PATH:=$DEV_REPO_ROOT/packages/contracts/src/fixtures/orchestration-review/plan-phase5-smoke.json}"
-: "${IMPLEMENTER_STUB_WRITE_FILE_PATH_BY_SLUG:=p5-task-a=phase7-smoke/task-a.txt,p5-task-b=phase7-smoke/task-b.txt,p5-task-c=phase7-smoke/task-c.txt}"
+: "${IMPLEMENTER_STUB_WRITE_FILE_PATH_BY_SLUG:=p5-task-a=phase5-smoke/task-a.txt,p5-task-b=phase5-smoke/task-b.txt,p5-task-c=phase5-smoke/task-c.txt}"
 : "${IMPLEMENTER_STUB_WRITE_FILE_CONTENTS:=phase7 stub output}"
 : "${POSTGRES_CONTAINER:=pm-go-postgres-1}"
 
