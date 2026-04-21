@@ -370,7 +370,11 @@ rm -f /tmp/phase6-smoke-pr.md
 
 # K. Traversal guard: a synthetic artifact row pointing at /etc/hosts via
 #    file:// must be rejected with 403 (hyper-prompt §7 invariant).
-SYNTH_ID="$(pg "INSERT INTO artifacts (id, plan_id, kind, uri, created_at) VALUES (gen_random_uuid(), '$PLAN_ID', 'pr_summary', 'file:///etc/hosts', now()) RETURNING id")"
+# The pg() helper strips whitespace, which collapses psql's "INSERT 0 1"
+# completion tag onto the returned id. Pull just the first row + trim.
+SYNTH_ID="$(docker exec "$POSTGRES_CONTAINER" psql -U pmgo -d pm_go -tAc \
+  "INSERT INTO artifacts (id, plan_id, kind, uri, created_at) VALUES (gen_random_uuid(), '$PLAN_ID', 'pr_summary', 'file:///etc/hosts', now()) RETURNING id" \
+  | head -n1 | tr -d '[:space:]')"
 [[ -n "$SYNTH_ID" ]] || {
   echo "[phase6-smoke] traversal-guard INSERT returned no id (pg/docker exec failed)" >&2
   exit 1
