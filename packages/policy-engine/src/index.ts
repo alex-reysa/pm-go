@@ -17,3 +17,7 @@
 
 export { evaluateBudgetGate } from "./budget.js";
 export { evaluateApprovalGate } from "./approval.js";
+export {
+  evaluateRetryDecision,
+  type RetryErrorLike,
+} from "./retry.js";
