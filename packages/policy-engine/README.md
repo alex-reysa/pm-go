@@ -34,7 +34,7 @@ Temporal activity layer during Wave 2.
 | Function                   | Input shape                                                  | Output shape                                                                     |
 | -------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------- |
 | `evaluateBudgetGate`       | `Task`, `AgentRun[]`                                         | `BudgetDecision` — `{ ok: true } \| { ok: false; reason; over }`                 |
-| `evaluateApprovalGate`     | `Risk \| Task`, `Task`                                       | `ApprovalDecision` — `{ required: false } \| { required: true; band }`           |
+| `evaluateApprovalGate`     | `Risk \| RiskLevel`, `Task`                                  | `ApprovalDecision` — `{ required: false } \| { required: true; band }`           |
 | `evaluateRetryDecision`    | `workflowName`, `attempt`, `lastError`, `RetryPolicyConfig[]` | `RetryDecision` — `{ retry: true; delayMs } \| { retry: false; reason }`         |
 | `evaluateStopCondition`    | `Plan`, `cycles`, `ReviewFinding[]`, `OperatingLimits`       | `StopDecision` — `{ stop: false } \| { stop: true; reason }`                     |
 
