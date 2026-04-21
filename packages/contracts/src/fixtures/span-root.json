@@ -1,0 +1,12 @@
+{
+  "traceId": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+  "spanId": "33333333-4444-4555-8666-777777777777",
+  "name": "planner.workflows.spec-intake",
+  "startedAt": "2026-04-21T10:02:00.000Z",
+  "finishedAt": "2026-04-21T10:02:00.123Z",
+  "durationMs": 123,
+  "status": "ok",
+  "attrs": {
+    "planId": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+  }
+}

@@ -1,5 +1,5 @@
 {
-  "name": "@pm-go/contracts",
+  "name": "@pm-go/observability",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -8,12 +8,8 @@
   "exports": {
     ".": {
       "types": "./src/index.ts",
-      "import": "./dist/index.js"
-    },
-    "./observability": {
-      "types": "./src/observability-exports.ts",
-      "development": "./src/observability-exports.ts",
-      "default": "./dist/observability-exports.js"
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
     }
   },
   "scripts": {
@@ -22,6 +18,13 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@sinclair/typebox": "^0.34.0"
+    "@opentelemetry/api": "^1.9.0",
+    "@pm-go/contracts": "workspace:*",
+    "@pm-go/db": "workspace:*",
+    "drizzle-orm": "^0.38.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
   }
 }

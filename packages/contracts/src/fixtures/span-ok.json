@@ -1,0 +1,14 @@
+{
+  "traceId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "spanId": "11111111-2222-4333-8444-555555555555",
+  "parentSpanId": "00000000-0000-4000-8000-000000000000",
+  "name": "worker.activities.events.emitWorkflowEvent",
+  "startedAt": "2026-04-21T10:00:00.000Z",
+  "finishedAt": "2026-04-21T10:00:00.042Z",
+  "durationMs": 42,
+  "status": "ok",
+  "attrs": {
+    "planId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    "kind": "phase_status_changed"
+  }
+}
