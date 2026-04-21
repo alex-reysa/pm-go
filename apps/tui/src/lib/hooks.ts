@@ -86,6 +86,46 @@ export function useAgentRuns(taskId: UUID | null) {
 }
 
 /**
+ * Phase 7 — approvals + budget hooks. Both are plan-scoped.
+ *
+ * `useApprovals` drives the approvals screen (`g A` chord target) and
+ * the per-task `canApprove` gate on plan-detail. The data is small
+ * (one row per approval) so we don't paginate.
+ *
+ * `useBudgetReport` drives the operator budget panel on plan-detail.
+ * The endpoint is computed on every read so a refetch costs an
+ * aggregation query — fine at MVP scale, but the panel deliberately
+ * uses default React Query staleness rather than aggressive polling.
+ */
+export function useApprovals(planId: UUID | null) {
+  const { api } = useTuiRuntime();
+  return useQuery({
+    queryKey: ["approvals", planId] as const,
+    queryFn: () => {
+      if (planId === null) {
+        throw new Error("useApprovals called with null planId");
+      }
+      return api.listApprovals(planId);
+    },
+    enabled: planId !== null,
+  });
+}
+
+export function useBudgetReport(planId: UUID | null) {
+  const { api } = useTuiRuntime();
+  return useQuery({
+    queryKey: ["budget-report", planId] as const,
+    queryFn: () => {
+      if (planId === null) {
+        throw new Error("useBudgetReport called with null planId");
+      }
+      return api.getBudgetReport(planId);
+    },
+    enabled: planId !== null,
+  });
+}
+
+/**
  * Invalidate the query keys that depend on the given `WorkflowEvent`.
  * Exported as a pure function so a unit test can fire each kind and
  * assert the resulting cache invalidation without rendering a hook.

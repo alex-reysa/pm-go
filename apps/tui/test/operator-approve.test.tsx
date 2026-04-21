@@ -4,12 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import type {
   AgentRun,
+  ApprovalRequest,
   Phase,
   Plan,
-  PlanStatus,
-  PhaseStatus,
   Task,
-  TaskStatus,
   UUID,
   WorkflowEvent,
 } from "@pm-go/contracts";
@@ -36,7 +34,7 @@ async function tick(ms = 25): Promise<void> {
 function makePlanListItem(): PlanListItem {
   return {
     id: PLAN_ID,
-    title: "Integration smoke plan",
+    title: "Approval flow plan",
     summary: "",
     status: "executing",
     risks: [],
@@ -46,18 +44,14 @@ function makePlanListItem(): PlanListItem {
   };
 }
 
-function makePlanDetail(
-  phaseStatus: PhaseStatus,
-  taskStatus: TaskStatus,
-  planStatus: PlanStatus = "executing",
-): PlanDetail {
+function makePlanDetail(): PlanDetail {
   const phase: Phase = {
     id: PHASE_ID,
     planId: PLAN_ID,
     index: 0,
     title: "Phase 0",
     summary: "",
-    status: phaseStatus,
+    status: "executing",
     integrationBranch: "integration/0",
     baseSnapshotId: PLAN_ID,
     taskIds: [TASK_ID],
@@ -69,32 +63,32 @@ function makePlanDetail(
     planId: PLAN_ID,
     phaseId: PHASE_ID,
     slug: "t-alpha",
-    title: "Alpha task",
+    title: "Alpha",
     summary: "",
     kind: "implementation",
-    status: taskStatus,
-    riskLevel: "low",
+    status: "ready_to_merge",
+    riskLevel: "high",
     fileScope: { includes: ["src/"] },
     acceptanceCriteria: [],
     testCommands: [],
     budget: { maxWallClockMinutes: 30 },
     reviewerPolicy: {
       required: true,
-      strictness: "standard",
+      strictness: "elevated",
       maxCycles: 2,
       reviewerWriteAccess: false,
       stopOnHighSeverityCount: 1,
     },
-    requiresHumanApproval: false,
+    requiresHumanApproval: true,
     maxReviewFixCycles: 2,
   };
   const plan: Plan = {
     id: PLAN_ID,
     specDocumentId: PLAN_ID,
     repoSnapshotId: PLAN_ID,
-    title: "Integration smoke plan",
+    title: "Approval flow plan",
     summary: "",
-    status: planStatus,
+    status: "executing",
     phases: [phase],
     tasks: [task],
     risks: [],
@@ -104,10 +98,13 @@ function makePlanDetail(
   return { plan, artifactIds: [], latestCompletionAudit: null };
 }
 
-function makeApi(detail: PlanDetail, overrides: Partial<ApiClient> = {}): ApiClient {
+function makeApi(
+  approvals: ApprovalRequest[],
+  overrides: Partial<ApiClient> = {},
+): ApiClient {
   return {
     listPlans: async () => [makePlanListItem()] as PlanListItem[],
-    getPlan: async () => detail,
+    getPlan: async () => makePlanDetail(),
     listPhases: async () => [] satisfies PhaseListItem[],
     listTasks: async () => [] satisfies TaskListItem[],
     listAgentRuns: async () => [] satisfies AgentRun[] as never,
@@ -120,13 +117,11 @@ function makeApi(detail: PlanDetail, overrides: Partial<ApiClient> = {}): ApiCli
     auditPhase: async () => undefined,
     completePlan: async () => undefined,
     releasePlan: async () => undefined,
-    // Phase 7 additions — defaults are inert so existing tests stay
-    // closed over their original assertions.
-    listApprovals: async () => [],
+    listApprovals: async () => approvals,
     approveTask: async () => undefined,
     approvePlan: async () => undefined,
     getBudgetReport: async () => ({
-      id: "budget-report-stub",
+      id: "stub",
       planId: PLAN_ID,
       totalUsd: 0,
       totalTokens: 0,
@@ -143,14 +138,26 @@ const sseStub: typeof fetch = async () =>
 
 async function openPlanDetail(stdin: { write: (s: string) => void }): Promise<void> {
   await tick();
-  stdin.write("\r"); // enter on selected plan
+  stdin.write("\r");
   await tick();
 }
 
-describe("operator actions — integration", () => {
-  it("g r on a runnable task opens the modal and fires api.runTask on confirm", async () => {
-    const runTask = vi.fn(async () => undefined);
-    const api = makeApi(makePlanDetail("executing", "pending"), { runTask });
+describe("operator approve — integration", () => {
+  it("g A on a task with a pending approval opens the modal and fires approveTask", async () => {
+    const approveTask = vi.fn(async () => undefined);
+    const approvals: ApprovalRequest[] = [
+      {
+        id: "00000000-0000-0000-0000-0000000000dd",
+        planId: PLAN_ID,
+        taskId: TASK_ID,
+        subject: "task",
+        riskBand: "high",
+        status: "pending",
+        requestedBy: "policy-engine",
+        requestedAt: "2026-04-21T10:00:00.000Z",
+      },
+    ];
+    const api = makeApi(approvals, { approveTask });
     const queryClient = createQueryClient();
     const { stdin, lastFrame, unmount } = render(
       <App
@@ -158,7 +165,7 @@ describe("operator actions — integration", () => {
           api,
           config: {
             apiBaseUrl: "http://test",
-            listRefreshIntervalMs: 5000,
+            listRefreshIntervalMs: 5_000,
             eventStreamMaxBackoffMs: 500,
           },
           fetchImpl: sseStub,
@@ -168,25 +175,24 @@ describe("operator actions — integration", () => {
     );
 
     await openPlanDetail(stdin);
+    // Wait for approvals query to resolve so canApprove sees the row.
+    await tick(50);
 
     stdin.write("g");
-    stdin.write("r");
+    stdin.write("A");
     await tick();
-    expect(lastFrame() ?? "").toContain("Run task 't-alpha'");
+    expect(lastFrame() ?? "").toContain("Approve task 't-alpha'");
 
     stdin.write("y");
     await tick(40);
-    expect(runTask).toHaveBeenCalledTimes(1);
-    expect(runTask).toHaveBeenCalledWith(TASK_ID);
-    // Modal dismisses after the POST resolves → screen content returns.
-    expect(lastFrame() ?? "").not.toContain("Confirm");
-    expect(lastFrame() ?? "").toContain("t-alpha");
+    expect(approveTask).toHaveBeenCalledTimes(1);
+    expect(approveTask).toHaveBeenCalledWith(TASK_ID);
     unmount();
   });
 
-  it("g r on a task whose phase is pending is a no-op (chord blocked by client gate)", async () => {
-    const runTask = vi.fn(async () => undefined);
-    const api = makeApi(makePlanDetail("pending", "pending"), { runTask });
+  it("g A with no pending approval navigates to the approvals screen instead of dispatching an action", async () => {
+    const approveTask = vi.fn(async () => undefined);
+    const api = makeApi([], { approveTask });
     const queryClient = createQueryClient();
     const { stdin, lastFrame, unmount } = render(
       <App
@@ -194,7 +200,7 @@ describe("operator actions — integration", () => {
           api,
           config: {
             apiBaseUrl: "http://test",
-            listRefreshIntervalMs: 5000,
+            listRefreshIntervalMs: 5_000,
             eventStreamMaxBackoffMs: 500,
           },
           fetchImpl: sseStub,
@@ -204,64 +210,36 @@ describe("operator actions — integration", () => {
     );
 
     await openPlanDetail(stdin);
-
-    stdin.write("g");
-    stdin.write("r");
-    await tick();
-    // No modal rendered → footer still visible, no "Confirm" header
-    expect(lastFrame() ?? "").not.toContain("Confirm");
-    expect(runTask).not.toHaveBeenCalled();
-    unmount();
-  });
-
-  it("surfaces a server 409 inline in the modal and lets the operator cancel", async () => {
-    const runTask = vi.fn(async () => {
-      throw new ApiError(409, {
-        error: "phase is 'pending'; /tasks/:id/run requires 'executing'",
-      });
-    });
-    const api = makeApi(makePlanDetail("executing", "pending"), { runTask });
-    const queryClient = createQueryClient();
-    const { stdin, lastFrame, unmount } = render(
-      <App
-        runtime={{
-          api,
-          config: {
-            apiBaseUrl: "http://test",
-            listRefreshIntervalMs: 5000,
-            eventStreamMaxBackoffMs: 500,
-          },
-          fetchImpl: sseStub,
-        }}
-        queryClient={queryClient}
-      />,
-    );
-
-    await openPlanDetail(stdin);
-    stdin.write("g");
-    stdin.write("r");
-    await tick();
-    stdin.write("y");
     await tick(50);
 
-    // Error rendered inline; modal stays open for the operator's next move.
-    const errFrame = lastFrame() ?? "";
-    expect(errFrame).toContain("Confirm");
-    expect(errFrame).toContain("HTTP 409");
-    expect(errFrame).toContain("phase is 'pending'");
-    expect(errFrame).toContain("y/enter confirm"); // busy cleared
-
-    // Cancel still works → back to screen, no double-fire.
-    stdin.write("n");
-    await tick();
-    expect(lastFrame() ?? "").not.toContain("Confirm");
-    expect(runTask).toHaveBeenCalledTimes(1);
+    stdin.write("g");
+    stdin.write("A");
+    await tick(40);
+    // Navigated into the approvals screen — the screen header is "Approvals".
+    expect(lastFrame() ?? "").toContain("Approvals");
+    expect(approveTask).not.toHaveBeenCalled();
     unmount();
   });
 
-  it("cancel (n) closes the modal without firing the action", async () => {
-    const runTask = vi.fn(async () => undefined);
-    const api = makeApi(makePlanDetail("executing", "pending"), { runTask });
+  it("surfaces a server 409 inline on approve and lets the operator cancel", async () => {
+    const approveTask = vi.fn(async () => {
+      throw new ApiError(409, {
+        error: "no pending approval_requests row for task",
+      });
+    });
+    const approvals: ApprovalRequest[] = [
+      {
+        id: "00000000-0000-0000-0000-0000000000ee",
+        planId: PLAN_ID,
+        taskId: TASK_ID,
+        subject: "task",
+        riskBand: "high",
+        status: "pending",
+        requestedBy: "policy-engine",
+        requestedAt: "2026-04-21T10:00:00.000Z",
+      },
+    ];
+    const api = makeApi(approvals, { approveTask });
     const queryClient = createQueryClient();
     const { stdin, lastFrame, unmount } = render(
       <App
@@ -269,7 +247,7 @@ describe("operator actions — integration", () => {
           api,
           config: {
             apiBaseUrl: "http://test",
-            listRefreshIntervalMs: 5000,
+            listRefreshIntervalMs: 5_000,
             eventStreamMaxBackoffMs: 500,
           },
           fetchImpl: sseStub,
@@ -279,15 +257,19 @@ describe("operator actions — integration", () => {
     );
 
     await openPlanDetail(stdin);
+    await tick(50);
     stdin.write("g");
-    stdin.write("r");
+    stdin.write("A");
     await tick();
-    expect(lastFrame() ?? "").toContain("Confirm");
-
-    stdin.write("n");
+    stdin.write("y");
+    await tick(40);
+    expect(approveTask).toHaveBeenCalledTimes(1);
+    // Modal stays mounted, error visible inline.
+    expect(lastFrame() ?? "").toContain("HTTP 409");
+    // Cancel returns to plan-detail.
+    stdin.write("\u001b");
     await tick();
-    expect(lastFrame() ?? "").not.toContain("Confirm");
-    expect(runTask).not.toHaveBeenCalled();
+    expect(lastFrame() ?? "").not.toContain("HTTP 409");
     unmount();
   });
 });

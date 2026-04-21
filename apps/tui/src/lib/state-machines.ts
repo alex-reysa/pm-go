@@ -1,4 +1,9 @@
-import type { Phase, Plan, Task } from "@pm-go/contracts";
+import type {
+  ApprovalRequest,
+  Phase,
+  Plan,
+  Task,
+} from "@pm-go/contracts";
 
 import type { PlanDetail } from "./api.js";
 
@@ -111,6 +116,29 @@ export function canCompletePlan(plan: Plan): Gate {
       ok: false,
       reason: `${notDone.length} phase(s) not yet completed`,
     };
+  }
+  return { ok: true };
+}
+
+/**
+ * `POST /tasks/:id/approve` (Phase 7). Mirrors the server's primary
+ * 409 rule (apps/api/src/routes/tasks.ts): the gate is open iff at
+ * least one `approval_requests` row for this task is currently
+ * `status='pending'`. Empty list = nothing to approve = no-op.
+ *
+ * The TUI receives the live `approvals` snapshot from `useQuery` on
+ * the plan-detail screen. A stale snapshot may let a disallowed
+ * action through; the server's 409 + the ErrorBanner catch the miss.
+ */
+export function canApprove(
+  taskId: string,
+  approvals: readonly ApprovalRequest[],
+): Gate {
+  const pending = approvals.filter(
+    (a) => a.taskId === taskId && a.status === "pending",
+  );
+  if (pending.length === 0) {
+    return { ok: false, reason: "no pending approval for this task" };
   }
   return { ok: true };
 }

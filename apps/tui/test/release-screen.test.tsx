@@ -81,6 +81,18 @@ function makeApi(detail: PlanDetail): ApiClient {
     auditPhase: async () => undefined,
     completePlan: async () => undefined,
     releasePlan: async () => undefined,
+    listApprovals: async () => [],
+    approveTask: async () => undefined,
+    approvePlan: async () => undefined,
+    getBudgetReport: async (planId) => ({
+      id: "budget-stub",
+      planId,
+      totalUsd: 0,
+      totalTokens: 0,
+      totalWallClockMinutes: 0,
+      perTaskBreakdown: [],
+      generatedAt: "2026-04-21T00:00:00.000Z",
+    }),
   };
 }
 

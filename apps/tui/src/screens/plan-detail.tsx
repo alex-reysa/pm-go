@@ -3,6 +3,7 @@ import React, { useCallback, useMemo, useState } from "react";
 
 import type { Phase, Task, UUID } from "@pm-go/contracts";
 
+import { BudgetPanel } from "../components/budget-panel.js";
 import { ErrorBanner } from "../components/error-banner.js";
 import { PhaseCard } from "../components/phase-card.js";
 import { ReleaseCard } from "../components/release-card.js";
@@ -10,9 +11,10 @@ import { Spinner } from "../components/spinner.js";
 import { StatusBadge } from "../components/status-badge.js";
 import { TaskRow } from "../components/task-row.js";
 import type { PlanDetail } from "../lib/api.js";
-import { usePlan } from "../lib/hooks.js";
+import { useApprovals, usePlan } from "../lib/hooks.js";
 import { useKeybinds, type TuiAction } from "../lib/keybinds.js";
 import {
+  canApprove,
   canAuditPhase,
   canCompletePlan,
   canFixTask,
@@ -52,6 +54,11 @@ export function PlanDetailScreen(props: {
 }): React.ReactElement {
   const { planId, onBack, onNavigate, onRequestAction, onSelectionChange } = props;
   const { data, isLoading, error } = usePlan(planId);
+  // Phase 7 — approvals snapshot powers the `g A` chord gate + the
+  // operator can dispatch the approve action directly from
+  // plan-detail when a task with a pending approval is highlighted.
+  const { data: approvalsData } = useApprovals(planId);
+  const approvals = useMemo(() => approvalsData ?? [], [approvalsData]);
   const { exit } = useApp();
 
   const items = useMemo(() => buildSelectableItems(data ?? null), [data]);
@@ -97,8 +104,9 @@ export function PlanDetailScreen(props: {
   // unrelated renders — otherwise the disabled-kinds callback would
   // fire on every keypress and trigger an App re-render loop.
   const disabledKinds = useMemo(
-    () => computeDisabledKinds(data ?? null, selectedTask, selectedPhase),
-    [data, selectedTask, selectedPhase],
+    () =>
+      computeDisabledKinds(data ?? null, selectedTask, selectedPhase, approvals),
+    [data, selectedTask, selectedPhase, approvals],
   );
 
   const { onDisabledKindsChange } = props;
@@ -202,11 +210,34 @@ export function PlanDetailScreen(props: {
             });
           }
           return;
+        case "approve-task": {
+          // `g A` from plan-detail navigates to the approvals screen
+          // when no task is selected (or the selected task has no
+          // pending approval). When the cursor sits on a task with a
+          // pending approval, dispatch the approve action directly so
+          // the operator gets a confirm modal without an extra screen
+          // jump. Mirrors the server's primary 409 rule via
+          // `canApprove(taskId, approvals)`.
+          if (
+            selectedTask !== null &&
+            canApprove(selectedTask.id, approvals).ok
+          ) {
+            onRequestAction({
+              kind: "approve-task",
+              taskId: selectedTask.id,
+              label: `Approve task '${selectedTask.slug}'? (high/catastrophic risk)`,
+            });
+          } else {
+            onNavigate({ name: "approvals", planId });
+          }
+          return;
+        }
         default:
           return;
       }
     },
     [
+      approvals,
       currentItem,
       data,
       exit,
@@ -249,6 +280,11 @@ export function PlanDetailScreen(props: {
           <StatusBadge status={data.plan.status} />
           <Text dimColor>{`  phases=${data.plan.phases.length}  tasks=${data.plan.tasks.length}`}</Text>
         </Box>
+      </Box>
+
+      {/* Phase 7 budget panel — surfaces plan-wide spend at a glance. */}
+      <Box marginTop={1} paddingX={1}>
+        <BudgetPanel planId={planId} />
       </Box>
 
       <Box flexDirection="column" marginTop={1} paddingX={1}>
@@ -364,6 +400,7 @@ function computeDisabledKinds(
   data: PlanDetail | null,
   selectedTask: Task | null,
   selectedPhase: Phase | null,
+  approvals: readonly import("@pm-go/contracts").ApprovalRequest[],
 ): ReadonlyArray<TuiAction["kind"]> {
   const disabled: TuiAction["kind"][] = [];
   if (data === null) return disabled;
@@ -392,5 +429,11 @@ function computeDisabledKinds(
   tryGate("audit-phase", selectedPhase !== null && canAuditPhase(selectedPhase).ok);
   tryGate("complete-plan", canCompletePlan(data.plan).ok);
   tryGate("release-plan", canReleasePlan(data).ok);
+  // `approve-task` is enabled when ANY pending approval exists on the
+  // plan (the chord navigates to the approvals screen if no per-task
+  // selection has a pending approval, so the action is always
+  // dispatchable from plan-detail when something is pending).
+  const anyPending = approvals.some((a) => a.status === "pending");
+  tryGate("approve-task", anyPending);
   return disabled;
 }
