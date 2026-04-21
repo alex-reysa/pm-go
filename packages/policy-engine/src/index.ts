@@ -21,3 +21,4 @@ export {
   evaluateRetryDecision,
   type RetryErrorLike,
 } from "./retry.js";
+export { evaluateStopCondition } from "./stop.js";
