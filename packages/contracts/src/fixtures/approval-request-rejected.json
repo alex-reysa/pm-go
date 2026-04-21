@@ -1,0 +1,13 @@
+{
+  "id": "11111111-2222-4333-8444-555555555557",
+  "planId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "taskId": "cccccccc-dddd-4eee-8fff-000000000001",
+  "subject": "task",
+  "riskBand": "catastrophic",
+  "status": "rejected",
+  "requestedBy": "orchestrator",
+  "approvedBy": "operator@pm-go",
+  "requestedAt": "2026-04-21T14:00:00.000Z",
+  "decidedAt": "2026-04-21T14:07:30.000Z",
+  "reason": "blast radius exceeds current policy window"
+}

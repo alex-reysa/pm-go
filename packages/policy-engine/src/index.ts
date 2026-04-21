@@ -16,3 +16,4 @@
  */
 
 export { evaluateBudgetGate } from "./budget.js";
+export { evaluateApprovalGate } from "./approval.js";

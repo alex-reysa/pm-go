@@ -4,7 +4,10 @@ import { dirname, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { validateBudgetReport } from "../src/validators/policy.js";
+import {
+  validateApprovalRequest,
+  validateBudgetReport,
+} from "../src/validators/policy.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixturesRoot = resolve(__dirname, "../src/fixtures");
@@ -12,6 +15,50 @@ const fixturesRoot = resolve(__dirname, "../src/fixtures");
 function loadFixture(name: string): unknown {
   return JSON.parse(readFileSync(resolve(fixturesRoot, name), "utf8"));
 }
+
+describe("validateApprovalRequest", () => {
+  it.each([
+    "approval-request-pending.json",
+    "approval-request-approved.json",
+    "approval-request-rejected.json",
+    "approval-request-plan.json",
+  ])("accepts the %s fixture", (name) => {
+    expect(validateApprovalRequest(loadFixture(name))).toBe(true);
+  });
+
+  it("rejects an approval request with an unknown status", () => {
+    const fixture = loadFixture(
+      "approval-request-pending.json",
+    ) as Record<string, unknown>;
+    const mutated = { ...fixture, status: "deferred" };
+    expect(validateApprovalRequest(mutated)).toBe(false);
+  });
+
+  it("rejects an approval request with an unknown risk band", () => {
+    const fixture = loadFixture(
+      "approval-request-pending.json",
+    ) as Record<string, unknown>;
+    const mutated = { ...fixture, riskBand: "medium" };
+    expect(validateApprovalRequest(mutated)).toBe(false);
+  });
+
+  it("rejects an approval request with an unexpected top-level field", () => {
+    const fixture = loadFixture(
+      "approval-request-pending.json",
+    ) as Record<string, unknown>;
+    const extra = { ...fixture, note: "nope" };
+    expect(validateApprovalRequest(extra)).toBe(false);
+  });
+
+  it("rejects an approval request missing required id", () => {
+    const fixture = loadFixture(
+      "approval-request-pending.json",
+    ) as Record<string, unknown>;
+    const { id: _id, ...rest } = fixture;
+    void _id;
+    expect(validateApprovalRequest(rest)).toBe(false);
+  });
+});
 
 describe("validateBudgetReport", () => {
   it.each(["budget-report-happy.json", "budget-report-over-budget.json"])(
