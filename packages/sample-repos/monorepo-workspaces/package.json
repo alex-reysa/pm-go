@@ -1,0 +1,11 @@
+{
+  "name": "phase7-fixture-monorepo-workspaces",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Phase 7 matrix fixture: pnpm workspaces root with two workspace packages. Exercises the orchestrator against a repo shape where fileScopes cross workspace boundaries.",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build": "echo '[monorepo-workspaces] no-op build' && exit 0"
+  }
+}

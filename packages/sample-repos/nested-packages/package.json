@@ -1,0 +1,10 @@
+{
+  "name": "phase7-fixture-nested-packages",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Phase 7 matrix fixture: a root npm package that contains a nested package inside lib/. Not a pnpm workspaces setup — just literally a package.json inside a subdirectory.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit"
+  }
+}

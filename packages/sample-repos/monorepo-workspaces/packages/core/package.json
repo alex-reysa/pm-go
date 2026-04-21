@@ -1,0 +1,7 @@
+{
+  "name": "@phase7-fixture/core",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/index.ts"
+}

@@ -1,0 +1,10 @@
+{
+  "name": "phase7-fixture-ts-project-references",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Phase 7 matrix fixture: two TypeScript packages wired together via `references` in the root tsconfig.json. No pnpm workspaces, just TS project references — the orchestrator should still produce a working integration run.",
+  "scripts": {
+    "build": "tsc -b"
+  }
+}
