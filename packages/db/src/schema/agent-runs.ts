@@ -84,6 +84,7 @@ export const agentRuns = pgTable(
       withTimezone: true,
       mode: "string",
     }),
+    errorReason: text("error_reason"),
   },
   (table) => ({
     depthRange: check(

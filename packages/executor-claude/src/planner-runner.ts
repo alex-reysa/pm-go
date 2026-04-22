@@ -14,6 +14,7 @@ import type {
   PlannerRunnerInput,
   PlannerRunnerResult,
 } from "./index.js";
+import { classifyExecutorError } from "./errors.js";
 
 /**
  * Config for {@link createClaudePlannerRunner}. The API key defaults to
@@ -193,7 +194,7 @@ export function createClaudePlannerRunner(
         }
       } catch (err) {
         stopReason = "error";
-        throw err;
+        throw classifyExecutorError(err);
       }
 
       if (plan === undefined || plan === null) {

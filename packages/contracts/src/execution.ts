@@ -91,6 +91,15 @@ export interface AgentRun {
   outputFormatSchemaRef?: string;
   startedAt?: string;
   completedAt?: string;
+  /**
+   * Populated when `status === 'failed'` / `status === 'timed_out'` to
+   * carry a short, operator-facing reason through to durable storage.
+   * Sourced from `ExecutorError.errorReason` in `@pm-go/executor-claude`
+   * for classified SDK failures (e.g. `"content_filter: ..."`), or from
+   * the raw exception message otherwise. Never embeds API keys or full
+   * prompt bodies.
+   */
+  errorReason?: string;
 }
 
 export interface WorktreeLease {

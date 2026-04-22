@@ -92,6 +92,13 @@
       "when": 1777000002000,
       "tag": "0012_workflow_events_trace_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1776847546959,
+      "tag": "0013_outstanding_king_cobra",
+      "breakpoints": true
     }
   ]
 }

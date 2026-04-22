@@ -10,6 +10,7 @@ import type {
   ReviewReport,
 } from "@pm-go/contracts";
 
+import { classifyExecutorError } from "./errors.js";
 import {
   FORBIDDEN_BASH_PATTERNS,
   findForbiddenBashPatternAgainst,
@@ -198,7 +199,7 @@ export function createClaudeReviewerRunner(
         }
       } catch (err) {
         stopReason = "error";
-        throw err;
+        throw classifyExecutorError(err);
       }
 
       if (reportPayload === undefined || reportPayload === null) {

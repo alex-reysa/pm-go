@@ -18,6 +18,7 @@ import type {
   ImplementerRunnerInput,
   ImplementerRunnerResult,
 } from "./index.js";
+import { classifyExecutorError } from "./errors.js";
 import { isInsideCwd } from "./planner-runner.js";
 
 const execFileAsync = promisify(execFile);
@@ -182,7 +183,7 @@ export function createClaudeImplementerRunner(
         }
       } catch (err) {
         stopReason = "error";
-        throw err;
+        throw classifyExecutorError(err);
       }
 
       const completedAt = new Date().toISOString();

@@ -14,6 +14,7 @@ import type {
 } from "@pm-go/contracts";
 
 import { AUDITOR_FORBIDDEN_BASH_PATTERNS } from "./claude-phase-auditor-runner.js";
+import { classifyExecutorError } from "./errors.js";
 import { findForbiddenBashPatternAgainst } from "./implementer-runner.js";
 import { isInsideCwd } from "./planner-runner.js";
 import type {
@@ -211,7 +212,7 @@ export function createClaudeCompletionAuditorRunner(
         }
       } catch (err) {
         stopReason = "error";
-        throw err;
+        throw classifyExecutorError(err);
       }
 
       if (reportPayload === undefined || reportPayload === null) {

@@ -152,7 +152,7 @@ export const PHASE7_RETRY_POLICIES: readonly RetryPolicyConfig[] = [
     maxDelayMs: 30_000,
     backoffMultiplier: 2,
     maxAttempts: 3,
-    nonRetryableErrorNames: ["PlanValidationError"]
+    nonRetryableErrorNames: ["PlanValidationError", "ContentFilterError"]
   },
   {
     workflowName: "PlanAuditWorkflow",
@@ -175,7 +175,8 @@ export const PHASE7_RETRY_POLICIES: readonly RetryPolicyConfig[] = [
     initialDelayMs: 2_000,
     maxDelayMs: 30_000,
     backoffMultiplier: 2,
-    maxAttempts: 3
+    maxAttempts: 3,
+    nonRetryableErrorNames: ["ContentFilterError"]
   },
   {
     workflowName: "TaskReviewWorkflow",
@@ -183,14 +184,15 @@ export const PHASE7_RETRY_POLICIES: readonly RetryPolicyConfig[] = [
     maxDelayMs: 30_000,
     backoffMultiplier: 2,
     maxAttempts: 3,
-    nonRetryableErrorNames: ["ReviewValidationError"]
+    nonRetryableErrorNames: ["ReviewValidationError", "ContentFilterError"]
   },
   {
     workflowName: "TaskFixWorkflow",
     initialDelayMs: 2_000,
     maxDelayMs: 30_000,
     backoffMultiplier: 2,
-    maxAttempts: 3
+    maxAttempts: 3,
+    nonRetryableErrorNames: ["ContentFilterError"]
   },
   {
     workflowName: "PhaseIntegrationWorkflow",
@@ -206,7 +208,7 @@ export const PHASE7_RETRY_POLICIES: readonly RetryPolicyConfig[] = [
     maxDelayMs: 30_000,
     backoffMultiplier: 2,
     maxAttempts: 4,
-    nonRetryableErrorNames: ["PhaseAuditValidationError"]
+    nonRetryableErrorNames: ["PhaseAuditValidationError", "ContentFilterError"]
   },
   {
     workflowName: "CompletionAuditWorkflow",
@@ -216,7 +218,8 @@ export const PHASE7_RETRY_POLICIES: readonly RetryPolicyConfig[] = [
     maxAttempts: 4,
     nonRetryableErrorNames: [
       "CompletionAuditValidationError",
-      "PhaseAuditsNotAllPassed"
+      "PhaseAuditsNotAllPassed",
+      "ContentFilterError"
     ]
   },
   {

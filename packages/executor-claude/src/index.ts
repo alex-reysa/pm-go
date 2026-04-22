@@ -78,6 +78,12 @@ export function createStubPlannerRunner(fixture: Plan): PlannerRunner {
 
 export { createClaudePlannerRunner, isInsideCwd } from "./planner-runner.js";
 
+export {
+  ExecutorError,
+  ContentFilterError,
+  classifyExecutorError,
+} from "./errors.js";
+
 /**
  * Fix-mode context. When present on `ImplementerRunnerInput.reviewFeedback`
  * the runner prepends a deterministic "Fix mode" preamble to the system

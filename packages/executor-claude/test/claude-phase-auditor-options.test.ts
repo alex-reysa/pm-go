@@ -256,7 +256,7 @@ describe("createClaudePhaseAuditorRunner — SDK query options", () => {
       "cat ../secret.txt",
       "cat ../../../etc/passwd",
       "head -n 5 ../../other-repo/.env",
-      "tail ../../../Users/alejandro/.ssh/id_rsa",
+      "tail ../../../home/user/.ssh/id_rsa",
       "less ../foo",
       "xxd ../bin/thing",
       "base64 ../keys.bin",

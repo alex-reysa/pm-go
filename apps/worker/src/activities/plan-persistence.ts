@@ -324,6 +324,7 @@ async function persistAgentRunImpl(db: PmGoDb, run: AgentRun): Promise<string> {
     outputFormatSchemaRef: run.outputFormatSchemaRef ?? null,
     startedAt: run.startedAt ?? null,
     completedAt: run.completedAt ?? null,
+    errorReason: run.errorReason ?? null,
   };
 
   // Resolve the owning planId via the linked task (if any) so the span
@@ -382,6 +383,7 @@ async function persistAgentRunImpl(db: PmGoDb, run: AgentRun): Promise<string> {
             outputFormatSchemaRef: values.outputFormatSchemaRef,
             startedAt: values.startedAt,
             completedAt: values.completedAt,
+            errorReason: values.errorReason,
           },
         });
       return run.id;

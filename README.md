@@ -7,11 +7,30 @@ The repository is intentionally split into two layers:
 1. A durable orchestration layer that owns planning, retries, approvals, budgets, worktree lifecycle, merge order, and auditability.
 2. An execution layer that runs Claude-powered implementers and reviewers inside bounded task scopes.
 
-This scaffold focuses on structure and development contracts first. The main deliverables in this initial commit are:
+The system is assembled across seven phases (see `docs/phases/`). The current tree delivers:
 
-- a monorepo layout aligned to the control-plane and executor split
-- TypeScript contract stubs for plans, tasks, reviews, policies, and workflows
-- architecture and product specs that define the MVP before implementation begins
+- 14 packages covering contracts, planner, executor-claude, worktree manager, review engine, integration engine, policy engine, observability, orchestrator, repo-intelligence, db, temporal workflows/activities, and sample-repos fixtures
+- Drizzle-managed Postgres schema with migrations `0000–0012`, Temporal workflows with durable retry/stop/budget policies, OpenTelemetry-backed span writer, and Hono API surfacing plans, tasks, approvals, and budget reports
+- Five green smoke gates: `phase5`, `phase6`, `phase7-matrix` (sample-repo fan-out), `phase7-chaos` (three failure-mode recovery), and `phase7` (full durable-state + Temporal replay)
+- Operator-facing runbooks in `docs/runbooks/` and historical phase reports in `docs/phases/`
+
+## Quick Start
+
+Requirements: Node `>=22`, pnpm `>=10`, Docker (for Postgres + Temporal).
+
+```bash
+git clone https://github.com/alex-reysa/pm-go.git
+cd pm-go
+cp .env.example .env
+pnpm install
+pnpm docker:up
+pnpm db:migrate
+pnpm typecheck
+pnpm test
+pnpm smoke:phase7-matrix   # stub-only, ~30s
+```
+
+All stub-mode smoke tests run without an Anthropic API key. To exercise the live Claude executors, export `ANTHROPIC_API_KEY` and set `PLANNER_EXECUTOR_MODE=live` / `IMPLEMENTER_EXECUTOR_MODE=live` per the phase sections below.
 
 ## Repository Map
 
@@ -153,3 +172,13 @@ pnpm smoke:phase3
 `scripts/phase3-smoke.sh` also verifies the durable `worktree_leases`
 and `agent_runs` rows land in Postgres and the leased worktree
 directory exists on disk.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for local setup, branch and commit conventions, and the per-PR test expectations.
+
+Security issues: please follow [`SECURITY.md`](./SECURITY.md) — do not open a public issue for vulnerabilities.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [`LICENSE`](./LICENSE).
