@@ -9,6 +9,20 @@ Thanks for your interest. This document covers local setup, conventions, and wha
 - Docker (Postgres + Temporal run via `docker-compose.yml`)
 - git `>=2.35` (worktree support is used by `@pm-go/worktree-manager`)
 
+## First time here?
+
+pm-go is a deep repo — contracts, migrations, Temporal workflows, and phase docs can look like a lot on day one. You don't need to hold all of that in your head to contribute: small, focused changes are genuinely welcome, and many of the highest-signal PRs come from someone fixing the specific thing that tripped them up while reading.
+
+Contributions that don't require understanding the whole architecture:
+
+- **Docs fixes** — typos, broken links, or clarity improvements to anything under `docs/` or the top-level `README.md`.
+- **Friendlier error messages** — if you hit a cryptic failure running setup, smokes, or a CLI, sharpen the message so the next person doesn't have to dig.
+- **Unit tests for small pure helpers** — self-contained modules like `packages/executor-claude/src/errors.ts` are good targets; add a missing case to an existing `*.test.ts`.
+- **Runbook improvements** — `docs/runbooks/` welcomes real-world additions: a failure mode you hit, a decision tree, or a diagnostic step that was missing.
+- **Invariant comments** — if you had to read a piece of code twice to understand it, leave a comment so the next reader doesn't.
+
+If you're unsure whether a change fits, open a draft PR early. We'd rather give feedback on a 3-line draft than watch someone disappear into a fork for a week.
+
 ## Local Setup
 
 ```bash
