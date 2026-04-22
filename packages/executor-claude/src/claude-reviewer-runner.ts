@@ -10,7 +10,12 @@ import type {
   ReviewReport,
 } from "@pm-go/contracts";
 
-import { classifyExecutorError } from "./errors.js";
+import {
+  classifyExecutorError,
+  errorReasonFromClassified,
+  safeInvokeFailureSink,
+} from "./errors.js";
+import type { AgentRunFailureSink } from "./index.js";
 import {
   FORBIDDEN_BASH_PATTERNS,
   findForbiddenBashPatternAgainst,
@@ -30,6 +35,8 @@ import type {
  */
 export interface ClaudeReviewerRunnerConfig {
   apiKey?: string;
+  /** See `ClaudeImplementerRunnerConfig.onFailure`. */
+  onFailure?: AgentRunFailureSink;
 }
 
 /**
@@ -199,7 +206,43 @@ export function createClaudeReviewerRunner(
         }
       } catch (err) {
         stopReason = "error";
-        throw classifyExecutorError(err);
+        const classified = classifyExecutorError(err);
+        const failedRun: AgentRun = {
+          id: randomUUID(),
+          workflowRunId: sessionId ?? input.workflowRunId ?? randomUUID(),
+          role: "auditor",
+          depth: 2,
+          status: "failed",
+          riskLevel: input.task.riskLevel,
+          executor: "claude",
+          model: input.model,
+          promptVersion: input.promptVersion,
+          taskId: input.task.id,
+          ...(sessionId !== undefined ? { sessionId } : {}),
+          ...(input.parentSessionId !== undefined
+            ? { parentSessionId: input.parentSessionId }
+            : {}),
+          permissionMode: "default",
+          ...(typeof input.budgetUsdCap === "number"
+            ? { budgetUsdCap: input.budgetUsdCap }
+            : {}),
+          ...(typeof input.maxTurnsCap === "number"
+            ? { maxTurnsCap: input.maxTurnsCap }
+            : {}),
+          turns,
+          inputTokens,
+          outputTokens,
+          cacheCreationTokens,
+          cacheReadTokens,
+          costUsd,
+          stopReason: "error",
+          errorReason: errorReasonFromClassified(classified),
+          outputFormatSchemaRef: "ReviewReport@1",
+          startedAt,
+          completedAt: new Date().toISOString(),
+        };
+        await safeInvokeFailureSink(config.onFailure, failedRun);
+        throw classified;
       }
 
       if (reportPayload === undefined || reportPayload === null) {

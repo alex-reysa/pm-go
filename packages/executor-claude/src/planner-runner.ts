@@ -10,11 +10,16 @@ import type {
 } from "@pm-go/contracts";
 
 import type {
+  AgentRunFailureSink,
   PlannerRunner,
   PlannerRunnerInput,
   PlannerRunnerResult,
 } from "./index.js";
-import { classifyExecutorError } from "./errors.js";
+import {
+  classifyExecutorError,
+  errorReasonFromClassified,
+  safeInvokeFailureSink,
+} from "./errors.js";
 
 /**
  * Config for {@link createClaudePlannerRunner}. The API key defaults to
@@ -24,6 +29,8 @@ import { classifyExecutorError } from "./errors.js";
  */
 export interface ClaudePlannerRunnerConfig {
   apiKey?: string;
+  /** See `ClaudeImplementerRunnerConfig.onFailure`. */
+  onFailure?: AgentRunFailureSink;
 }
 
 /**
@@ -194,7 +201,39 @@ export function createClaudePlannerRunner(
         }
       } catch (err) {
         stopReason = "error";
-        throw classifyExecutorError(err);
+        const classified = classifyExecutorError(err);
+        const failedRun: AgentRun = {
+          id: randomUUID(),
+          workflowRunId: sessionId ?? randomUUID(),
+          role: "planner",
+          depth: 0,
+          status: "failed",
+          riskLevel: "low",
+          executor: "claude",
+          model: input.model,
+          promptVersion: input.promptVersion,
+          ...(sessionId !== undefined ? { sessionId } : {}),
+          permissionMode: "default",
+          ...(typeof input.budgetUsdCap === "number"
+            ? { budgetUsdCap: input.budgetUsdCap }
+            : {}),
+          ...(typeof input.maxTurnsCap === "number"
+            ? { maxTurnsCap: input.maxTurnsCap }
+            : {}),
+          turns,
+          inputTokens,
+          outputTokens,
+          cacheCreationTokens,
+          cacheReadTokens,
+          costUsd,
+          stopReason: "error",
+          errorReason: errorReasonFromClassified(classified),
+          outputFormatSchemaRef: "Plan@1",
+          startedAt,
+          completedAt: new Date().toISOString(),
+        };
+        await safeInvokeFailureSink(config.onFailure, failedRun);
+        throw classified;
       }
 
       if (plan === undefined || plan === null) {

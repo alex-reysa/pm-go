@@ -5,6 +5,7 @@ import { NativeConnection, Worker } from "@temporalio/worker";
 
 import { createDb } from "@pm-go/db";
 import type {
+  AgentRun,
   CompletionAuditOutcome,
   PhaseAuditOutcome,
   ReviewOutcome,
@@ -82,19 +83,33 @@ async function main() {
 
   const db = createDb(databaseUrl);
 
+  const planPersistence = createPlanPersistenceActivities({ db });
+
+  // Shared failure sink for every Claude-backed runner. When the runner
+  // catches + classifies an SDK error it synthesizes a
+  // `status: "failed"` AgentRun and hands it here so operators get a
+  // durable forensic row (with `error_reason` populated from the
+  // classified error) even though the runner itself still re-throws so
+  // Temporal's retry/non-retry gate fires. Sink exceptions are
+  // swallowed by `safeInvokeFailureSink` inside each runner — never
+  // bury the real error.
+  const onAgentRunFailure = async (run: AgentRun): Promise<void> => {
+    await planPersistence.persistAgentRun(run);
+  };
+
   const plannerRunner: PlannerRunner =
     plannerMode === "live"
-      ? createClaudePlannerRunner()
+      ? createClaudePlannerRunner({ onFailure: onAgentRunFailure })
       : createFixtureSubstitutingStubRunner(resolveFixturePath());
 
   const implementerRunner: ImplementerRunner =
     implementerMode === "live"
-      ? createClaudeImplementerRunner()
+      ? createClaudeImplementerRunner({ onFailure: onAgentRunFailure })
       : createStubImplementerRunner(buildStubImplementerOptions());
 
   const reviewerRunner: ReviewerRunner =
     reviewerMode === "live"
-      ? createClaudeReviewerRunner()
+      ? createClaudeReviewerRunner({ onFailure: onAgentRunFailure })
       : createStubReviewerRunner({
           sequence: parseReviewerSmokeSequence(
             process.env.REVIEWER_SMOKE_SEQUENCE,
@@ -103,7 +118,7 @@ async function main() {
 
   const phaseAuditorRunner: PhaseAuditorRunner =
     phaseAuditorMode === "live"
-      ? createClaudePhaseAuditorRunner()
+      ? createClaudePhaseAuditorRunner({ onFailure: onAgentRunFailure })
       : createStubPhaseAuditorRunner({
           sequence: parsePhaseAuditorSmokeSequence(
             process.env.PHASE_AUDITOR_SMOKE_SEQUENCE,
@@ -112,7 +127,7 @@ async function main() {
 
   const completionAuditorRunner: CompletionAuditorRunner =
     completionAuditorMode === "live"
-      ? createClaudeCompletionAuditorRunner()
+      ? createClaudeCompletionAuditorRunner({ onFailure: onAgentRunFailure })
       : createStubCompletionAuditorRunner({
           sequence: parseCompletionAuditorSmokeSequence(
             process.env.COMPLETION_AUDITOR_SMOKE_SEQUENCE,
@@ -121,7 +136,6 @@ async function main() {
 
   const connection = await NativeConnection.connect({ address: temporalAddress });
 
-  const planPersistence = createPlanPersistenceActivities({ db });
   const repoIntel = createRepoIntelligenceActivities({ db });
   const specIntake = createSpecIntakeActivities({ db });
   const planner = createPlannerActivities({

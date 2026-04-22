@@ -82,7 +82,24 @@ export {
   ExecutorError,
   ContentFilterError,
   classifyExecutorError,
+  errorReasonFromClassified,
+  safeInvokeFailureSink,
 } from "./errors.js";
+
+/**
+ * Sink invoked by a Claude-backed runner when it is about to re-throw
+ * a classified error. The sink receives a fully-populated `AgentRun`
+ * row with `status: "failed"`, `stopReason: "error"`, and
+ * `errorReason` sourced from the classified error (see
+ * `errorReasonFromClassified`). Wired by the worker boot to
+ * `persistAgentRun` so operators have a durable forensic row for
+ * every failed run — without it the retry-storm would land on the
+ * short-circuit non-retryable path with no `agent_runs` breadcrumb.
+ *
+ * Sink exceptions are swallowed by `safeInvokeFailureSink` — the real
+ * classified error must always reach Temporal.
+ */
+export type AgentRunFailureSink = (run: AgentRun) => Promise<void> | void;
 
 /**
  * Fix-mode context. When present on `ImplementerRunnerInput.reviewFeedback`

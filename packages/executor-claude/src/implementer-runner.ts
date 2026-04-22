@@ -13,12 +13,17 @@ import type {
 } from "@pm-go/contracts";
 
 import type {
+  AgentRunFailureSink,
   ImplementerReviewFeedback,
   ImplementerRunner,
   ImplementerRunnerInput,
   ImplementerRunnerResult,
 } from "./index.js";
-import { classifyExecutorError } from "./errors.js";
+import {
+  classifyExecutorError,
+  errorReasonFromClassified,
+  safeInvokeFailureSink,
+} from "./errors.js";
 import { isInsideCwd } from "./planner-runner.js";
 
 const execFileAsync = promisify(execFile);
@@ -39,6 +44,13 @@ const READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
  */
 export interface ClaudeImplementerRunnerConfig {
   apiKey?: string;
+  /**
+   * Called with a synthesized `status: "failed"` AgentRun just before
+   * the runner re-throws a classified error. Wired at worker boot to
+   * `persistAgentRun` so every thrown error leaves a durable row.
+   * Exceptions from the sink are swallowed; see `safeInvokeFailureSink`.
+   */
+  onFailure?: AgentRunFailureSink;
 }
 
 /**
@@ -183,7 +195,39 @@ export function createClaudeImplementerRunner(
         }
       } catch (err) {
         stopReason = "error";
-        throw classifyExecutorError(err);
+        const classified = classifyExecutorError(err);
+        const failedRun: AgentRun = {
+          id: randomUUID(),
+          workflowRunId: sessionId ?? randomUUID(),
+          role: "implementer",
+          depth: 1,
+          status: "failed",
+          riskLevel: input.task.riskLevel,
+          executor: "claude",
+          model: input.model,
+          promptVersion: input.promptVersion,
+          taskId: input.task.id,
+          ...(sessionId !== undefined ? { sessionId } : {}),
+          permissionMode: "default",
+          ...(typeof input.budgetUsdCap === "number"
+            ? { budgetUsdCap: input.budgetUsdCap }
+            : {}),
+          ...(typeof input.maxTurnsCap === "number"
+            ? { maxTurnsCap: input.maxTurnsCap }
+            : {}),
+          turns,
+          inputTokens,
+          outputTokens,
+          cacheCreationTokens,
+          cacheReadTokens,
+          costUsd,
+          stopReason: "error",
+          errorReason: errorReasonFromClassified(classified),
+          startedAt,
+          completedAt: new Date().toISOString(),
+        };
+        await safeInvokeFailureSink(config.onFailure, failedRun);
+        throw classified;
       }
 
       const completedAt = new Date().toISOString();

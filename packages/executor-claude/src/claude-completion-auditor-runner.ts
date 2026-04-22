@@ -14,7 +14,12 @@ import type {
 } from "@pm-go/contracts";
 
 import { AUDITOR_FORBIDDEN_BASH_PATTERNS } from "./claude-phase-auditor-runner.js";
-import { classifyExecutorError } from "./errors.js";
+import {
+  classifyExecutorError,
+  errorReasonFromClassified,
+  safeInvokeFailureSink,
+} from "./errors.js";
+import type { AgentRunFailureSink } from "./index.js";
 import { findForbiddenBashPatternAgainst } from "./implementer-runner.js";
 import { isInsideCwd } from "./planner-runner.js";
 import type {
@@ -30,6 +35,8 @@ import type {
  */
 export interface ClaudeCompletionAuditorRunnerConfig {
   apiKey?: string;
+  /** See `ClaudeImplementerRunnerConfig.onFailure`. */
+  onFailure?: AgentRunFailureSink;
 }
 
 /**
@@ -212,7 +219,42 @@ export function createClaudeCompletionAuditorRunner(
         }
       } catch (err) {
         stopReason = "error";
-        throw classifyExecutorError(err);
+        const classified = classifyExecutorError(err);
+        const failedRun: AgentRun = {
+          id: randomUUID(),
+          workflowRunId: input.workflowRunId ?? sessionId ?? randomUUID(),
+          role: "auditor",
+          depth: 2,
+          status: "failed",
+          riskLevel: "high",
+          executor: "claude",
+          model: input.model,
+          promptVersion: input.promptVersion,
+          ...(sessionId !== undefined ? { sessionId } : {}),
+          ...(input.parentSessionId
+            ? { parentSessionId: input.parentSessionId }
+            : {}),
+          permissionMode: "default",
+          ...(typeof input.budgetUsdCap === "number"
+            ? { budgetUsdCap: input.budgetUsdCap }
+            : {}),
+          ...(typeof input.maxTurnsCap === "number"
+            ? { maxTurnsCap: input.maxTurnsCap }
+            : {}),
+          turns,
+          inputTokens,
+          outputTokens,
+          cacheCreationTokens,
+          cacheReadTokens,
+          costUsd,
+          stopReason: "error",
+          errorReason: errorReasonFromClassified(classified),
+          outputFormatSchemaRef: "CompletionAuditReport@1",
+          startedAt,
+          completedAt: new Date().toISOString(),
+        };
+        await safeInvokeFailureSink(config.onFailure, failedRun);
+        throw classified;
       }
 
       if (reportPayload === undefined || reportPayload === null) {

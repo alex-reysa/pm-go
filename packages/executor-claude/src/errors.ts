@@ -1,3 +1,5 @@
+import type { AgentRun } from "@pm-go/contracts";
+
 /**
  * Typed errors thrown by the Claude-backed runners in this package.
  *
@@ -94,6 +96,43 @@ function extractMessage(err: unknown): string {
     if (typeof c === "string" && c.length > 0) return c;
   }
   return "";
+}
+
+/**
+ * Pick a short, operator-facing reason from a classified error. Used by
+ * the per-runner failure paths to populate `AgentRun.errorReason` when
+ * synthesizing a `status: "failed"` row for the `onFailure` sink.
+ */
+export function errorReasonFromClassified(classified: unknown): string {
+  if (classified instanceof ExecutorError) return classified.errorReason;
+  if (classified instanceof Error) {
+    return classified.message.length > 0
+      ? classified.message
+      : "unknown executor error";
+  }
+  return "unknown executor error";
+}
+
+/**
+ * Best-effort invocation of a runner's `onFailure` sink. The classified
+ * error the runner is about to re-throw must never be buried by a sink
+ * exception — any sink error is logged and swallowed so the real
+ * failure still surfaces to Temporal's retry-policy gate.
+ */
+export async function safeInvokeFailureSink(
+  sink: ((run: AgentRun) => Promise<void> | void) | undefined,
+  run: AgentRun,
+): Promise<void> {
+  if (!sink) return;
+  try {
+    await sink(run);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[executor-claude] onFailure sink failed (runId=${run.id} role=${run.role}):`,
+      err,
+    );
+  }
 }
 
 function summarizeContentFilterMessage(raw: string): string {
