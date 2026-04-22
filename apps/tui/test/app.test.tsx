@@ -74,8 +74,51 @@ function minimalPlan(planId: UUID): Plan {
   };
 }
 
-async function tick(ms = 20): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, ms));
+/**
+ * Poll `lastFrame()` until every `needle` substring is present, or the
+ * overall budget expires. Deterministic replacement for
+ * `await tick(); expect(frame).toContain(x)` — under multi-package
+ * `pnpm test` concurrency the fixed 20–40 ms sleep sometimes fires
+ * before React Query resolves and Ink paints the next frame, which
+ * then surfaces as a substring-miss assertion failure. Polling lets
+ * the fast path stay fast while tolerating a loaded CI box.
+ */
+async function waitForFrame(
+  lastFrame: () => string | undefined,
+  needles: string | readonly string[],
+  { timeoutMs = 2_000, intervalMs = 10 }: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<string> {
+  const needleList = typeof needles === "string" ? [needles] : needles;
+  const deadline = Date.now() + timeoutMs;
+  let frame = lastFrame() ?? "";
+  while (Date.now() < deadline) {
+    frame = lastFrame() ?? "";
+    if (needleList.every((n) => frame.includes(n))) return frame;
+    await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+  }
+  // Fall through: return the last observed frame and let the caller's
+  // `expect(...).toContain(...)` produce the canonical assertion diff.
+  return frame;
+}
+
+/**
+ * Poll until the `▶` cursor marker moves off the Alpha row onto the
+ * Beta row. Implemented as a dedicated helper because the match is
+ * per-line rather than a global substring.
+ */
+async function waitForBetaSelected(
+  lastFrame: () => string | undefined,
+  { timeoutMs = 2_000, intervalMs = 10 }: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let frame = lastFrame() ?? "";
+  while (Date.now() < deadline) {
+    frame = lastFrame() ?? "";
+    const betaLine = frame.split("\n").find((l) => l.includes("Beta")) ?? "";
+    if (betaLine.includes("▶")) return frame;
+    await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return frame;
 }
 
 describe("App", () => {
@@ -118,8 +161,11 @@ describe("App", () => {
       />,
     );
 
-    await tick();
-    const frame1 = lastFrame() ?? "";
+    // Wait for the plans query to resolve + Ink to paint both rows.
+    const frame1 = await waitForFrame(lastFrame, [
+      "Alpha release plan",
+      "Beta release plan",
+    ]);
     expect(frame1).toContain("Alpha release plan");
     expect(frame1).toContain("Beta release plan");
     // First row should be selected (▶ marker).
@@ -127,8 +173,10 @@ describe("App", () => {
     expect(alphaLine).toContain("▶");
 
     stdin.write("j");
-    await tick();
-    const frame2 = lastFrame() ?? "";
+    // Poll until the ▶ marker appears on the Beta line — the j keypress
+    // schedules a React state update, which renders asynchronously; a
+    // fixed tick is too short under multi-package test concurrency.
+    const frame2 = await waitForBetaSelected(lastFrame);
     const betaLine = frame2.split("\n").find((l) => l.includes("Beta"))!;
     expect(betaLine).toContain("▶");
 
@@ -175,17 +223,18 @@ describe("App", () => {
       />,
     );
 
-    await tick();
+    // Plans-list must render before we can press enter to drill in.
+    await waitForFrame(lastFrame, ["Alpha release plan"]);
     stdin.write("\r");
-    await tick(40);
     // Plan detail renders the fetched plan (empty fixture → "plan has
     // no phases yet") plus the events tail marker.
-    expect(lastFrame() ?? "").toContain("Under test");
-    expect(lastFrame() ?? "").toContain("Events");
+    const detailFrame = await waitForFrame(lastFrame, ["Under test", "Events"]);
+    expect(detailFrame).toContain("Under test");
+    expect(detailFrame).toContain("Events");
 
     stdin.write("\u001B"); // esc
-    await tick(40);
-    expect(lastFrame() ?? "").toContain("Alpha release plan");
+    const backFrame = await waitForFrame(lastFrame, ["Alpha release plan"]);
+    expect(backFrame).toContain("Alpha release plan");
 
     unmount();
   });

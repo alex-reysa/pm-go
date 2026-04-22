@@ -14,8 +14,26 @@ const PLAN_ID = "00000000-0000-0000-0000-0000000000aa";
 const TASK_A = "00000000-0000-0000-0000-0000000000bb";
 const TASK_B = "00000000-0000-0000-0000-0000000000cc";
 
-async function tick(ms = 20): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, ms));
+/**
+ * Poll `lastFrame()` until every `needle` substring is present, or
+ * the overall budget expires. Replaces a fixed `tick(20ms)` that
+ * raced React-Query fetch + Ink paint under full-repo `pnpm test`
+ * concurrency — the panel assertion reads `$0.4321` etc. which only
+ * exist after the async `getBudgetReport` resolves.
+ */
+async function waitForFrame(
+  lastFrame: () => string | undefined,
+  needles: readonly string[],
+  { timeoutMs = 2_000, intervalMs = 10 }: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let frame = lastFrame() ?? "";
+  while (Date.now() < deadline) {
+    frame = lastFrame() ?? "";
+    if (needles.every((n) => frame.includes(n))) return frame;
+    await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return frame;
 }
 
 function makeReport(): BudgetReport {
@@ -90,8 +108,16 @@ function renderPanel(report: BudgetReport) {
 describe("BudgetPanel", () => {
   it("renders the rolled-up totals", async () => {
     const { lastFrame, unmount } = renderPanel(makeReport());
-    await tick();
-    const frame = lastFrame() ?? "";
+    // All four tokens come from the same resolved query payload, so
+    // polling for the final ($0.4321) is sufficient to guarantee the
+    // rest are already rendered — but we check every one to match the
+    // original intent and produce a readable diff on regression.
+    const frame = await waitForFrame(lastFrame, [
+      "Budget",
+      "$0.4321",
+      "12,345",
+      "6.5m",
+    ]);
     expect(frame).toContain("Budget");
     expect(frame).toContain("$0.4321");
     expect(frame).toContain("12,345");
@@ -101,9 +127,11 @@ describe("BudgetPanel", () => {
 
   it("renders per-task breakdown rows", async () => {
     const { lastFrame, unmount } = renderPanel(makeReport());
-    await tick();
-    const frame = lastFrame() ?? "";
-    // The first 8 chars of TASK_A id are visible in the breakdown row.
+    // The first 8 chars of TASK_A/TASK_B ids are visible in the breakdown rows.
+    const frame = await waitForFrame(lastFrame, [
+      TASK_A.slice(0, 8),
+      TASK_B.slice(0, 8),
+    ]);
     expect(frame).toContain(TASK_A.slice(0, 8));
     expect(frame).toContain(TASK_B.slice(0, 8));
     unmount();
