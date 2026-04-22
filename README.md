@@ -1,6 +1,6 @@
 # pm-go
 
-`pm-go` is a schema-first orchestration system for agent-driven software delivery.
+Agent-driven delivery falls apart when the workflow lives inside the model: context windows lose state, "done" is whatever the last message claimed, and a crashed run has to start over. `pm-go` pulls planning, retries, approvals, budgets, merge order, and completion audit out of model context and into a durable control plane — so runs are resumable, "done" is decided from evidence instead of claims, and agents operate inside bounded, policy-enforced worktrees instead of open-ended recursion.
 
 The repository is intentionally split into two layers:
 
@@ -11,23 +11,39 @@ The system is assembled across seven phases (see `docs/phases/`). The current tr
 
 - 14 packages covering contracts, planner, executor-claude, worktree manager, review engine, integration engine, policy engine, observability, orchestrator, repo-intelligence, db, temporal workflows/activities, and sample-repos fixtures
 - Drizzle-managed Postgres schema with migrations `0000–0012`, Temporal workflows with durable retry/stop/budget policies, OpenTelemetry-backed span writer, and Hono API surfacing plans, tasks, approvals, and budget reports
-- Five green smoke gates: `phase5`, `phase6`, `phase7-matrix` (sample-repo fan-out), `phase7-chaos` (three failure-mode recovery), and `phase7` (full durable-state + Temporal replay)
+- CI runs typecheck, test, `phase7-matrix`, and `phase7-chaos` on every push — all against stub executors, no Docker, no API key. The Docker-backed gates (`phase5`, `phase6`, `phase7` full durable-state + Temporal replay) live under `scripts/` and run locally; see the phase sections below.
 - Operator-facing runbooks in `docs/runbooks/` and historical phase reports in `docs/phases/`
 
 ## Quick Start
 
-Requirements: Node `>=22`, pnpm `>=10`, Docker (for Postgres + Temporal).
+### Fast check (~30s, zero dependencies)
+
+No Docker, no Postgres, no Temporal, no Anthropic API key. Just Node `>=22` and pnpm `>=10`.
 
 ```bash
 git clone https://github.com/alex-reysa/pm-go.git
 cd pm-go
+pnpm install
+pnpm smoke:phase7-matrix   # 4 sample-repo fixtures, stub executors, ~30s
+pnpm smoke:phase7-chaos    # optional: 3 failure-mode recovery scenarios, stub executors
+```
+
+`phase7-matrix` drives a planner-stub → implementer-stub → reviewer-stub round trip against each of the four fixtures under `packages/sample-repos/`. This is what CI runs on every push.
+
+### Full local stack
+
+Exercises the Docker-backed gates: Postgres + Temporal + durable-state assertions + replay.
+
+Requirements: Node `>=22`, pnpm `>=10`, Docker (for Postgres + Temporal).
+
+```bash
 cp .env.example .env
 pnpm install
 pnpm docker:up
 pnpm db:migrate
 pnpm typecheck
 pnpm test
-pnpm smoke:phase7-matrix   # stub-only, ~30s
+pnpm smoke:phase7          # full durable-state + Temporal replay
 ```
 
 All stub-mode smoke tests run without an Anthropic API key. To exercise the live Claude executors, export `ANTHROPIC_API_KEY` and set `PLANNER_EXECUTOR_MODE=live` / `IMPLEMENTER_EXECUTOR_MODE=live` per the phase sections below.
