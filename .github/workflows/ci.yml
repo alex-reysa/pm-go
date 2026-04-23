@@ -33,8 +33,12 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Lint
-        run: pnpm lint
+      # TODO(v0.7.1): restore a real lint gate here. The previous
+      # `pnpm lint` step was a no-op — `pnpm -r --if-present lint`
+      # found no `lint` script in any workspace package, exited 0,
+      # and gave false confidence. Removed rather than leave a
+      # cosmetic-green check in the pipeline. Re-add once ESLint
+      # (or equivalent) is configured at the repo level.
 
       - name: Test
         run: pnpm test
