@@ -298,11 +298,9 @@ describe("createClaudeCompletionAuditorRunner — SDK query options", () => {
     }
   });
 
-  it("constructor throws when neither apiKey nor ANTHROPIC_API_KEY is set", () => {
+  it("constructor does not throw when neither apiKey nor ANTHROPIC_API_KEY is set (OAuth fallthrough)", () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "");
-    expect(() => createClaudeCompletionAuditorRunner()).toThrow(
-      /ANTHROPIC_API_KEY not set/,
-    );
+    expect(() => createClaudeCompletionAuditorRunner()).not.toThrow();
   });
 
   it("refuses to invoke the SDK if finalMergeRun.integrationHeadSha is unset (in-flight merge)", async () => {

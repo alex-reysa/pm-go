@@ -217,10 +217,8 @@ describe("createClaudeReviewerRunner — SDK query options", () => {
     expect(outside.behavior).toBe("deny");
   });
 
-  it("constructor throws when neither apiKey nor ANTHROPIC_API_KEY is set", () => {
+  it("constructor does not throw when neither apiKey nor ANTHROPIC_API_KEY is set (OAuth fallthrough)", () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "");
-    expect(() => createClaudeReviewerRunner()).toThrow(
-      /ANTHROPIC_API_KEY not set/,
-    );
+    expect(() => createClaudeReviewerRunner()).not.toThrow();
   });
 });
