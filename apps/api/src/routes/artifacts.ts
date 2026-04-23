@@ -37,8 +37,12 @@ export interface ArtifactsRouteDeps {
   artifactDir: string;
 }
 
+// UUID-layout check (not strict v4). Postgres validates the actual UUID
+// structure; this boundary check just ensures the id looks like a UUID.
+// Relaxed from strict v4 because LLM-generated plan UUIDs often miss the
+// version/variant bits while remaining valid Postgres UUIDs.
 const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function isUuid(value: unknown): value is UUID {
   return typeof value === "string" && UUID_RE.test(value);
