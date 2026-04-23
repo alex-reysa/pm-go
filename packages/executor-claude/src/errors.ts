@@ -40,8 +40,10 @@ export abstract class ExecutorError extends Error {
  * TaskExecutionWorkflow + TaskFixWorkflow retry policies list this
  * class name in `nonRetryableErrorNames`.
  */
+export const CONTENT_FILTER_ERROR_NAME = "ContentFilterError";
+
 export class ContentFilterError extends ExecutorError {
-  override readonly name = "ContentFilterError";
+  override readonly name = CONTENT_FILTER_ERROR_NAME;
 }
 
 /**
