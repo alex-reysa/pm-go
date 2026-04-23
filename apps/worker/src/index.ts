@@ -60,12 +60,14 @@ async function main() {
     process.env.WORKTREE_MAX_LIFETIME_HOURS ?? "24",
     10,
   );
-  const plannerMaxTurns = process.env.PLANNER_MAX_TURNS
-    ? Number.parseInt(process.env.PLANNER_MAX_TURNS, 10)
-    : undefined;
-  const plannerBudgetUsd = process.env.PLANNER_BUDGET_USD
-    ? Number.parseFloat(process.env.PLANNER_BUDGET_USD)
-    : undefined;
+  const plannerMaxTurns = parsePositiveInt(
+    "PLANNER_MAX_TURNS",
+    process.env.PLANNER_MAX_TURNS,
+  );
+  const plannerBudgetUsd = parsePositiveFloat(
+    "PLANNER_BUDGET_USD",
+    process.env.PLANNER_BUDGET_USD,
+  );
   // Resolve PLAN_ARTIFACT_DIR relative to the repo root, not the worker's
   // cwd. `pnpm --filter @pm-go/worker start` spawns the child with
   // cwd=apps/worker/, so a relative "./artifacts/plans" would otherwise
@@ -431,6 +433,42 @@ function resolveFromRepoRoot(input: string): string {
   if (path.isAbsolute(input)) return input;
   const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
   return path.resolve(repoRoot, input);
+}
+
+/**
+ * Parse a positive integer from an env-var string. Returns `undefined`
+ * when the var is unset or empty (caller chooses the default); throws
+ * when the var is set but does not parse to a finite positive integer.
+ * A typo like `PLANNER_MAX_TURNS=abc` would otherwise become `NaN` and
+ * flow into the planner run as a nonsense cap.
+ */
+function parsePositiveInt(
+  name: string,
+  raw: string | undefined,
+): number | undefined {
+  if (raw === undefined || raw.trim().length === 0) return undefined;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(
+      `${name}: expected a positive integer, got '${raw}'`,
+    );
+  }
+  return n;
+}
+
+/** Same shape as parsePositiveInt but for floats (budget caps). */
+function parsePositiveFloat(
+  name: string,
+  raw: string | undefined,
+): number | undefined {
+  if (raw === undefined || raw.trim().length === 0) return undefined;
+  const n = Number.parseFloat(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(
+      `${name}: expected a positive number, got '${raw}'`,
+    );
+  }
+  return n;
 }
 
 main().catch((err) => {

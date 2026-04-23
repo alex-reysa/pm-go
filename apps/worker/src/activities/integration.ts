@@ -304,8 +304,12 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
 
     /**
      * Run every test command against the merged integration worktree.
-     * Fails fast on first non-zero exit. Returns captured logs so the
-     * workflow can surface them in the MergeRun failure path.
+     * Fails fast on first non-zero exit. Returns captured logs only on
+     * failure so operators can debug — a successful run returns an empty
+     * logs array to keep the Temporal activity-result payload small.
+     * (Install + build pre-step output for a 15-package monorepo is
+     * routinely ~1 MB; returning it on every success pushed the
+     * serialized activity result past Temporal's per-payload limit.)
      */
     async validatePostMergeState(input: {
       integrationWorktreePath: string;
@@ -351,6 +355,32 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
             return { passed: false, logs };
           }
         }
+
+        // Build steps can write tracked files (generated code, bundled
+        // outputs committed to the repo) or untracked non-gitignored
+        // ones. Later per-task `git merge` calls in the same integration
+        // lease then fail with "local changes would be overwritten".
+        // Reset the tracked tree to HEAD and drop untracked non-ignored
+        // files, but keep node_modules / .pnpm-store so reinstalling is
+        // fast (they're gitignored; `-e` keeps them even with `-x`
+        // cleaning other ignored paths).
+        try {
+          await execFileAsync(
+            "/bin/sh",
+            [
+              "-c",
+              "git reset --hard HEAD && git clean -fd -e node_modules -e .pnpm-store",
+            ],
+            {
+              cwd: input.integrationWorktreePath,
+              env: { ...process.env, LANG: "C", LC_ALL: "C" },
+              maxBuffer: 4 * 1024 * 1024,
+            },
+          );
+        } catch {
+          // Best-effort cleanup — if the reset fails the subsequent
+          // merge will surface the real conflict with a clearer error.
+        }
       }
 
       for (const command of input.testCommands) {
@@ -371,7 +401,10 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
           return { passed: false, logs };
         }
       }
-      return { passed: true, logs };
+      // Drop logs on success — consumers only read `passed` on the happy
+      // path, and returning megabytes of pnpm output through Temporal's
+      // payload serialization is a real failure mode (see doc block above).
+      return { passed: true, logs: [] };
     },
 
     /**
