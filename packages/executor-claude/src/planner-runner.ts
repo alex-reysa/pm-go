@@ -342,7 +342,7 @@ export function isInsideCwd(target: string, cwd: string): boolean {
  * Removing them preserves all structural constraints (type, required,
  * additionalProperties, anyOf, …) while silencing the validator quirk.
  */
-function stripSchemaAnnotations(
+export function stripSchemaAnnotations(
   obj: Record<string, unknown>,
 ): Record<string, unknown> {
   if (typeof obj !== "object" || obj === null) return obj;

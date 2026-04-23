@@ -21,7 +21,7 @@ import {
 } from "./errors.js";
 import type { AgentRunFailureSink } from "./index.js";
 import { findForbiddenBashPatternAgainst } from "./implementer-runner.js";
-import { isInsideCwd } from "./planner-runner.js";
+import { isInsideCwd, stripSchemaAnnotations } from "./planner-runner.js";
 
 /**
  * Auditor-only Bash containment patterns. The auditors (phase +
@@ -266,6 +266,10 @@ export function createClaudePhaseAuditorRunner(
           validatePhaseAuditReport: (v: unknown) => boolean;
         };
 
+      // See planner-runner.ts: Claude Code CLI's JSON Schema validator
+      // rejects `format` and TypeBox `$id`, omitting structured_output.
+      const cleanSchema = stripSchemaAnnotations(PhaseAuditReportJsonSchema);
+
       let reportPayload: unknown;
       let sessionId: string | undefined;
       let inputTokens = 0;
@@ -290,7 +294,7 @@ export function createClaudePhaseAuditorRunner(
             settingSources: [],
             outputFormat: {
               type: "json_schema",
-              schema: PhaseAuditReportJsonSchema,
+              schema: cleanSchema,
             },
             ...(typeof input.budgetUsdCap === "number"
               ? { maxBudgetUsd: input.budgetUsdCap }
