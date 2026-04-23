@@ -23,9 +23,8 @@ import {
 
 /**
  * Config for {@link createClaudePlannerRunner}. The API key defaults to
- * `process.env.ANTHROPIC_API_KEY`. The constructor throws if no key is
- * available because the Claude Agent SDK will otherwise fail at
- * first-request time with a confusing error.
+ * `process.env.ANTHROPIC_API_KEY`. When no key is provided the SDK
+ * handles missing credentials at call time (OAuth fallthrough).
  */
 export interface ClaudePlannerRunnerConfig {
   apiKey?: string;
