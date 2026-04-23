@@ -122,7 +122,10 @@ describe("createClaudeCompletionAuditorRunner — SDK query options", () => {
     };
     expect(outputFormat.type).toBe("json_schema");
     expect(outputFormat.schema).toBeTypeOf("object");
-    expect(outputFormat.schema.$id).toBe("CompletionAuditReport");
+    // `$id` is stripped by stripSchemaAnnotations — see reviewer test.
+    expect(outputFormat.schema.$id).toBeUndefined();
+    expect(outputFormat.schema.type).toBe("object");
+    expect(Array.isArray(outputFormat.schema.required)).toBe(true);
   });
 
   it("canUseTool denies all write-class tools outright", async () => {
