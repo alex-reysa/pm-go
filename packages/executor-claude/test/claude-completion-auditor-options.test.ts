@@ -122,7 +122,10 @@ describe("createClaudeCompletionAuditorRunner — SDK query options", () => {
     };
     expect(outputFormat.type).toBe("json_schema");
     expect(outputFormat.schema).toBeTypeOf("object");
-    expect(outputFormat.schema.$id).toBe("CompletionAuditReport");
+    // `$id` is stripped by stripSchemaAnnotations — see reviewer test.
+    expect(outputFormat.schema.$id).toBeUndefined();
+    expect(outputFormat.schema.type).toBe("object");
+    expect(Array.isArray(outputFormat.schema.required)).toBe(true);
   });
 
   it("canUseTool denies all write-class tools outright", async () => {
@@ -298,11 +301,9 @@ describe("createClaudeCompletionAuditorRunner — SDK query options", () => {
     }
   });
 
-  it("constructor throws when neither apiKey nor ANTHROPIC_API_KEY is set", () => {
+  it("constructor does not throw when neither apiKey nor ANTHROPIC_API_KEY is set (OAuth fallthrough)", () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "");
-    expect(() => createClaudeCompletionAuditorRunner()).toThrow(
-      /ANTHROPIC_API_KEY not set/,
-    );
+    expect(() => createClaudeCompletionAuditorRunner()).not.toThrow();
   });
 
   it("refuses to invoke the SDK if finalMergeRun.integrationHeadSha is unset (in-flight merge)", async () => {

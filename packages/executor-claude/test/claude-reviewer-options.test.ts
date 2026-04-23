@@ -101,7 +101,13 @@ describe("createClaudeReviewerRunner — SDK query options", () => {
     };
     expect(outputFormat.type).toBe("json_schema");
     expect(outputFormat.schema).toBeTypeOf("object");
-    expect(outputFormat.schema.$id).toBe("ReviewReport");
+    // `$id` is stripped by stripSchemaAnnotations before the schema is
+    // passed to the SDK — the Claude Code CLI validator rejects TypeBox
+    // `$id` and `format` annotations, so the runner passes a cleaned
+    // schema. Assert on a structural property (required fields) instead.
+    expect(outputFormat.schema.$id).toBeUndefined();
+    expect(outputFormat.schema.type).toBe("object");
+    expect(Array.isArray(outputFormat.schema.required)).toBe(true);
   });
 
   it("canUseTool denies all write-class tools outright", async () => {
@@ -217,10 +223,8 @@ describe("createClaudeReviewerRunner — SDK query options", () => {
     expect(outside.behavior).toBe("deny");
   });
 
-  it("constructor throws when neither apiKey nor ANTHROPIC_API_KEY is set", () => {
+  it("constructor does not throw when neither apiKey nor ANTHROPIC_API_KEY is set (OAuth fallthrough)", () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "");
-    expect(() => createClaudeReviewerRunner()).toThrow(
-      /ANTHROPIC_API_KEY not set/,
-    );
+    expect(() => createClaudeReviewerRunner()).not.toThrow();
   });
 });

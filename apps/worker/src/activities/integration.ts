@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { access } from "node:fs/promises";
 import { promisify } from "node:util";
 
 import type {
@@ -311,6 +312,47 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
       testCommands: string[];
     }): Promise<{ passed: boolean; logs: string[] }> {
       const logs: string[] = [];
+
+      // Integration worktrees are fresh git checkouts — node_modules and
+      // workspace-package dist/ folders are never populated by the
+      // worktree create step. If the project uses pnpm and any test
+      // command looks like it needs installed/built deps, run
+      // `pnpm install` + `pnpm -r build` first so typecheck/test commands
+      // can resolve their packages and workspace refs. Skipped when there
+      // is no pnpm-lock.yaml (e.g. non-Node repos).
+      const hasPnpmLock = await fsExists(
+        `${input.integrationWorktreePath}/pnpm-lock.yaml`,
+      );
+      const needsInstall =
+        hasPnpmLock &&
+        input.testCommands.some((c) => /\b(pnpm|node|tsc|vitest)\b/.test(c));
+      if (needsInstall) {
+        const preSteps = [
+          "pnpm install --frozen-lockfile --prefer-offline",
+          "pnpm -r --if-present build",
+        ];
+        for (const step of preSteps) {
+          try {
+            const { stdout, stderr } = await execFileAsync(
+              "/bin/sh",
+              ["-c", step],
+              {
+                cwd: input.integrationWorktreePath,
+                env: { ...process.env, LANG: "C", LC_ALL: "C" },
+                maxBuffer: 50 * 1024 * 1024,
+              },
+            );
+            logs.push(
+              `$ ${step}\n${stdout}${stderr ? `\nstderr:\n${stderr}` : ""}`,
+            );
+          } catch (err) {
+            const msg = extractProcMessage(err);
+            logs.push(`$ ${step}\nFAILED\n${msg}`);
+            return { passed: false, logs };
+          }
+        }
+      }
+
       for (const command of input.testCommands) {
         try {
           const { stdout, stderr } = await execFileAsync(
@@ -905,4 +947,13 @@ async function reconstructPlan(
 
 function toIso(value: string | Date): string {
   return typeof value === "string" ? value : value.toISOString();
+}
+
+async function fsExists(p: string): Promise<boolean> {
+  try {
+    await access(p);
+    return true;
+  } catch {
+    return false;
+  }
 }

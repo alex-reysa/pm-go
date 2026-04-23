@@ -226,10 +226,13 @@ describe("createClaudeImplementerRunner — SDK query options", () => {
     expect(deniedOutside.behavior).toBe("deny");
   });
 
-  it("constructor throws when neither apiKey nor ANTHROPIC_API_KEY is set", () => {
+  it("constructor does not throw when neither apiKey nor ANTHROPIC_API_KEY is set (OAuth fallthrough)", () => {
+    // Claude Code subscription users authenticate via OAuth, not a key.
+    // The SDK handles missing keys at call time, so the runner constructor
+    // must not eagerly throw — otherwise OAuth-only users can't boot the
+    // worker. The worker will still fail on runner.run() if the SDK has no
+    // usable credentials, which is the intended failure surface.
     vi.stubEnv("ANTHROPIC_API_KEY", "");
-    expect(() => createClaudeImplementerRunner()).toThrow(
-      /ANTHROPIC_API_KEY not set/,
-    );
+    expect(() => createClaudeImplementerRunner()).not.toThrow();
   });
 });
