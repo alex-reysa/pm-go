@@ -1,4 +1,6 @@
-import type { AgentRun } from "@pm-go/contracts";
+import { CONTENT_FILTER_ERROR_NAME, type AgentRun } from "@pm-go/contracts";
+
+export { CONTENT_FILTER_ERROR_NAME };
 
 /**
  * Typed errors thrown by the Claude-backed runners in this package.
@@ -38,10 +40,11 @@ export abstract class ExecutorError extends Error {
  *   "Output blocked by content filtering policy"
  * Retrying the same prompt is guaranteed to fail identically, so the
  * TaskExecutionWorkflow + TaskFixWorkflow retry policies list this
- * class name in `nonRetryableErrorNames`.
+ * class name in `nonRetryableErrorNames`. The name string itself lives
+ * in `@pm-go/contracts` so both the producer (this module) and the
+ * consumer (`@pm-go/temporal-workflows/src/definitions.ts`) read from
+ * a single source of truth.
  */
-export const CONTENT_FILTER_ERROR_NAME = "ContentFilterError";
-
 export class ContentFilterError extends ExecutorError {
   override readonly name = CONTENT_FILTER_ERROR_NAME;
 }

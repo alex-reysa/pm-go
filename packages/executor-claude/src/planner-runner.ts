@@ -342,21 +342,94 @@ export function isInsideCwd(target: string, cwd: string): boolean {
  * additionalProperties, anyOf, …) while silencing the validator quirk.
  */
 export function stripSchemaAnnotations(
-  obj: Record<string, unknown>,
+  schema: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (typeof obj !== "object" || obj === null) return obj;
-  if (Array.isArray(obj)) return (obj as unknown[]).map((v) =>
-    typeof v === "object" && v !== null
-      ? stripSchemaAnnotations(v as Record<string, unknown>)
-      : v,
-  ) as unknown as Record<string, unknown>;
+  return stripSchemaAnnotationsAt(schema) as Record<string, unknown>;
+}
+
+/**
+ * JSON Schema keywords whose values are themselves sub-schemas.
+ * We recurse into these and only these — anything else (including the
+ * entries of `properties`) is treated as either a primitive or a
+ * schema-position value on a case-by-case basis below. This is what
+ * makes the walker position-aware rather than name-blind, so a user
+ * property literally called `format` or `$id` under `properties` is
+ * preserved verbatim.
+ */
+const SCHEMA_VALUED_KEYWORDS = new Set([
+  "items",
+  "additionalItems",
+  "additionalProperties",
+  "contains",
+  "propertyNames",
+  "if",
+  "then",
+  "else",
+  "not",
+  "unevaluatedProperties",
+  "unevaluatedItems",
+]);
+
+/** Keyword values that are arrays of sub-schemas. */
+const SCHEMA_ARRAY_KEYWORDS = new Set([
+  "allOf",
+  "anyOf",
+  "oneOf",
+  "prefixItems",
+]);
+
+/** Keyword values that are maps from name → sub-schema. */
+const SCHEMA_MAP_KEYWORDS = new Set([
+  "properties",
+  "patternProperties",
+  "definitions",
+  "$defs",
+  "dependentSchemas",
+]);
+
+function stripSchemaAnnotationsAt(node: unknown): unknown {
+  if (typeof node !== "object" || node === null) return node;
+  if (Array.isArray(node)) return node.map((v) => stripSchemaAnnotationsAt(v));
+
+  const obj = node as Record<string, unknown>;
   const result: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (k === "$id" || k === "format") continue;
-    result[k] =
-      typeof v === "object" && v !== null
-        ? stripSchemaAnnotations(v as Record<string, unknown>)
-        : v;
+  for (const [key, value] of Object.entries(obj)) {
+    // Strip the two annotations that break the CLI's validator, at the
+    // current schema position. Entries of `properties`, `patternProperties`,
+    // etc. are recursed into via the branches below — their NAMED keys
+    // ("format" / "$id" as property names) survive because we never look
+    // at them here.
+    if (key === "$id" || key === "format") continue;
+
+    if (SCHEMA_MAP_KEYWORDS.has(key)) {
+      // { propName: subSchema, ... } — recurse into each value as a schema.
+      if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+        const mapped: Record<string, unknown> = {};
+        for (const [name, subSchema] of Object.entries(
+          value as Record<string, unknown>,
+        )) {
+          mapped[name] = stripSchemaAnnotationsAt(subSchema);
+        }
+        result[key] = mapped;
+      } else {
+        result[key] = value;
+      }
+    } else if (SCHEMA_ARRAY_KEYWORDS.has(key)) {
+      // [ subSchema, ... ] — recurse into each element.
+      result[key] = Array.isArray(value)
+        ? value.map((v) => stripSchemaAnnotationsAt(v))
+        : value;
+    } else if (SCHEMA_VALUED_KEYWORDS.has(key)) {
+      // Single sub-schema (or occasionally a tuple for legacy `items`).
+      result[key] = stripSchemaAnnotationsAt(value);
+    } else {
+      // Any other key (type, required, enum, const, title, description,
+      // minLength, …) — keep verbatim, do not descend. This is the key
+      // property-preserving step: primitives pass through, and objects
+      // that happen to live under keywords like `enum` or `const` are
+      // not schemas and must not be rewritten.
+      result[key] = value;
+    }
   }
   return result;
 }

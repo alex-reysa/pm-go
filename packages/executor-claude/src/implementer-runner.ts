@@ -84,6 +84,14 @@ export function createClaudeImplementerRunner(
       );
       const cwd = input.worktreePath;
 
+      // Capture HEAD at run-start so we can tell whether the model actually
+      // committed during THIS run. Comparing against `input.baseSha` (the
+      // lease's original base) is wrong on fix cycles: cycle N+1 inherits
+      // cycle N's commit as HEAD, so a no-commit fix-cycle run would look
+      // "committed" and the workflow would skip commitAgentWork, leaving
+      // the reviewer to inspect stale state.
+      const preRunHeadSha = await tryReadHeadSha(cwd);
+
       let sessionId: string | undefined;
       let inputTokens = 0;
       let outputTokens = 0;
@@ -226,13 +234,14 @@ export function createClaudeImplementerRunner(
 
       const completedAt = new Date().toISOString();
       // Only set finalCommitSha when the implementer actually committed
-      // (i.e. HEAD moved off baseSha). tryReadHeadSha always returns a
-      // value when the worktree is a valid git repo, so the TaskExecution
-      // workflow would skip commitAgentWork and leave uncommitted changes
-      // invisible to the reviewer.
-      const headSha = await tryReadHeadSha(cwd);
+      // during THIS run (HEAD moved relative to the run-start HEAD).
+      // Comparing against the lease's baseSha breaks fix cycles, where
+      // HEAD already sits on cycle N's commit before cycle N+1 starts.
+      const postRunHeadSha = await tryReadHeadSha(cwd);
       const finalCommitSha =
-        headSha !== undefined && headSha !== input.baseSha ? headSha : undefined;
+        postRunHeadSha !== undefined && postRunHeadSha !== preRunHeadSha
+          ? postRunHeadSha
+          : undefined;
 
       const agentRun: AgentRun = {
         id: randomUUID(),

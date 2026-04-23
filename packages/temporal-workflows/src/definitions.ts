@@ -1,35 +1,27 @@
-import type {
-  CompletionAuditWorkflowInput,
-  CompletionAuditWorkflowResult,
-  FinalReleaseWorkflowInput,
-  FinalReleaseWorkflowResult,
-  PhaseAuditWorkflowInput,
-  PhaseAuditWorkflowResult,
-  PhaseIntegrationWorkflowInput,
-  PhaseIntegrationWorkflowResult,
-  PhasePartitionWorkflowInput,
-  PhasePartitionWorkflowResult,
-  PlanAuditWorkflowInput,
-  PlanAuditWorkflowResult,
-  RetryPolicyConfig,
-  SpecToPlanWorkflowInput,
-  SpecToPlanWorkflowResult,
-  TaskExecutionWorkflowInput,
-  TaskExecutionWorkflowResult,
-  TaskFixWorkflowInput,
-  TaskFixWorkflowResult,
-  TaskReviewWorkflowInput,
-  TaskReviewWorkflowResult
+import {
+  CONTENT_FILTER_ERROR_NAME,
+  type CompletionAuditWorkflowInput,
+  type CompletionAuditWorkflowResult,
+  type FinalReleaseWorkflowInput,
+  type FinalReleaseWorkflowResult,
+  type PhaseAuditWorkflowInput,
+  type PhaseAuditWorkflowResult,
+  type PhaseIntegrationWorkflowInput,
+  type PhaseIntegrationWorkflowResult,
+  type PhasePartitionWorkflowInput,
+  type PhasePartitionWorkflowResult,
+  type PlanAuditWorkflowInput,
+  type PlanAuditWorkflowResult,
+  type RetryPolicyConfig,
+  type SpecToPlanWorkflowInput,
+  type SpecToPlanWorkflowResult,
+  type TaskExecutionWorkflowInput,
+  type TaskExecutionWorkflowResult,
+  type TaskFixWorkflowInput,
+  type TaskFixWorkflowResult,
+  type TaskReviewWorkflowInput,
+  type TaskReviewWorkflowResult,
 } from "@pm-go/contracts";
-
-/**
- * Mirror of `CONTENT_FILTER_ERROR_NAME` from `@pm-go/executor-claude/src/errors.ts`.
- * A direct package import is blocked because @pm-go/executor-claude is not in this
- * package's dependencies (package.json is outside the current task's fileScope) and
- * a relative cross-package import violates `rootDir`. The string value is a stable
- * identity constant — the source of truth lives in executor-claude/src/errors.ts.
- */
-const CONTENT_FILTER_ERROR_NAME = `ContentFilterError` as const;
 
 export interface WorkflowDefinition<Input, Output> {
   name: string;
