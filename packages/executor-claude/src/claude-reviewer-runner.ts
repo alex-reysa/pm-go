@@ -77,9 +77,6 @@ export function createClaudeReviewerRunner(
   config: ClaudeReviewerRunnerConfig = {},
 ): ReviewerRunner {
   const apiKey = config.apiKey ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new Error("createClaudeReviewerRunner: ANTHROPIC_API_KEY not set");
-  }
 
   return {
     async run(input: ReviewerRunnerInput): Promise<ReviewerRunnerResult> {

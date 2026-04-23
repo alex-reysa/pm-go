@@ -14,6 +14,8 @@ export interface PlannerActivityDeps {
   db: PmGoDb;
   plannerRunner: PlannerRunner;
   artifactDir: string;
+  plannerMaxTurns?: number;
+  plannerBudgetUsd?: number;
 }
 
 export interface PlannerActivities {
@@ -61,6 +63,8 @@ export function createPlannerActivities(
         repoSnapshot,
         requestedBy: input.requestedBy,
         runner: deps.plannerRunner,
+        ...(deps.plannerMaxTurns !== undefined ? { maxTurnsCap: deps.plannerMaxTurns } : {}),
+        ...(deps.plannerBudgetUsd !== undefined ? { budgetUsdCap: deps.plannerBudgetUsd } : {}),
       });
       return { plan, agentRun };
     },

@@ -55,9 +55,6 @@ export function createClaudePlannerRunner(
   config: ClaudePlannerRunnerConfig = {},
 ): PlannerRunner {
   const apiKey = config.apiKey ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new Error("createClaudePlannerRunner: ANTHROPIC_API_KEY not set");
-  }
 
   return {
     async run(input: PlannerRunnerInput): Promise<PlannerRunnerResult> {
@@ -72,6 +69,13 @@ export function createClaudePlannerRunner(
       const { PlanSchema } = (await import(contractsModule)) as {
         PlanSchema: Record<string, unknown>;
       };
+
+      // The Claude Code CLI's JSON Schema validator does not support the
+      // `format` keyword (e.g. "uuid", "date-time"). When present, schema
+      // validation always fails and `structured_output` is omitted from the
+      // result. Strip `format` (and TypeBox's `$id`) before passing to the
+      // SDK so the validator only checks structural constraints.
+      const cleanSchema = stripSchemaAnnotations(PlanSchema);
 
       let plan: unknown;
       let sessionId: string | undefined;
@@ -101,9 +105,7 @@ export function createClaudePlannerRunner(
             settingSources: [],
             outputFormat: {
               type: "json_schema",
-              // PlanSchema is a TypeBox-produced object that is
-              // structurally identical to a JSON Schema at runtime.
-              schema: PlanSchema,
+              schema: cleanSchema,
             },
             ...(typeof input.budgetUsdCap === "number"
               ? { maxBudgetUsd: input.budgetUsdCap }
@@ -330,4 +332,32 @@ export function isInsideCwd(target: string, cwd: string): boolean {
   const absCwd = path.resolve(cwd);
   if (absTarget === absCwd) return true;
   return absTarget.startsWith(absCwd + path.sep);
+}
+
+/**
+ * Deep-strip JSON Schema annotation keywords that the Claude Code CLI's
+ * built-in validator does not support. Leaving `format` ("uuid",
+ * "date-time") or TypeBox's `$id` in the schema causes the validator to
+ * reject every model response, so `structured_output` is never returned.
+ * Removing them preserves all structural constraints (type, required,
+ * additionalProperties, anyOf, …) while silencing the validator quirk.
+ */
+function stripSchemaAnnotations(
+  obj: Record<string, unknown>,
+): Record<string, unknown> {
+  if (typeof obj !== "object" || obj === null) return obj;
+  if (Array.isArray(obj)) return (obj as unknown[]).map((v) =>
+    typeof v === "object" && v !== null
+      ? stripSchemaAnnotations(v as Record<string, unknown>)
+      : v,
+  ) as unknown as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (k === "$id" || k === "format") continue;
+    result[k] =
+      typeof v === "object" && v !== null
+        ? stripSchemaAnnotations(v as Record<string, unknown>)
+        : v;
+  }
+  return result;
 }

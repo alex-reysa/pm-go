@@ -237,11 +237,6 @@ export function createClaudePhaseAuditorRunner(
   config: ClaudePhaseAuditorRunnerConfig = {},
 ): PhaseAuditorRunner {
   const apiKey = config.apiKey ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new Error(
-      "createClaudePhaseAuditorRunner: ANTHROPIC_API_KEY not set",
-    );
-  }
 
   return {
     async run(

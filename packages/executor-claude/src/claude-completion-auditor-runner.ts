@@ -81,11 +81,6 @@ export function createClaudeCompletionAuditorRunner(
   config: ClaudeCompletionAuditorRunnerConfig = {},
 ): CompletionAuditorRunner {
   const apiKey = config.apiKey ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new Error(
-      "createClaudeCompletionAuditorRunner: ANTHROPIC_API_KEY not set",
-    );
-  }
 
   return {
     async run(
