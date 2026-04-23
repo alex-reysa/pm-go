@@ -226,7 +226,14 @@ export function createClaudeImplementerRunner(
       }
 
       const completedAt = new Date().toISOString();
-      const finalCommitSha = await tryReadHeadSha(cwd);
+      // Only set finalCommitSha when the implementer actually committed
+      // (i.e. HEAD moved off baseSha). tryReadHeadSha always returns a
+      // value when the worktree is a valid git repo, so the TaskExecution
+      // workflow would skip commitAgentWork and leave uncommitted changes
+      // invisible to the reviewer.
+      const headSha = await tryReadHeadSha(cwd);
+      const finalCommitSha =
+        headSha !== undefined && headSha !== input.baseSha ? headSha : undefined;
 
       const agentRun: AgentRun = {
         id: randomUUID(),
