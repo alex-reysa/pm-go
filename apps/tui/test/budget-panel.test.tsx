@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { BudgetReport } from "@pm-go/contracts";
 
 import { BudgetPanel } from "../src/components/budget-panel.js";
+import { waitForFrame } from "./helpers.js";
 import type { ApiClient, PlanDetail } from "../src/lib/api.js";
 import { TuiRuntimeProvider } from "../src/lib/context.js";
 import { createQueryClient } from "../src/lib/query-client.js";
@@ -13,28 +14,6 @@ import { createQueryClient } from "../src/lib/query-client.js";
 const PLAN_ID = "00000000-0000-0000-0000-0000000000aa";
 const TASK_A = "00000000-0000-0000-0000-0000000000bb";
 const TASK_B = "00000000-0000-0000-0000-0000000000cc";
-
-/**
- * Poll `lastFrame()` until every `needle` substring is present, or
- * the overall budget expires. Replaces a fixed `tick(20ms)` that
- * raced React-Query fetch + Ink paint under full-repo `pnpm test`
- * concurrency — the panel assertion reads `$0.4321` etc. which only
- * exist after the async `getBudgetReport` resolves.
- */
-async function waitForFrame(
-  lastFrame: () => string | undefined,
-  needles: readonly string[],
-  { timeoutMs = 2_000, intervalMs = 10 }: { timeoutMs?: number; intervalMs?: number } = {},
-): Promise<string> {
-  const deadline = Date.now() + timeoutMs;
-  let frame = lastFrame() ?? "";
-  while (Date.now() < deadline) {
-    frame = lastFrame() ?? "";
-    if (needles.every((n) => frame.includes(n))) return frame;
-    await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
-  }
-  return frame;
-}
 
 function makeReport(): BudgetReport {
   return {

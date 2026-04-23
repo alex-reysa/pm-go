@@ -22,6 +22,15 @@ import type {
   TaskReviewWorkflowResult
 } from "@pm-go/contracts";
 
+/**
+ * Mirror of `CONTENT_FILTER_ERROR_NAME` from `@pm-go/executor-claude/src/errors.ts`.
+ * A direct package import is blocked because @pm-go/executor-claude is not in this
+ * package's dependencies (package.json is outside the current task's fileScope) and
+ * a relative cross-package import violates `rootDir`. The string value is a stable
+ * identity constant — the source of truth lives in executor-claude/src/errors.ts.
+ */
+const CONTENT_FILTER_ERROR_NAME = `ContentFilterError` as const;
+
 export interface WorkflowDefinition<Input, Output> {
   name: string;
   description: string;
@@ -152,7 +161,7 @@ export const PHASE7_RETRY_POLICIES: readonly RetryPolicyConfig[] = [
     maxDelayMs: 30_000,
     backoffMultiplier: 2,
     maxAttempts: 3,
-    nonRetryableErrorNames: ["PlanValidationError", "ContentFilterError"]
+    nonRetryableErrorNames: ["PlanValidationError", CONTENT_FILTER_ERROR_NAME]
   },
   {
     workflowName: "PlanAuditWorkflow",
@@ -176,7 +185,7 @@ export const PHASE7_RETRY_POLICIES: readonly RetryPolicyConfig[] = [
     maxDelayMs: 30_000,
     backoffMultiplier: 2,
     maxAttempts: 3,
-    nonRetryableErrorNames: ["ContentFilterError"]
+    nonRetryableErrorNames: [CONTENT_FILTER_ERROR_NAME]
   },
   {
     workflowName: "TaskReviewWorkflow",
@@ -184,7 +193,7 @@ export const PHASE7_RETRY_POLICIES: readonly RetryPolicyConfig[] = [
     maxDelayMs: 30_000,
     backoffMultiplier: 2,
     maxAttempts: 3,
-    nonRetryableErrorNames: ["ReviewValidationError", "ContentFilterError"]
+    nonRetryableErrorNames: ["ReviewValidationError", CONTENT_FILTER_ERROR_NAME]
   },
   {
     workflowName: "TaskFixWorkflow",
@@ -192,7 +201,7 @@ export const PHASE7_RETRY_POLICIES: readonly RetryPolicyConfig[] = [
     maxDelayMs: 30_000,
     backoffMultiplier: 2,
     maxAttempts: 3,
-    nonRetryableErrorNames: ["ContentFilterError"]
+    nonRetryableErrorNames: [CONTENT_FILTER_ERROR_NAME]
   },
   {
     workflowName: "PhaseIntegrationWorkflow",
@@ -208,7 +217,7 @@ export const PHASE7_RETRY_POLICIES: readonly RetryPolicyConfig[] = [
     maxDelayMs: 30_000,
     backoffMultiplier: 2,
     maxAttempts: 4,
-    nonRetryableErrorNames: ["PhaseAuditValidationError", "ContentFilterError"]
+    nonRetryableErrorNames: ["PhaseAuditValidationError", CONTENT_FILTER_ERROR_NAME]
   },
   {
     workflowName: "CompletionAuditWorkflow",
@@ -219,7 +228,7 @@ export const PHASE7_RETRY_POLICIES: readonly RetryPolicyConfig[] = [
     nonRetryableErrorNames: [
       "CompletionAuditValidationError",
       "PhaseAuditsNotAllPassed",
-      "ContentFilterError"
+      CONTENT_FILTER_ERROR_NAME
     ]
   },
   {
