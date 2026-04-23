@@ -60,6 +60,12 @@ async function main() {
     process.env.WORKTREE_MAX_LIFETIME_HOURS ?? "24",
     10,
   );
+  const plannerMaxTurns = process.env.PLANNER_MAX_TURNS
+    ? Number.parseInt(process.env.PLANNER_MAX_TURNS, 10)
+    : undefined;
+  const plannerBudgetUsd = process.env.PLANNER_BUDGET_USD
+    ? Number.parseFloat(process.env.PLANNER_BUDGET_USD)
+    : undefined;
   // Resolve PLAN_ARTIFACT_DIR relative to the repo root, not the worker's
   // cwd. `pnpm --filter @pm-go/worker start` spawns the child with
   // cwd=apps/worker/, so a relative "./artifacts/plans" would otherwise
@@ -142,6 +148,8 @@ async function main() {
     db,
     plannerRunner,
     artifactDir,
+    ...(plannerMaxTurns !== undefined ? { plannerMaxTurns } : {}),
+    ...(plannerBudgetUsd !== undefined ? { plannerBudgetUsd } : {}),
   });
   const worktree = createWorktreeActivities({ db });
   const taskExecution = createTaskExecutionActivities({

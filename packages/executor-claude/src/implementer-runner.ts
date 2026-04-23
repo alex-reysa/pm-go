@@ -75,11 +75,6 @@ export function createClaudeImplementerRunner(
   config: ClaudeImplementerRunnerConfig = {},
 ): ImplementerRunner {
   const apiKey = config.apiKey ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new Error(
-      "createClaudeImplementerRunner: ANTHROPIC_API_KEY not set",
-    );
-  }
 
   return {
     async run(input: ImplementerRunnerInput): Promise<ImplementerRunnerResult> {

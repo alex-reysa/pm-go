@@ -20,7 +20,7 @@ import {
   FORBIDDEN_BASH_PATTERNS,
   findForbiddenBashPatternAgainst,
 } from "./implementer-runner.js";
-import { isInsideCwd } from "./planner-runner.js";
+import { isInsideCwd, stripSchemaAnnotations } from "./planner-runner.js";
 import type {
   ReviewerRunner,
   ReviewerRunnerInput,
@@ -77,9 +77,6 @@ export function createClaudeReviewerRunner(
   config: ClaudeReviewerRunnerConfig = {},
 ): ReviewerRunner {
   const apiKey = config.apiKey ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new Error("createClaudeReviewerRunner: ANTHROPIC_API_KEY not set");
-  }
 
   return {
     async run(input: ReviewerRunnerInput): Promise<ReviewerRunnerResult> {
@@ -96,6 +93,11 @@ export function createClaudeReviewerRunner(
         ReviewReportJsonSchema: Record<string, unknown>;
         validateReviewReport: (v: unknown) => boolean;
       };
+
+      // See planner-runner.ts: Claude Code CLI's JSON Schema validator rejects
+      // `format` ("uuid", "date-time") and TypeBox's `$id`, causing
+      // `structured_output` to be omitted from every result.
+      const cleanSchema = stripSchemaAnnotations(ReviewReportJsonSchema);
 
       let reportPayload: unknown;
       let sessionId: string | undefined;
@@ -121,7 +123,7 @@ export function createClaudeReviewerRunner(
             settingSources: [],
             outputFormat: {
               type: "json_schema",
-              schema: ReviewReportJsonSchema,
+              schema: cleanSchema,
             },
             ...(typeof input.budgetUsdCap === "number"
               ? { maxBudgetUsd: input.budgetUsdCap }

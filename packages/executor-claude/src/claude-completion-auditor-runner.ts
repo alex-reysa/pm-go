@@ -21,7 +21,7 @@ import {
 } from "./errors.js";
 import type { AgentRunFailureSink } from "./index.js";
 import { findForbiddenBashPatternAgainst } from "./implementer-runner.js";
-import { isInsideCwd } from "./planner-runner.js";
+import { isInsideCwd, stripSchemaAnnotations } from "./planner-runner.js";
 import type {
   CompletionAuditorRunner,
   CompletionAuditorRunnerInput,
@@ -81,11 +81,6 @@ export function createClaudeCompletionAuditorRunner(
   config: ClaudeCompletionAuditorRunnerConfig = {},
 ): CompletionAuditorRunner {
   const apiKey = config.apiKey ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new Error(
-      "createClaudeCompletionAuditorRunner: ANTHROPIC_API_KEY not set",
-    );
-  }
 
   return {
     async run(
@@ -109,6 +104,12 @@ export function createClaudeCompletionAuditorRunner(
         CompletionAuditReportJsonSchema: Record<string, unknown>;
         validateCompletionAuditReport: (v: unknown) => boolean;
       };
+
+      // See planner-runner.ts: Claude Code CLI's JSON Schema validator
+      // rejects `format` and TypeBox `$id`, omitting structured_output.
+      const cleanSchema = stripSchemaAnnotations(
+        CompletionAuditReportJsonSchema,
+      );
 
       let reportPayload: unknown;
       let sessionId: string | undefined;
@@ -134,7 +135,7 @@ export function createClaudeCompletionAuditorRunner(
             settingSources: [],
             outputFormat: {
               type: "json_schema",
-              schema: CompletionAuditReportJsonSchema,
+              schema: cleanSchema,
             },
             ...(typeof input.budgetUsdCap === "number"
               ? { maxBudgetUsd: input.budgetUsdCap }
