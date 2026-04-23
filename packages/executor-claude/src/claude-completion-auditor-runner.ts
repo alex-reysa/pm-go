@@ -30,8 +30,8 @@ import type {
 
 /**
  * Config for {@link createClaudeCompletionAuditorRunner}. The API key
- * defaults to `process.env.ANTHROPIC_API_KEY`. The constructor throws
- * if no key is available so callers see a clean failure up-front.
+ * defaults to `process.env.ANTHROPIC_API_KEY`. When no key is provided
+ * the SDK handles missing credentials at call time (OAuth fallthrough).
  */
 export interface ClaudeCompletionAuditorRunnerConfig {
   apiKey?: string;

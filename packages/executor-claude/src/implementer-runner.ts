@@ -38,9 +38,8 @@ const READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
 
 /**
  * Config for {@link createClaudeImplementerRunner}. The API key defaults
- * to `process.env.ANTHROPIC_API_KEY`. The constructor throws eagerly if no
- * key is available so callers get a clean failure up-front rather than a
- * confusing SDK error at first-request time.
+ * to `process.env.ANTHROPIC_API_KEY`. When no key is provided the SDK
+ * handles missing credentials at call time (OAuth fallthrough).
  */
 export interface ClaudeImplementerRunnerConfig {
   apiKey?: string;
