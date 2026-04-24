@@ -427,7 +427,7 @@ export function createPlansRoute(deps: PlansRouteDeps) {
     const [integratingPhase] = await deps.db
       .select({ id: phases.id })
       .from(phases)
-      .where(and(eq(phases.planId, planId), eq(phases.status, "integrating")))
+      .where(eq(phases.planId, planId))
       .limit(1);
 
     if (integratingPhase) {
