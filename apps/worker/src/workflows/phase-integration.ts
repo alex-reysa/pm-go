@@ -2,9 +2,12 @@ import {
   ApplicationFailure,
   condition,
   proxyActivities,
-  sleep,
+  setHandler,
   uuid4,
 } from "@temporalio/workflow";
+import {
+  approveSignal,
+} from "@pm-go/contracts";
 import type {
   ApprovalDecision,
   MergeRun,
@@ -80,9 +83,6 @@ interface PhaseIntegrationActivityInterface {
     decision: ApprovalDecision;
     approvalRequestId?: UUID;
   }>;
-  isApproved(input: {
-    approvalRequestId: UUID;
-  }): Promise<{ approved: boolean; rejected: boolean }>;
   // Phase 7 — budget snapshot at integration time.
   persistBudgetReport(input: { planId: UUID }): Promise<{ id: UUID }>;
 }
@@ -101,7 +101,6 @@ const {
   updatePhaseStatus,
   releaseIntegrationLease,
   evaluateApprovalGateActivity,
-  isApproved,
   persistBudgetReport,
 } = proxyActivities<PhaseIntegrationActivityInterface>({
   startToCloseTimeout: "20 minutes",
@@ -115,8 +114,6 @@ const {
  * fresh integrate POST after the approval lands.
  */
 const APPROVAL_WAIT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
-/** Polling interval for `isApproved` while the approval gate blocks. */
-const APPROVAL_POLL_INTERVAL_MS = 5_000;
 
 const MAX_MERGE_RETRY_ATTEMPTS_PER_TASK = 2;
 
@@ -158,47 +155,33 @@ export async function PhaseIntegrationWorkflow(
   // Phase 7 — approval gate. For every task in this phase, ask the
   // policy engine whether human approval is required. The activity
   // inserts an `approval_requests` row (status='pending') if so;
-  // we then block the workflow on `isApproved` polling until the row
-  // flips to 'approved'. The wait is capped at APPROVAL_WAIT_TIMEOUT_MS
-  // so a forgotten approval doesn't keep the worker tied up
-  // indefinitely. Idempotent on Temporal retries — the activity reuses
-  // any existing pending row before inserting.
+  // we then block the workflow on the `approveSignal` Temporal signal
+  // until an operator (or auto-approve logic) sends it. The wait is
+  // capped at APPROVAL_WAIT_TIMEOUT_MS so a forgotten approval doesn't
+  // keep the worker tied up indefinitely. Idempotent on Temporal
+  // retries — the activity reuses any existing pending row before
+  // inserting.
   for (const taskId of phase.mergeOrder) {
     const gate = await evaluateApprovalGateActivity({ taskId });
     if (!gate.decision.required || !gate.approvalRequestId) continue;
     const approvalRequestId = gate.approvalRequestId;
 
-    const startedWaitingAt = Date.now();
-    let approved = false;
-    let rejected = false;
-    while (Date.now() - startedWaitingAt < APPROVAL_WAIT_TIMEOUT_MS) {
-      const status = await isApproved({ approvalRequestId });
-      if (status.approved) {
-        approved = true;
-        break;
-      }
-      if (status.rejected) {
-        rejected = true;
-        break;
-      }
-      // condition() with a timeout means "wait up to N ms or until the
-      // predicate becomes true". Used here as a Temporal-friendly
-      // sleep — the predicate stays false because approvals come from
-      // outside the workflow.
-      await condition(() => false, APPROVAL_POLL_INTERVAL_MS);
-      // sleep for 0ms to keep the timer monotonic on retries.
-      await sleep(0);
-    }
-    if (rejected) {
-      await updatePhaseStatus({
-        phaseId: input.phaseId,
-        status: "blocked",
-      }).catch(() => undefined);
-      throw ApplicationFailure.nonRetryable(
-        `phase ${input.phaseId} blocked: approval rejected for task ${taskId} (request ${approvalRequestId})`,
-        "ApprovalRejectedError",
-      );
-    }
+    // NOTE: Rejection is deliberately NOT handled via a Temporal signal.
+    // The operator rejects an approval by invalidating (soft-deleting or
+    // status-updating) the `approval_requests` row through the REST API,
+    // then re-calling the integrate endpoint. Keeping rejection out of
+    // the signal path avoids a second signal handler, simplifies the
+    // state machine to a binary approved/timed-out outcome, and makes
+    // the audit trail fully authoritative in the DB rather than split
+    // between DB state and Temporal history.
+    let approvalResolved = false;
+    setHandler(approveSignal, () => {
+      approvalResolved = true;
+    });
+    const approved = await condition(
+      () => approvalResolved,
+      APPROVAL_WAIT_TIMEOUT_MS,
+    );
     if (!approved) {
       await updatePhaseStatus({
         phaseId: input.phaseId,
