@@ -104,7 +104,10 @@ function buildClaudeArgs(opts: {
     "--mcp-server-url",
     opts.mcpServerUrl,
     "--disallow-tools",
-    "WebSearch,WebFetch,mcp__*",
+    // Block native write-class tools so every write must flow through the
+    // MCP policy bridge (mcp__*).  Do NOT include "mcp__*" here — that glob
+    // would disable the bridge's own tools, defeating policy enforcement.
+    "WebSearch,WebFetch,Write,Edit,NotebookEdit,Bash",
   ];
 
   if (opts.maxTurns !== undefined) {
@@ -197,6 +200,8 @@ export function createClaudeProcessPlannerRunner(
 
       try {
         const child = await spawnClaude(args, spawnOpts);
+        // Drain stderr so a large stderr output never deadlocks the child.
+        child.stderr?.resume();
         const mapped = await mapClaudeStream(child.stdout!);
 
         sessionId = mapped.sessionId;
@@ -328,6 +333,8 @@ export function createClaudeProcessImplementerRunner(
 
       try {
         const child = await spawnClaude(args, spawnOpts);
+        // Drain stderr so a large stderr output never deadlocks the child.
+        child.stderr?.resume();
         const mapped = await mapClaudeStream(child.stdout!);
 
         sessionId = mapped.sessionId;
@@ -452,6 +459,8 @@ export function createClaudeProcessReviewerRunner(
 
       try {
         const child = await spawnClaude(args, spawnOpts);
+        // Drain stderr so a large stderr output never deadlocks the child.
+        child.stderr?.resume();
         const mapped = await mapClaudeStream(child.stdout!);
 
         sessionId = mapped.sessionId;
@@ -597,6 +606,8 @@ export function createClaudeProcessPhaseAuditorRunner(
 
       try {
         const child = await spawnClaude(args, spawnOpts);
+        // Drain stderr so a large stderr output never deadlocks the child.
+        child.stderr?.resume();
         const mapped = await mapClaudeStream(child.stdout!);
 
         sessionId = mapped.sessionId;
@@ -731,6 +742,8 @@ export function createClaudeProcessCompletionAuditorRunner(
 
       try {
         const child = await spawnClaude(args, spawnOpts);
+        // Drain stderr so a large stderr output never deadlocks the child.
+        child.stderr?.resume();
         const mapped = await mapClaudeStream(child.stdout!);
 
         sessionId = mapped.sessionId;

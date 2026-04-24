@@ -96,8 +96,16 @@ export function spawnClaude(
     };
 
     // Resolve as soon as any stdout data arrives.
-    child.stdout!.once("data", () => {
-      settle(() => resolve(child));
+    // IMPORTANT: capture the chunk and unshift it back onto the stream so that
+    // mapClaudeStream (which attaches a readline interface after this promise
+    // resolves) receives every byte starting from byte 0.  Without this, the
+    // first OS pipe-buffer read is consumed here and permanently lost before
+    // the readline interface is attached.
+    child.stdout!.once("data", (chunk: Buffer) => {
+      settle(() => {
+        child.stdout!.unshift(chunk);
+        resolve(child);
+      });
     });
 
     // Propagate spawn errors (e.g. ENOENT if binary not found).
