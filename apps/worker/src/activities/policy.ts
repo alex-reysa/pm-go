@@ -115,7 +115,8 @@ export function createPolicyActivities(deps: PolicyActivityDeps) {
           //   1. plan.autoApproveLowRisk === true
           //   2. task.requiresHumanApproval === false  (not escalated)
           //   3. latest review cycle (if any) has outcome='pass'
-          //   4. decision.band is not 'catastrophic'  (lower severity band)
+          //   4. decision.band === 'high'  (the only non-catastrophic band in
+          //      ApprovalRiskBand; 'catastrophic' always requires human review)
           //
           // When all four hold we insert a pre-approved row immediately so
           // the workflow's condition() check passes without waiting for a
@@ -123,7 +124,7 @@ export function createPolicyActivities(deps: PolicyActivityDeps) {
           if (
             plan?.autoApproveLowRisk === true &&
             !task.requiresHumanApproval &&
-            decision.band !== "catastrophic"
+            decision.band === "high"
           ) {
             // Load the latest review report for this task (if any).
             const [latestReview] = await db
@@ -135,6 +136,26 @@ export function createPolicyActivities(deps: PolicyActivityDeps) {
 
             // Predicate 3: no review yet (passes trivially) or latest is 'pass'.
             if (!latestReview || latestReview.outcome === "pass") {
+              // Idempotency guard: if a previous attempt (Temporal retry)
+              // already inserted an approved row, reuse it rather than
+              // creating a duplicate. There is no unique constraint on
+              // (planId, taskId) in approval_requests, so without this
+              // check a crash-after-commit retry would insert a second row.
+              const existingAuto = await db
+                .select({ id: approvalRequests.id, status: approvalRequests.status })
+                .from(approvalRequests)
+                .where(
+                  and(
+                    eq(approvalRequests.planId, task.planId),
+                    eq(approvalRequests.taskId, task.id),
+                    inArray(approvalRequests.status, ["approved", "pending"]),
+                  ),
+                );
+              const existingApproved = existingAuto.find((r) => r.status === "approved");
+              if (existingApproved) {
+                return { decision, approvalRequestId: existingApproved.id };
+              }
+
               const id = randomUUID();
               const requestedAt = new Date().toISOString();
               await db.insert(approvalRequests).values({
