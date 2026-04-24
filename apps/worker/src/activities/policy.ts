@@ -110,6 +110,70 @@ export function createPolicyActivities(deps: PolicyActivityDeps) {
           const decision = evaluateApprovalGate(risk ?? task.riskLevel, task);
           if (!decision.required) return { decision };
 
+          // Policy-engine auto-approve: all four predicates must hold.
+          //
+          //   1. plan.autoApproveLowRisk === true
+          //   2. task.requiresHumanApproval === false  (not escalated)
+          //   3. latest review cycle (if any) has outcome='pass'
+          //   4. decision.band === 'high'  (the only non-catastrophic band in
+          //      ApprovalRiskBand; 'catastrophic' always requires human review)
+          //
+          // When all four hold we insert a pre-approved row immediately so
+          // the workflow's condition() check passes without waiting for a
+          // human signal.
+          if (
+            plan?.autoApproveLowRisk === true &&
+            !task.requiresHumanApproval &&
+            decision.band === "high"
+          ) {
+            // Load the latest review report for this task (if any).
+            const [latestReview] = await db
+              .select({ outcome: reviewReports.outcome })
+              .from(reviewReports)
+              .where(eq(reviewReports.taskId, task.id))
+              .orderBy(desc(reviewReports.cycleNumber))
+              .limit(1);
+
+            // Predicate 3: no review yet (passes trivially) or latest is 'pass'.
+            if (!latestReview || latestReview.outcome === "pass") {
+              // Idempotency guard: if a previous attempt (Temporal retry)
+              // already inserted an approved row, reuse it rather than
+              // creating a duplicate. There is no unique constraint on
+              // (planId, taskId) in approval_requests, so without this
+              // check a crash-after-commit retry would insert a second row.
+              const existingAuto = await db
+                .select({ id: approvalRequests.id, status: approvalRequests.status })
+                .from(approvalRequests)
+                .where(
+                  and(
+                    eq(approvalRequests.planId, task.planId),
+                    eq(approvalRequests.taskId, task.id),
+                    inArray(approvalRequests.status, ["approved", "pending"]),
+                  ),
+                );
+              const existingApproved = existingAuto.find((r) => r.status === "approved");
+              if (existingApproved) {
+                return { decision, approvalRequestId: existingApproved.id };
+              }
+
+              const id = randomUUID();
+              const requestedAt = new Date().toISOString();
+              await db.insert(approvalRequests).values({
+                id,
+                planId: task.planId,
+                taskId: task.id,
+                subject: "task",
+                riskBand: decision.band,
+                status: "approved",
+                requestedBy: "policy-engine",
+                approvedBy: "policy-engine:auto",
+                requestedAt,
+                decidedAt: requestedAt,
+              });
+              return { decision, approvalRequestId: id };
+            }
+          }
+
           // Idempotent: reuse an existing pending OR approved row if one
           // exists. Before this fix, only `pending` was checked, so a
           // previously-approved request for the same (plan, task) pair
@@ -462,14 +526,17 @@ function rowToAgentRun(row: typeof agentRuns.$inferSelect): AgentRun {
 async function loadPlanShallow(
   db: PmGoDb,
   planId: UUID,
-): Promise<{ risks: Risk[] } | null> {
+): Promise<{ risks: Risk[]; autoApproveLowRisk: boolean | null } | null> {
   const [row] = await db
-    .select({ risks: plans.risks })
+    .select({ risks: plans.risks, autoApproveLowRisk: plans.autoApproveLowRisk })
     .from(plans)
     .where(eq(plans.id, planId))
     .limit(1);
   if (!row) return null;
-  return { risks: (row.risks ?? []) as Risk[] };
+  return {
+    risks: (row.risks ?? []) as Risk[],
+    autoApproveLowRisk: row.autoApproveLowRisk ?? null,
+  };
 }
 
 /**
