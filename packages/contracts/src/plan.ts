@@ -111,6 +111,7 @@ export interface Plan {
   phases: Phase[];
   tasks: Task[];
   risks: Risk[];
+  autoApproveLowRisk?: boolean;
   createdAt: string;
   updatedAt: string;
 }

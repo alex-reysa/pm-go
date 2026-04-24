@@ -1,5 +1,6 @@
 import {
   type AnyPgColumn,
+  boolean,
   jsonb,
   pgEnum,
   pgTable,
@@ -34,6 +35,7 @@ export const plans = pgTable("plans", {
   summary: text("summary").notNull(),
   status: planStatus("status").notNull(),
   risks: jsonb("risks").$type<Risk[]>().notNull().default([]),
+  autoApproveLowRisk: boolean("auto_approve_low_risk"),
   // Points at the most recent CompletionAuditWorkflow verdict. Updated
   // only by CompletionAuditWorkflow; null while the plan is pre-audit
   // or after a re-audit that hasn't finished yet. Release readiness is
