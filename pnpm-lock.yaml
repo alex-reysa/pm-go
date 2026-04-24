@@ -164,6 +164,9 @@ importers:
       '@sinclair/typebox':
         specifier: ^0.34.0
         version: 0.34.49
+      '@temporalio/workflow':
+        specifier: ^1.16.0
+        version: 1.16.0
 
   packages/db:
     dependencies:
