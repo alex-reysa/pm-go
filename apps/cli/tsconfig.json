@@ -4,11 +4,8 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "types": ["node"],
-    "noEmit": true,
-    "allowImportingTsExtensions": true,
-    "paths": {
-      "@pm-go/runtime-detector": ["../../packages/runtime-detector/src/index.ts"]
-    }
+    "outDir": "./dist",
+    "rootDir": "./src"
   },
   "include": ["src/**/*"],
   "exclude": ["dist", "node_modules"]

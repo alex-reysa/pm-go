@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { runDoctor, resolveAutoRuntime, buildDoctorReport } from '../doctor.ts'
+import { runDoctor, resolveAutoRuntime, buildDoctorReport } from '../doctor.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
