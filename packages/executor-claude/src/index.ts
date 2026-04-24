@@ -35,6 +35,8 @@ export interface PlannerRunnerResult {
 }
 
 export interface PlannerRunner {
+  /** Discriminant that identifies whether this runner is backed by the SDK or the CLI process. */
+  readonly _runtimeKind?: string;
   run(input: PlannerRunnerInput): Promise<PlannerRunnerResult>;
 }
 
@@ -136,6 +138,8 @@ export interface ImplementerRunnerResult {
 }
 
 export interface ImplementerRunner {
+  /** Discriminant that identifies whether this runner is backed by the SDK or the CLI process. */
+  readonly _runtimeKind?: string;
   run(input: ImplementerRunnerInput): Promise<ImplementerRunnerResult>;
 }
 

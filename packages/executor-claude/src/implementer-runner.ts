@@ -76,6 +76,7 @@ export function createClaudeImplementerRunner(
   const apiKey = config.apiKey ?? process.env.ANTHROPIC_API_KEY;
 
   return {
+    _runtimeKind: "sdk" as const,
     async run(input: ImplementerRunnerInput): Promise<ImplementerRunnerResult> {
       const userPrompt = buildUserPrompt(input);
       const systemPromptWithFixMode = applyFixModePreamble(

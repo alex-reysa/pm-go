@@ -70,6 +70,8 @@ export interface CompletionAuditorRunnerResult {
 }
 
 export interface CompletionAuditorRunner {
+  /** Discriminant that identifies whether this runner is backed by the SDK or the CLI process. */
+  readonly _runtimeKind?: string;
   run(
     input: CompletionAuditorRunnerInput,
   ): Promise<CompletionAuditorRunnerResult>;

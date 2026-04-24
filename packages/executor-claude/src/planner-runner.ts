@@ -56,6 +56,7 @@ export function createClaudePlannerRunner(
   const apiKey = config.apiKey ?? process.env.ANTHROPIC_API_KEY;
 
   return {
+    _runtimeKind: "sdk" as const,
     async run(input: PlannerRunnerInput): Promise<PlannerRunnerResult> {
       const userPrompt = buildUserPrompt(input);
 
