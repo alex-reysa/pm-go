@@ -56,6 +56,7 @@ interface CallLog {
   from: Array<{ table: unknown }>;
   limit: Array<{ n: number }>;
   transaction: number;
+  update: Array<{ table: unknown; set: unknown; where: unknown }>;
 }
 
 function createMockDb(options?: {
@@ -73,6 +74,7 @@ function createMockDb(options?: {
     from: [],
     limit: [],
     transaction: 0,
+    update: [],
   };
 
   // Builder chain returned by `insert(...)`. `.values().onConflictDoUpdate()`
@@ -104,6 +106,27 @@ function createMockDb(options?: {
       return Promise.resolve();
     });
     return { where };
+  };
+
+  // Builder chain returned by `update(...)`. `.set().where()` resolves to
+  // Promise<void>.
+  let pendingUpdateTable: unknown;
+  let pendingUpdateSet: unknown;
+  const updateChain = (table: unknown) => {
+    pendingUpdateTable = table;
+    const where = vi.fn().mockImplementation((whereArgs: unknown) => {
+      calls.update.push({
+        table: pendingUpdateTable,
+        set: pendingUpdateSet,
+        where: whereArgs,
+      });
+      return Promise.resolve();
+    });
+    const set = vi.fn().mockImplementation((setArgs: unknown) => {
+      pendingUpdateSet = setArgs;
+      return { where };
+    });
+    return { set };
   };
 
   // Builder chain returned by `select(...)` (and its select-for-pruning
@@ -146,6 +169,9 @@ function createMockDb(options?: {
     select: vi.fn().mockImplementation((columns?: unknown) => {
       calls.select.push({ columns });
       return selectChain(Promise.resolve(existingEdgeRows));
+    }),
+    update: vi.fn().mockImplementation((table: unknown) => {
+      return updateChain(table);
     }),
   };
 
@@ -265,6 +291,43 @@ describe("persistPlan", () => {
     // Exactly one DELETE — for the stale row, not for the live edge that
     // also matches `from_task_id IN (planTaskIds)`.
     expect(calls.delete).toHaveLength(1);
+  });
+
+  it("transitions phase-0 from pending to executing when plan status is approved", async () => {
+    // Clone the fixture so the base stays clean, then set up the scenario
+    // required by ac-f01-04: an 'approved' plan whose first phase is 'pending'.
+    const plan: Plan = JSON.parse(JSON.stringify(planFixture));
+    plan.status = "approved";
+    // Find the phase with index=0 and mark it pending.
+    const phase0 = plan.phases.find((p) => p.index === 0);
+    expect(phase0).toBeDefined();
+    phase0!.status = "pending";
+
+    const { db, calls } = createMockDb();
+    const activities = createPlanPersistenceActivities({ db });
+    await activities.persistPlan(plan);
+
+    // Exactly one UPDATE should have been issued — for the phase-0 kickoff.
+    expect(calls.update).toHaveLength(1);
+    const upd = calls.update[0]!;
+    // The SET payload must transition the status to 'executing'.
+    expect(upd.set).toMatchObject({ status: "executing" });
+  });
+
+  it("does NOT update phase-0 when plan status is not approved", async () => {
+    const plan: Plan = JSON.parse(JSON.stringify(planFixture));
+    // Keep whatever status the fixture has (it should not be 'approved').
+    // Ensure it's explicitly not 'approved'.
+    plan.status = "in_review";
+    const phase0 = plan.phases.find((p) => p.index === 0);
+    if (phase0) phase0.status = "pending";
+
+    const { db, calls } = createMockDb();
+    const activities = createPlanPersistenceActivities({ db });
+    await activities.persistPlan(plan);
+
+    // No UPDATE should fire because the plan is not 'approved'.
+    expect(calls.update).toHaveLength(0);
   });
 
   it("is idempotent — a second call exercises onConflictDoUpdate again", async () => {
