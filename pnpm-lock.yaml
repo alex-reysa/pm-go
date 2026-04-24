@@ -21,11 +21,11 @@ importers:
         specifier: ^4.19.0
         version: 4.21.0
       typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@5.9.3))(terser@5.46.1)
+        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@6.0.3))(terser@5.46.1)
 
   apps/api:
     dependencies:
@@ -70,8 +70,8 @@ importers:
         specifier: ^22.10.0
         version: 22.19.17
       typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
 
   apps/tui:
     dependencies:
@@ -105,7 +105,7 @@ importers:
         version: 4.0.0(@types/react@18.3.28)
       msw:
         specifier: ^2.6.0
-        version: 2.13.4(@types/node@22.19.17)(typescript@5.9.3)
+        version: 2.13.4(@types/node@22.19.17)(typescript@6.0.3)
 
   apps/worker:
     dependencies:
@@ -181,11 +181,11 @@ importers:
         specifier: ^8.11.0
         version: 8.20.0
       typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@5.9.3))(terser@5.46.1)
+        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@6.0.3))(terser@5.46.1)
 
   packages/executor-claude:
     dependencies:
@@ -197,11 +197,11 @@ importers:
         version: link:../contracts
     devDependencies:
       typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@5.9.3))(terser@5.46.1)
+        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@6.0.3))(terser@5.46.1)
 
   packages/executor-process:
     dependencies:
@@ -213,11 +213,11 @@ importers:
         version: link:../executor-claude
     devDependencies:
       typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@5.9.3))(terser@5.46.1)
+        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@6.0.3))(terser@5.46.1)
 
   packages/observability:
     dependencies:
@@ -235,11 +235,11 @@ importers:
         version: 0.38.4(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(@types/react@18.3.28)(pg@8.20.0)(react@18.3.1)
     devDependencies:
       typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@5.9.3))(terser@5.46.1)
+        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@6.0.3))(terser@5.46.1)
 
   packages/planner:
     dependencies:
@@ -251,11 +251,11 @@ importers:
         version: link:../executor-claude
     devDependencies:
       typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@5.9.3))(terser@5.46.1)
+        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@6.0.3))(terser@5.46.1)
 
   packages/policy-engine:
     dependencies:
@@ -264,11 +264,11 @@ importers:
         version: link:../contracts
     devDependencies:
       typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@5.9.3))(terser@5.46.1)
+        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@6.0.3))(terser@5.46.1)
 
   packages/repo-intelligence:
     dependencies:
@@ -277,20 +277,20 @@ importers:
         version: link:../contracts
     devDependencies:
       typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@5.9.3))(terser@5.46.1)
+        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@6.0.3))(terser@5.46.1)
 
   packages/runtime-detector:
     devDependencies:
       typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@5.9.3))(terser@5.46.1)
+        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@6.0.3))(terser@5.46.1)
 
   packages/sample-repos: {}
 
@@ -313,11 +313,11 @@ importers:
         version: link:../contracts
     devDependencies:
       typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@5.9.3))(terser@5.46.1)
+        version: 2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@6.0.3))(terser@5.46.1)
 
 packages:
 
@@ -2772,8 +2772,8 @@ packages:
     resolution: {integrity: sha512-OZs6gsjF4vMp32qrCbiVSkrFmXtG/AZhY3t0iAMrMBiAZyV9oALtXO8hsrHbMXF9x6L3grlFuwW2oAz7cav+Gw==}
     engines: {node: '>= 0.6'}
 
-  typescript@5.9.3:
-    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
+  typescript@6.0.3:
+    resolution: {integrity: sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==}
     engines: {node: '>=14.17'}
     hasBin: true
 
@@ -3829,13 +3829,13 @@ snapshots:
       chai: 5.3.3
       tinyrainbow: 1.2.0
 
-  '@vitest/mocker@2.1.9(msw@2.13.4(@types/node@22.19.17)(typescript@5.9.3))(vite@5.4.21(@types/node@22.19.17)(terser@5.46.1))':
+  '@vitest/mocker@2.1.9(msw@2.13.4(@types/node@22.19.17)(typescript@6.0.3))(vite@5.4.21(@types/node@22.19.17)(terser@5.46.1))':
     dependencies:
       '@vitest/spy': 2.1.9
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      msw: 2.13.4(@types/node@22.19.17)(typescript@5.9.3)
+      msw: 2.13.4(@types/node@22.19.17)(typescript@6.0.3)
       vite: 5.4.21(@types/node@22.19.17)(terser@5.46.1)
 
   '@vitest/pretty-format@2.1.9':
@@ -4644,7 +4644,7 @@ snapshots:
 
   ms@3.0.0-canary.1: {}
 
-  msw@2.13.4(@types/node@22.19.17)(typescript@5.9.3):
+  msw@2.13.4(@types/node@22.19.17)(typescript@6.0.3):
     dependencies:
       '@inquirer/confirm': 6.0.12(@types/node@22.19.17)
       '@mswjs/interceptors': 0.41.4
@@ -4665,7 +4665,7 @@ snapshots:
       until-async: 3.0.2
       yargs: 17.7.2
     optionalDependencies:
-      typescript: 5.9.3
+      typescript: 6.0.3
     transitivePeerDependencies:
       - '@types/node'
 
@@ -5107,7 +5107,7 @@ snapshots:
       media-typer: 1.1.0
       mime-types: 3.0.2
 
-  typescript@5.9.3: {}
+  typescript@6.0.3: {}
 
   undici-types@6.21.0: {}
 
@@ -5157,10 +5157,10 @@ snapshots:
       fsevents: 2.3.3
       terser: 5.46.1
 
-  vitest@2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@5.9.3))(terser@5.46.1):
+  vitest@2.1.9(@types/node@22.19.17)(msw@2.13.4(@types/node@22.19.17)(typescript@6.0.3))(terser@5.46.1):
     dependencies:
       '@vitest/expect': 2.1.9
-      '@vitest/mocker': 2.1.9(msw@2.13.4(@types/node@22.19.17)(typescript@5.9.3))(vite@5.4.21(@types/node@22.19.17)(terser@5.46.1))
+      '@vitest/mocker': 2.1.9(msw@2.13.4(@types/node@22.19.17)(typescript@6.0.3))(vite@5.4.21(@types/node@22.19.17)(terser@5.46.1))
       '@vitest/pretty-format': 2.1.9
       '@vitest/runner': 2.1.9
       '@vitest/snapshot': 2.1.9
