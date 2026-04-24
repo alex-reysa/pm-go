@@ -1,5 +1,5 @@
 import type { Task, WorktreeLease } from "@pm-go/contracts";
-import { planTasks, worktreeLeases, type PmGoDb } from "@pm-go/db";
+import { planTasks, plans, worktreeLeases, type PmGoDb } from "@pm-go/db";
 import { and, eq } from "drizzle-orm";
 import {
   createLease,
@@ -78,8 +78,14 @@ export function createWorktreeActivities(deps: WorktreeActivityDeps) {
       worktreePath: string;
       baseSha: string;
       fileScope: Task["fileScope"];
+      /** When present, the plan's `autoApproveLowRisk` flag is forwarded
+       *  as `allowBenignExpansion` to {@link diffScope}. */
+      taskId?: string;
     }) {
-      return diffScope(input);
+      const allowBenignExpansion = input.taskId
+        ? await loadPlanForTask(deps.db, input.taskId)
+        : false;
+      return diffScope({ ...input, allowBenignExpansion });
     },
 
     async loadLatestLease(input: {
@@ -275,6 +281,30 @@ async function loadLatestLeaseImpl(
     expiresAt: row.expiresAt,
     status: row.status,
   };
+}
+
+/**
+ * Look up the plan associated with `taskId` and return its
+ * `autoApproveLowRisk` flag. Returns `false` if the task or plan row
+ * cannot be found (safe default — no benign expansion).
+ */
+async function loadPlanForTask(
+  db: PmGoDb,
+  taskId: string,
+): Promise<boolean> {
+  const [taskRow] = await db
+    .select({ planId: planTasks.planId })
+    .from(planTasks)
+    .where(eq(planTasks.id, taskId))
+    .limit(1);
+  if (!taskRow) return false;
+
+  const [planRow] = await db
+    .select({ autoApproveLowRisk: plans.autoApproveLowRisk })
+    .from(plans)
+    .where(eq(plans.id, taskRow.planId))
+    .limit(1);
+  return planRow?.autoApproveLowRisk ?? false;
 }
 
 async function resolvePlanIdForLeaseRow(
