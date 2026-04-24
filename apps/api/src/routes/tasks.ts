@@ -17,6 +17,7 @@ import type {
   WorktreeLease,
   WorktreeLeaseStatus,
 } from "@pm-go/contracts";
+import { approveSignal } from "@pm-go/contracts";
 import {
   agentRuns,
   phases,
@@ -505,6 +506,27 @@ export function createTasksRoute(deps: TasksRouteDeps) {
         409,
       );
     }
+
+    // Signal PhaseIntegrationWorkflow so it resumes within 2 s instead
+    // of waiting for its next poll tick. Per spec risk-mitigation: a
+    // signal failure surfaces as 5xx so the caller can retry — we do
+    // NOT swallow the error.
+    const [taskPhaseRow] = await deps.db
+      .select({ phaseId: planTasks.phaseId })
+      .from(planTasks)
+      .where(eq(planTasks.id, taskId))
+      .limit(1);
+
+    if (taskPhaseRow) {
+      const workflowId = `phase-integration-${taskPhaseRow.phaseId}`;
+      try {
+        await deps.temporal.workflow.getHandle(workflowId).signal(approveSignal);
+      } catch (err) {
+        console.error(`[approve] failed to signal workflow ${workflowId}:`, err);
+        throw err;
+      }
+    }
+
     return c.json({ taskId, approval: updated }, 200);
   });
 
