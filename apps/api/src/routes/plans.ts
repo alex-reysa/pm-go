@@ -3,6 +3,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Client as TemporalClient } from "@temporalio/client";
 
 import {
+  approveSignal,
   validatePlan,
   type CompletionAuditWorkflowInput,
   type DependencyEdge,
@@ -419,6 +420,26 @@ export function createPlansRoute(deps: PlansRouteDeps) {
         409,
       );
     }
+
+    // Signal the PhaseIntegrationWorkflow that is currently blocking on
+    // this plan-scoped approval gate. Per spec risk-mitigation: signal
+    // failure surfaces as 5xx — we do NOT swallow the error.
+    const [integratingPhase] = await deps.db
+      .select({ id: phases.id })
+      .from(phases)
+      .where(and(eq(phases.planId, planId), eq(phases.status, "integrating")))
+      .limit(1);
+
+    if (integratingPhase) {
+      const workflowId = `phase-integration-${integratingPhase.id}`;
+      try {
+        await deps.temporal.workflow.getHandle(workflowId).signal(approveSignal);
+      } catch (err) {
+        console.error(`[approve] failed to signal workflow ${workflowId}:`, err);
+        throw err;
+      }
+    }
+
     return c.json({ planId, approval: updated }, 200);
   });
 
