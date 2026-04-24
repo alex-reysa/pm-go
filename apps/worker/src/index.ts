@@ -138,6 +138,11 @@ async function resolveRuntimeRunner<T>(
           `Run \`pm-go doctor\` to diagnose your configuration.`,
       );
     }
+    console.warn(
+      `WARN: ${varName}=claude selected the Claude CLI process runner, ` +
+        `which is a stub and will throw on first activity invocation. ` +
+        `Full implementation is pending @pm-go/executor-process.`,
+    );
     return processFactory();
   }
 
@@ -150,6 +155,12 @@ async function resolveRuntimeRunner<T>(
     // Step 4: fall back to claude CLI runner.
     const available = await detectClaudeCliAvailable();
     if (available) {
+      console.warn(
+        `WARN: ${varName}=auto fell back to Claude CLI process runner ` +
+          `(no SDK credentials found). The process runner is a stub and will ` +
+          `throw on first activity invocation. Full implementation is pending ` +
+          `@pm-go/executor-process.`,
+      );
       return processFactory();
     }
     // Step 5: no runtime available — throw actionable error.
