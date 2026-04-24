@@ -164,6 +164,7 @@ export function createClaudeProcessPlannerRunner(
   config: ClaudeProcessPlannerRunnerConfig = {},
 ): PlannerRunner {
   return {
+    _runtimeKind: "process" as const,
     async run(input: PlannerRunnerInput): Promise<PlannerRunnerResult> {
       const startedAt = new Date().toISOString();
 
@@ -291,6 +292,7 @@ export function createClaudeProcessImplementerRunner(
   config: ClaudeProcessImplementerRunnerConfig = {},
 ): ImplementerRunner {
   return {
+    _runtimeKind: "process" as const,
     async run(
       input: ImplementerRunnerInput,
     ): Promise<ImplementerRunnerResult> {
@@ -422,6 +424,7 @@ export function createClaudeProcessReviewerRunner(
   config: ClaudeProcessReviewerRunnerConfig = {},
 ): ReviewerRunner {
   return {
+    _runtimeKind: "process" as const,
     async run(input: ReviewerRunnerInput): Promise<ReviewerRunnerResult> {
       const startedAt = new Date().toISOString();
       const cwd = input.worktreePath;
@@ -561,6 +564,7 @@ export function createClaudeProcessPhaseAuditorRunner(
   config: ClaudeProcessPhaseAuditorRunnerConfig = {},
 ): PhaseAuditorRunner {
   return {
+    _runtimeKind: "process" as const,
     async run(
       input: PhaseAuditorRunnerInput,
     ): Promise<PhaseAuditorRunnerResult> {
@@ -697,6 +701,7 @@ export function createClaudeProcessCompletionAuditorRunner(
   config: ClaudeProcessCompletionAuditorRunnerConfig = {},
 ): CompletionAuditorRunner {
   return {
+    _runtimeKind: "process" as const,
     async run(
       input: CompletionAuditorRunnerInput,
     ): Promise<CompletionAuditorRunnerResult> {

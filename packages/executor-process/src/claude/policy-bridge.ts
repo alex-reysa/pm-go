@@ -343,20 +343,27 @@ async function handleMcpRequest(
 
     case "tools/list": {
       // Advertise the standard Claude tool set so the CLI can call them
-      // through the bridge.
+      // through the bridge.  Bash is only offered to the implementer role;
+      // planner, reviewer, phase-auditor, and completion-auditor are
+      // read-only roles and must not see Bash in the advertised list.
+      const baseTools = [
+        { name: "Read", description: "Read a file", inputSchema: { type: "object", properties: { file_path: { type: "string" } }, required: ["file_path"] } },
+        { name: "Write", description: "Write a file", inputSchema: { type: "object", properties: { file_path: { type: "string" }, content: { type: "string" } }, required: ["file_path", "content"] } },
+        { name: "Edit", description: "Edit a file", inputSchema: { type: "object", properties: { file_path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" } }, required: ["file_path", "old_string", "new_string"] } },
+        { name: "Grep", description: "Search files", inputSchema: { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] } },
+        { name: "Glob", description: "Glob files", inputSchema: { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] } },
+      ];
+      const tools =
+        opts.role === "implementer"
+          ? [
+              ...baseTools,
+              { name: "Bash", description: "Run a command", inputSchema: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } },
+            ]
+          : baseTools;
       return {
         jsonrpc: "2.0",
         id,
-        result: {
-          tools: [
-            { name: "Read", description: "Read a file", inputSchema: { type: "object", properties: { file_path: { type: "string" } }, required: ["file_path"] } },
-            { name: "Write", description: "Write a file", inputSchema: { type: "object", properties: { file_path: { type: "string" }, content: { type: "string" } }, required: ["file_path", "content"] } },
-            { name: "Edit", description: "Edit a file", inputSchema: { type: "object", properties: { file_path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" } }, required: ["file_path", "old_string", "new_string"] } },
-            { name: "Grep", description: "Search files", inputSchema: { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] } },
-            { name: "Glob", description: "Glob files", inputSchema: { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] } },
-            { name: "Bash", description: "Run a command", inputSchema: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } },
-          ],
-        },
+        result: { tools },
       };
     }
 
