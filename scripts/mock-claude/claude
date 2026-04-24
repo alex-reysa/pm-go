@@ -1,0 +1,128 @@
+#!/usr/bin/env node
+// Mock `claude` binary for process-runtime smoke testing.
+//
+// Emits a minimal valid stream-json JSONL sequence that the pm-go
+// executor-claude process-runtime adapter can parse:
+//   1. system_init   — signals the session has started
+//   2. assistant     — a text reply
+//   3. tool_use      — a FORBIDDEN tool call (to trigger a policy denial row)
+//   4. tool_result   — synthetic result returned to the model
+//   5. result        — terminal record with stop_reason and usage
+//
+// Usage: place this file first on PATH before invoking the worker with
+//   *_RUNTIME=claude.  The smoke script does this automatically.
+
+'use strict';
+
+const readline = require('readline');
+
+// If called with --version just print a version string and exit.
+if (process.argv.includes('--version')) {
+  process.stdout.write('claude-mock v0.0.1 (smoke-test stub)\n');
+  process.exit(0);
+}
+
+// Drain stdin (the executor may write the prompt there).
+const rl = readline.createInterface({ input: process.stdin, terminal: false });
+const lines = [];
+rl.on('line', (l) => lines.push(l));
+rl.on('close', () => {
+  emitResponse();
+});
+
+// Fallback: emit response after a short delay even if stdin is a TTY
+// or is never closed (some callers don't pipe stdin).
+setTimeout(() => {
+  if (!responseSent) emitResponse();
+}, 500);
+
+let responseSent = false;
+
+function emit(obj) {
+  process.stdout.write(JSON.stringify(obj) + '\n');
+}
+
+function emitResponse() {
+  if (responseSent) return;
+  responseSent = true;
+
+  // 1. Session start
+  emit({
+    type: 'system',
+    subtype: 'init',
+    session_id: 'mock-session-001',
+    tools: [],
+    mcp_servers: [],
+    model: 'claude-mock',
+    permissionMode: 'default',
+  });
+
+  // 2. Assistant text reply
+  emit({
+    type: 'assistant',
+    message: {
+      id: 'msg_mock_001',
+      type: 'message',
+      role: 'assistant',
+      content: [
+        {
+          type: 'text',
+          text: 'Mock implementation complete. Task done.',
+        },
+      ],
+      model: 'claude-mock',
+      stop_reason: 'tool_use',
+      usage: { input_tokens: 42, output_tokens: 10 },
+    },
+  });
+
+  // 3. Tool use — intentionally use a forbidden tool so the policy bridge
+  //    emits a policy_decisions denial row.
+  emit({
+    type: 'assistant',
+    message: {
+      id: 'msg_mock_002',
+      type: 'message',
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool_use',
+          id: 'tu_mock_001',
+          name: 'computer',  // forbidden for all roles in the default policy
+          input: { action: 'screenshot' },
+        },
+      ],
+      model: 'claude-mock',
+      stop_reason: 'tool_use',
+      usage: { input_tokens: 5, output_tokens: 5 },
+    },
+  });
+
+  // 4. Synthetic tool result (the policy bridge will have denied the call,
+  //    but the mock still emits a result so the stream is well-formed).
+  emit({
+    type: 'tool_result',
+    tool_use_id: 'tu_mock_001',
+    content: 'denied by policy',
+    is_error: true,
+  });
+
+  // 5. Terminal result record
+  emit({
+    type: 'result',
+    subtype: 'success',
+    session_id: 'mock-session-001',
+    stop_reason: 'end_turn',
+    is_error: false,
+    result: 'Mock task completed successfully.',
+    total_cost_usd: null,
+    usage: {
+      input_tokens: 47,
+      output_tokens: 15,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+    },
+  });
+
+  process.exit(0);
+}

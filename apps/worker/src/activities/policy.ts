@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 
 import type {
   AgentRun,
@@ -110,20 +110,32 @@ export function createPolicyActivities(deps: PolicyActivityDeps) {
           const decision = evaluateApprovalGate(risk ?? task.riskLevel, task);
           if (!decision.required) return { decision };
 
-          // Idempotent: reuse an existing pending row if one exists.
+          // Idempotent: reuse an existing pending OR approved row if one
+          // exists. Before this fix, only `pending` was checked, so a
+          // previously-approved request for the same (plan, task) pair
+          // would not satisfy later retries — each retry created a fresh
+          // pending row that required re-approval and re-drained the
+          // workflow's polling timer budget. Prefer `approved` (the gate
+          // passes instantly via isApproved()) over `pending` (still
+          // waiting on a human signal), which in turn beats creating a
+          // new row.
           const existing = await db
-            .select({ id: approvalRequests.id })
+            .select({ id: approvalRequests.id, status: approvalRequests.status })
             .from(approvalRequests)
             .where(
               and(
                 eq(approvalRequests.planId, task.planId),
                 eq(approvalRequests.taskId, task.id),
-                eq(approvalRequests.status, "pending"),
+                inArray(approvalRequests.status, ["approved", "pending"]),
               ),
-            )
-            .limit(1);
-          if (existing[0]) {
-            return { decision, approvalRequestId: existing[0].id };
+            );
+          const approved = existing.find((r) => r.status === "approved");
+          const pending = existing.find((r) => r.status === "pending");
+          if (approved) {
+            return { decision, approvalRequestId: approved.id };
+          }
+          if (pending) {
+            return { decision, approvalRequestId: pending.id };
           }
 
           const id = randomUUID();

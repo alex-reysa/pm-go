@@ -48,6 +48,16 @@ pnpm smoke:phase7          # full durable-state + Temporal replay
 
 All stub-mode smoke tests run without an Anthropic API key. To exercise the live Claude executors, export `ANTHROPIC_API_KEY` and set `PLANNER_EXECUTOR_MODE=live` / `IMPLEMENTER_EXECUTOR_MODE=live` per the phase sections below.
 
+### Runtime configuration
+
+Each agent role (planner, implementer, reviewer, phase-auditor, completion-auditor) can be independently configured to use the `stub`, `sdk`, or `claude` (process-runtime) executor. Use `pm-go doctor` to validate your runtime configuration before starting the worker:
+
+```bash
+pnpm pm-go doctor
+```
+
+See [`docs/runtimes.md`](docs/runtimes.md) for the full reference: runtime model, per-role env var overrides, `auto` resolution order, the policy MCP bridge, and SDK-vs-CLI guidance.
+
 ## Repository Map
 
 - `apps/tui`: Ink-based terminal operator dashboard for plans, tasks, findings, and release readiness
