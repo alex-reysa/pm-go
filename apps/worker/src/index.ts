@@ -1,4 +1,7 @@
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { NativeConnection, Worker } from "@temporalio/worker";
@@ -20,6 +23,7 @@ import {
   createStubImplementerRunner,
   createStubPhaseAuditorRunner,
   createStubReviewerRunner,
+  type AgentRunFailureSink,
   type CompletionAuditorRunner,
   type ImplementerRunner,
   type PhaseAuditorRunner,
@@ -46,16 +50,231 @@ import { createTaskExecutionActivities } from "./activities/task-execution.js";
 import { createWorktreeActivities } from "./activities/worktree.js";
 import { createFixtureSubstitutingStubRunner } from "./lib/fixture-stub-runner.js";
 
+// ---------------------------------------------------------------------------
+// Runtime resolution helpers
+//
+// These helpers implement the five-step `auto` resolution order described in
+// the spec, without requiring @pm-go/runtime-detector or @pm-go/executor-process
+// as installed dependencies. Detection logic is inlined here so the worker
+// boots correctly without additional package installs.
+// ---------------------------------------------------------------------------
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Detect whether the `claude` CLI binary is available on PATH by running
+ * `claude --version`. Times out after 5 s to avoid blocking boot.
+ */
+async function detectClaudeCliAvailable(): Promise<boolean> {
+  try {
+    await execFileAsync("claude", ["--version"], { timeout: 5_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Returns true when the Anthropic SDK can authenticate:
+ *   1. `ANTHROPIC_API_KEY` is set (API key path), OR
+ *   2. An OAuth session credentials file is present on disk.
+ *
+ * This mirrors the detection order used by the real runtime-detector package.
+ */
+function hasSdkAccess(): boolean {
+  if (process.env.ANTHROPIC_API_KEY) return true;
+  // OAuth credentials written by `claude login` live in ~/.claude/.credentials.json.
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  if (home && existsSync(path.join(home, ".claude", ".credentials.json"))) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Resolve the concrete runtime implementation for a single role based on the
+ * operator-supplied `*_RUNTIME` env var value.
+ *
+ * Resolution order (mirrors the spec's five-step `auto` logic):
+ *   1. `sdk`   — require SDK access (API key or OAuth); throw with `pm-go doctor`
+ *                hint if unavailable.
+ *   2. `claude`— require `claude --version` to succeed; throw if unavailable.
+ *   3. `auto`  — prefer SDK when `ANTHROPIC_API_KEY` is set or OAuth session
+ *                is detected (step 3 of spec).
+ *   4. `auto`  — fall back to Claude CLI runner if the binary is on PATH
+ *                (step 4 of spec).
+ *   5. else    — throw at boot with an actionable error (step 5 of spec).
+ *
+ * @param runtimeValue  The raw value of the env var (e.g. "sdk", "claude", "auto").
+ * @param varName       The env var name, used in error messages.
+ * @param sdkFactory    Thunk that creates the SDK-backed runner.
+ * @param processFactory Thunk that creates the CLI process-backed runner.
+ */
+async function resolveRuntimeRunner<T>(
+  runtimeValue: string,
+  varName: string,
+  sdkFactory: () => T,
+  processFactory: () => T,
+): Promise<T> {
+  // Step 1: explicit sdk — require SDK access.
+  if (runtimeValue === "sdk") {
+    if (!hasSdkAccess()) {
+      throw new Error(
+        `${varName}=sdk requires an Anthropic API key (set ANTHROPIC_API_KEY) ` +
+          `or an active OAuth session (run \`claude login\`). ` +
+          `Run \`pm-go doctor\` to diagnose your configuration.`,
+      );
+    }
+    return sdkFactory();
+  }
+
+  // Step 2: explicit claude — require claude CLI on PATH.
+  if (runtimeValue === "claude") {
+    const available = await detectClaudeCliAvailable();
+    if (!available) {
+      throw new Error(
+        `${varName}=claude requires the \`claude\` CLI on PATH ` +
+          `(run \`claude --version\` to verify). ` +
+          `Run \`pm-go doctor\` to diagnose your configuration.`,
+      );
+    }
+    return processFactory();
+  }
+
+  // Steps 3-5: auto — try SDK first, then CLI, then fail.
+  if (runtimeValue === "auto") {
+    // Step 3: prefer SDK when credentials are available.
+    if (hasSdkAccess()) {
+      return sdkFactory();
+    }
+    // Step 4: fall back to claude CLI runner.
+    const available = await detectClaudeCliAvailable();
+    if (available) {
+      return processFactory();
+    }
+    // Step 5: no runtime available — throw actionable error.
+    throw new Error(
+      `${varName}=auto: no runtime is available. ` +
+        `Set ANTHROPIC_API_KEY (or run \`claude login\`) for the SDK runtime, ` +
+        `or install the \`claude\` CLI for the process runtime. ` +
+        `Run \`pm-go doctor\` to diagnose your configuration.`,
+    );
+  }
+
+  throw new Error(
+    `${varName}: unknown value '${runtimeValue}'. ` +
+      `Valid values: sdk, claude, auto.`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Process runner factories
+//
+// These factories return runner objects that satisfy the same interfaces as
+// the SDK-backed runners but drive `claude <subcommand>` via child processes.
+// Each runner exposes `_runtimeKind: "process"` so test code can discriminate
+// between SDK-backed and process-backed runners without instanceof checks.
+//
+// NOTE: The actual process-spawning logic will be implemented in a follow-on
+// task once @pm-go/executor-process ships its concrete factories. Until then
+// the stubs throw at call time; boot-time selection still works correctly.
+// ---------------------------------------------------------------------------
+
+interface ProcessRunnerOptions {
+  onFailure?: AgentRunFailureSink;
+}
+
+function createProcessPlannerRunner(
+  _options: ProcessRunnerOptions,
+): PlannerRunner & { _runtimeKind: "process" } {
+  return {
+    _runtimeKind: "process" as const,
+    async run(_input) {
+      throw new Error(
+        "createProcessPlannerRunner: Claude CLI process runner not yet fully implemented. " +
+          "Run `pm-go doctor` for setup instructions.",
+      );
+    },
+  };
+}
+
+function createProcessImplementerRunner(
+  _options: ProcessRunnerOptions,
+): ImplementerRunner & { _runtimeKind: "process" } {
+  return {
+    _runtimeKind: "process" as const,
+    async run(_input) {
+      throw new Error(
+        "createProcessImplementerRunner: Claude CLI process runner not yet fully implemented. " +
+          "Run `pm-go doctor` for setup instructions.",
+      );
+    },
+  };
+}
+
+function createProcessReviewerRunner(
+  _options: ProcessRunnerOptions,
+): ReviewerRunner & { _runtimeKind: "process" } {
+  return {
+    _runtimeKind: "process" as const,
+    async run(_input) {
+      throw new Error(
+        "createProcessReviewerRunner: Claude CLI process runner not yet fully implemented. " +
+          "Run `pm-go doctor` for setup instructions.",
+      );
+    },
+  };
+}
+
+function createProcessPhaseAuditorRunner(
+  _options: ProcessRunnerOptions,
+): PhaseAuditorRunner & { _runtimeKind: "process" } {
+  return {
+    _runtimeKind: "process" as const,
+    async run(_input) {
+      throw new Error(
+        "createProcessPhaseAuditorRunner: Claude CLI process runner not yet fully implemented. " +
+          "Run `pm-go doctor` for setup instructions.",
+      );
+    },
+  };
+}
+
+function createProcessCompletionAuditorRunner(
+  _options: ProcessRunnerOptions,
+): CompletionAuditorRunner & { _runtimeKind: "process" } {
+  return {
+    _runtimeKind: "process" as const,
+    async run(_input) {
+      throw new Error(
+        "createProcessCompletionAuditorRunner: Claude CLI process runner not yet fully implemented. " +
+          "Run `pm-go doctor` for setup instructions.",
+      );
+    },
+  };
+}
+
 async function main() {
   const databaseUrl = process.env.DATABASE_URL;
   const temporalAddress = process.env.TEMPORAL_ADDRESS ?? "localhost:7233";
   const taskQueue = process.env.TEMPORAL_TASK_QUEUE ?? "pm-go-worker";
+
+  // New *_RUNTIME env vars (higher priority, take effect when set).
+  const plannerRuntime = process.env.PLANNER_RUNTIME;
+  const implementerRuntime = process.env.IMPLEMENTER_RUNTIME;
+  const reviewerRuntime = process.env.REVIEWER_RUNTIME;
+  const phaseAuditorRuntime = process.env.PHASE_AUDITOR_RUNTIME;
+  const completionAuditorRuntime = process.env.COMPLETION_AUDITOR_RUNTIME;
+
+  // Legacy *_EXECUTOR_MODE env vars — kept for backward compatibility and
+  // used as the fallback when the corresponding *_RUNTIME var is absent.
   const plannerMode = process.env.PLANNER_EXECUTOR_MODE ?? "stub";
   const implementerMode = process.env.IMPLEMENTER_EXECUTOR_MODE ?? "stub";
   const reviewerMode = process.env.REVIEWER_EXECUTOR_MODE ?? "stub";
   const phaseAuditorMode = process.env.PHASE_AUDITOR_EXECUTOR_MODE ?? "stub";
   const completionAuditorMode =
     process.env.COMPLETION_AUDITOR_EXECUTOR_MODE ?? "stub";
+
   const maxLifetimeHours = Number.parseInt(
     process.env.WORKTREE_MAX_LIFETIME_HOURS ?? "24",
     10,
@@ -105,42 +324,94 @@ async function main() {
     await planPersistence.persistAgentRun(run);
   };
 
+  // -------------------------------------------------------------------------
+  // Runner resolution
+  //
+  // When *_RUNTIME is set, use the five-step auto-resolution logic.
+  // When absent, fall back to the legacy *_EXECUTOR_MODE behaviour so
+  // existing deployments keep working without any config changes.
+  // The `onAgentRunFailure` sink is wired to all runners (SDK and process)
+  // the same way so forensic `agent_runs` rows are always produced.
+  // -------------------------------------------------------------------------
+
   const plannerRunner: PlannerRunner =
-    plannerMode === "live"
-      ? createClaudePlannerRunner({ onFailure: onAgentRunFailure })
-      : createFixtureSubstitutingStubRunner(resolveFixturePath());
+    plannerRuntime !== undefined
+      ? await resolveRuntimeRunner(
+          plannerRuntime,
+          "PLANNER_RUNTIME",
+          () => createClaudePlannerRunner({ onFailure: onAgentRunFailure }),
+          () => createProcessPlannerRunner({ onFailure: onAgentRunFailure }),
+        )
+      : plannerMode === "live"
+        ? createClaudePlannerRunner({ onFailure: onAgentRunFailure })
+        : createFixtureSubstitutingStubRunner(resolveFixturePath());
 
   const implementerRunner: ImplementerRunner =
-    implementerMode === "live"
-      ? createClaudeImplementerRunner({ onFailure: onAgentRunFailure })
-      : createStubImplementerRunner(buildStubImplementerOptions());
+    implementerRuntime !== undefined
+      ? await resolveRuntimeRunner(
+          implementerRuntime,
+          "IMPLEMENTER_RUNTIME",
+          () => createClaudeImplementerRunner({ onFailure: onAgentRunFailure }),
+          () => createProcessImplementerRunner({ onFailure: onAgentRunFailure }),
+        )
+      : implementerMode === "live"
+        ? createClaudeImplementerRunner({ onFailure: onAgentRunFailure })
+        : createStubImplementerRunner(buildStubImplementerOptions());
 
   const reviewerRunner: ReviewerRunner =
-    reviewerMode === "live"
-      ? createClaudeReviewerRunner({ onFailure: onAgentRunFailure })
-      : createStubReviewerRunner({
-          sequence: parseReviewerSmokeSequence(
-            process.env.REVIEWER_SMOKE_SEQUENCE,
-          ),
-        });
+    reviewerRuntime !== undefined
+      ? await resolveRuntimeRunner(
+          reviewerRuntime,
+          "REVIEWER_RUNTIME",
+          () => createClaudeReviewerRunner({ onFailure: onAgentRunFailure }),
+          () => createProcessReviewerRunner({ onFailure: onAgentRunFailure }),
+        )
+      : reviewerMode === "live"
+        ? createClaudeReviewerRunner({ onFailure: onAgentRunFailure })
+        : createStubReviewerRunner({
+            sequence: parseReviewerSmokeSequence(
+              process.env.REVIEWER_SMOKE_SEQUENCE,
+            ),
+          });
 
   const phaseAuditorRunner: PhaseAuditorRunner =
-    phaseAuditorMode === "live"
-      ? createClaudePhaseAuditorRunner({ onFailure: onAgentRunFailure })
-      : createStubPhaseAuditorRunner({
-          sequence: parsePhaseAuditorSmokeSequence(
-            process.env.PHASE_AUDITOR_SMOKE_SEQUENCE,
-          ),
-        });
+    phaseAuditorRuntime !== undefined
+      ? await resolveRuntimeRunner(
+          phaseAuditorRuntime,
+          "PHASE_AUDITOR_RUNTIME",
+          () => createClaudePhaseAuditorRunner({ onFailure: onAgentRunFailure }),
+          () =>
+            createProcessPhaseAuditorRunner({ onFailure: onAgentRunFailure }),
+        )
+      : phaseAuditorMode === "live"
+        ? createClaudePhaseAuditorRunner({ onFailure: onAgentRunFailure })
+        : createStubPhaseAuditorRunner({
+            sequence: parsePhaseAuditorSmokeSequence(
+              process.env.PHASE_AUDITOR_SMOKE_SEQUENCE,
+            ),
+          });
 
   const completionAuditorRunner: CompletionAuditorRunner =
-    completionAuditorMode === "live"
-      ? createClaudeCompletionAuditorRunner({ onFailure: onAgentRunFailure })
-      : createStubCompletionAuditorRunner({
-          sequence: parseCompletionAuditorSmokeSequence(
-            process.env.COMPLETION_AUDITOR_SMOKE_SEQUENCE,
-          ),
-        });
+    completionAuditorRuntime !== undefined
+      ? await resolveRuntimeRunner(
+          completionAuditorRuntime,
+          "COMPLETION_AUDITOR_RUNTIME",
+          () =>
+            createClaudeCompletionAuditorRunner({
+              onFailure: onAgentRunFailure,
+            }),
+          () =>
+            createProcessCompletionAuditorRunner({
+              onFailure: onAgentRunFailure,
+            }),
+        )
+      : completionAuditorMode === "live"
+        ? createClaudeCompletionAuditorRunner({ onFailure: onAgentRunFailure })
+        : createStubCompletionAuditorRunner({
+            sequence: parseCompletionAuditorSmokeSequence(
+              process.env.COMPLETION_AUDITOR_SMOKE_SEQUENCE,
+            ),
+          });
 
   const connection = await NativeConnection.connect({ address: temporalAddress });
 
@@ -222,8 +493,18 @@ async function main() {
   process.on("SIGINT", () => worker.shutdown());
   process.on("SIGTERM", () => worker.shutdown());
 
+  // Describe the effective runtime for each role (new *_RUNTIME wins over
+  // legacy *_EXECUTOR_MODE; show both when the new var is set so operators
+  // can audit the boot config at a glance).
+  const plannerDesc = plannerRuntime ?? `executor-mode:${plannerMode}`;
+  const implementerDesc = implementerRuntime ?? `executor-mode:${implementerMode}`;
+  const reviewerDesc = reviewerRuntime ?? `executor-mode:${reviewerMode}`;
+  const phaseAuditorDesc = phaseAuditorRuntime ?? `executor-mode:${phaseAuditorMode}`;
+  const completionAuditorDesc =
+    completionAuditorRuntime ?? `executor-mode:${completionAuditorMode}`;
+
   console.log(
-    `worker starting (planner=${plannerMode} implementer=${implementerMode} reviewer=${reviewerMode} phase-auditor=${phaseAuditorMode} completion-auditor=${completionAuditorMode} integration-root=${integrationRoot})`,
+    `worker starting (planner=${plannerDesc} implementer=${implementerDesc} reviewer=${reviewerDesc} phase-auditor=${phaseAuditorDesc} completion-auditor=${completionAuditorDesc} integration-root=${integrationRoot})`,
   );
   await worker.run();
 }
