@@ -220,7 +220,14 @@ async function isScriptsOnlyDiff(
   // Count how many scripts entries were added (lines starting with +
   // that look like a JSON key inside a "scripts" block, e.g.
   // `+    "build": "tsc"`).
+  //
+  // We track nesting depth (not just a boolean) so that object-valued
+  // script entries — or any context lines containing braces — don't
+  // prematurely exit the "in scripts" state.  Depth 0 = outside any
+  // top-level section; depth 1 = inside the scripts (or other) object;
+  // depth > 1 = nested inside a scripts value.
   let inScripts = false;
+  let nestDepth = 0;
   let scriptsAdded = 0;
   let scriptsRemoved = 0;
   let depTouched = false;
@@ -241,19 +248,30 @@ async function isScriptsOnlyDiff(
     // Check if this line opens a top-level key section (e.g.
     // `  "scripts": {` or `  "dependencies": {`).
     const sectionMatch = trimmed.match(/^"([^"]+)"\s*:\s*\{/);
-    if (sectionMatch) {
+    if (sectionMatch && nestDepth === 0) {
       const key = sectionMatch[1]!;
       inScripts = key === "scripts";
+      nestDepth = 1;
       if (DEP_KEYS.has(key) && (line.startsWith("+") || line.startsWith("-"))) {
         depTouched = true;
       }
       continue;
     }
 
-    // Detect when we leave a top-level section (closing brace at
-    // 2-space indent).
-    if (trimmed === "}," || trimmed === "}") {
-      inScripts = false;
+    // Track additional opening braces to handle nested objects inside a
+    // scripts value (rare but possible in certain JSON layouts).
+    if (nestDepth > 0 && trimmed.endsWith("{")) {
+      nestDepth++;
+      continue;
+    }
+
+    // Detect when we leave the current section: decrement on every closing
+    // brace and reset inScripts only when we return to the top level.
+    if (nestDepth > 0 && (trimmed === "}," || trimmed === "}")) {
+      nestDepth--;
+      if (nestDepth === 0) {
+        inScripts = false;
+      }
       continue;
     }
 
