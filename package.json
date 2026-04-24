@@ -30,6 +30,7 @@
     "smoke:phase7-matrix": "bash scripts/phase7-matrix.sh",
     "smoke:phase7-chaos": "bash scripts/phase7-chaos.sh",
     "smoke:phase7": "bash scripts/phase7-smoke.sh",
+    "smoke:phase7-process-runtime": "bash scripts/phase7-process-runtime.sh",
     "pm-go": "pnpm --filter @pm-go/cli exec node dist/index.js"
   },
   "pnpm": {
