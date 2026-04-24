@@ -1,6 +1,21 @@
+import type { SignalDefinition } from "@temporalio/workflow";
 import type { MergeRun } from "./execution.js";
 import type { Plan, Task, UUID } from "./plan.js";
 import type { CompletionAuditReport, PhaseAuditReport, ReviewReport } from "./review.js";
+
+/**
+ * Sent by an operator (or auto-approve logic) to unblock a plan or phase that
+ * is waiting for human sign-off. The workflow handler resolves the pending
+ * approval promise on receipt.
+ *
+ * Using a manually-constructed object (rather than `defineSignal`) keeps
+ * `@temporalio/workflow` out of the contracts package's runtime dependencies
+ * while maintaining full type compatibility with `setHandler` / `getExternalWorkflowHandle`.
+ */
+export const approveSignal: SignalDefinition<[]> = {
+  type: "signal",
+  name: "approve",
+} as SignalDefinition<[]>;
 
 export interface SpecToPlanWorkflowInput {
   specDocumentId: UUID;

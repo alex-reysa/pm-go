@@ -118,6 +118,7 @@ async function persistPlanImpl(
             summary: plan.summary,
             status: plan.status,
             risks: plan.risks,
+            autoApproveLowRisk: plan.autoApproveLowRisk ?? null,
             createdAt: plan.createdAt,
             updatedAt: plan.updatedAt,
           })
@@ -128,6 +129,7 @@ async function persistPlanImpl(
               summary: plan.summary,
               status: plan.status,
               risks: plan.risks,
+              autoApproveLowRisk: plan.autoApproveLowRisk ?? null,
               updatedAt: plan.updatedAt,
             },
           });
@@ -168,6 +170,27 @@ async function persistPlanImpl(
                 completedAt: phase.completedAt ?? null,
               },
             });
+        }
+
+        // 2b. Phase-0 kickoff — mirrors what PhaseAuditWorkflow does for
+        //     subsequent phases. When the plan arrives as 'approved' and its
+        //     first phase is still 'pending', transition it to 'executing' so
+        //     the orchestrator can start dispatching tasks immediately without
+        //     waiting for a separate phase-start signal.
+        if (plan.status === "approved") {
+          const phase0 = plan.phases.find((p) => p.index === 0);
+          if (phase0 && phase0.status === "pending") {
+            await tx
+              .update(phases)
+              .set({ status: "executing" })
+              .where(
+                and(
+                  eq(phases.planId, plan.id),
+                  eq(phases.index, 0),
+                  eq(phases.status, "pending"),
+                ),
+              );
+          }
         }
 
         // 3. Task rows — upsert by id. Includes nested jsonb fields.
