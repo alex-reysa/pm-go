@@ -166,6 +166,14 @@ export async function PhaseIntegrationWorkflow(
     if (!gate.decision.required || !gate.approvalRequestId) continue;
     const approvalRequestId = gate.approvalRequestId;
 
+    // NOTE: Rejection is deliberately NOT handled via a Temporal signal.
+    // The operator rejects an approval by invalidating (soft-deleting or
+    // status-updating) the `approval_requests` row through the REST API,
+    // then re-calling the integrate endpoint. Keeping rejection out of
+    // the signal path avoids a second signal handler, simplifies the
+    // state machine to a binary approved/timed-out outcome, and makes
+    // the audit trail fully authoritative in the DB rather than split
+    // between DB state and Temporal history.
     let approvalResolved = false;
     setHandler(approveSignal, () => {
       approvalResolved = true;
