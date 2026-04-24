@@ -16,7 +16,7 @@
   "dependencies": {
     "@pm-go/contracts": "workspace:*",
     "@tanstack/react-query": "^5.62.0",
-    "ink": "^5.0.1",
+    "ink": "^7.0.1",
     "ink-select-input": "^6.0.0",
     "ink-spinner": "^5.0.0",
     "ink-text-input": "^6.0.0",
