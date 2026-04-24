@@ -332,7 +332,15 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
         input.testCommands.some((c) => /\b(pnpm|node|tsc|vitest)\b/.test(c));
       if (needsInstall) {
         const preSteps = [
-          "pnpm install --frozen-lockfile --prefer-offline",
+          // `--no-frozen-lockfile` is deliberate: integration worktrees
+          // validate a merge on the fly, and a task that adds a workspace
+          // package with new deps (outside its fileScope for pnpm-lock.yaml)
+          // would otherwise fail pnpm's strict "lockfile up to date" check
+          // even when the change itself is correct. The `git reset --hard
+          // && git clean` step below wipes any lockfile mutation before
+          // the next per-task merge, so this lenience does not pollute
+          // the integration branch.
+          "pnpm install --no-frozen-lockfile --prefer-offline",
           "pnpm -r --if-present build",
         ];
         for (const step of preSteps) {
