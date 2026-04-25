@@ -5,6 +5,89 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 once the public API stabilises.
 
+## v0.8.4 — 2026-04-25
+
+Setup-as-a-product slices 2, 3, 5, and 6 — `pm-go implement` is now the
+single command that takes a fresh repo from spec to released, replacing
+the older "boot stack + figure out the operator chords" workflow. Three
+parallel sub-agents in isolated worktrees built the foundations; this
+commit integrates them and adds the `implement` orchestrator on top.
+
+### Added
+
+- **`pm-go implement --repo . --spec ./feature.md`** — slice 5. Combines
+  `pm-go run` (boot the stack) and `pm-go drive` (drive a plan to
+  released) into one foreground process. Single command, single Ctrl+C
+  to cancel, exits with the drive's exit code. Honours
+  `--approve all|none|interactive`.
+- **`pm-go drive --plan <uuid>`** — slice 6. Client-side state-machine
+  driver that takes a submitted plan from `submitted` to `released` by
+  sequencing `POST /tasks/:id/run`, `/review`, `/fix`,
+  `/phases/:id/integrate`, `/audit`, `/plans/:id/complete`,
+  `/release`. Pauses on approval gates; never bypasses budget / scope /
+  audit blockers. ~30 new tests including a hand-rolled mock router
+  that replicates the API state machine.
+- **`pm-go doctor --repair`** — slice 3. Existing `pm-go doctor`
+  extended with infrastructure probes (Docker daemon, postgres /
+  temporal containers via `docker compose exec -T`, DATABASE_URL set,
+  pending migrations, repo path writable, .worktrees /
+  .integration-worktrees / artifacts dirs writable, API port free).
+  When `--repair` is passed, attempts auto-fixes (create missing
+  dirs, run `docker compose up -d`, run `pnpm db:migrate`), re-probes,
+  and exits 0 only when every check now passes.
+- **`apps/cli/src/lib/instance-config.ts`** — slice 2. Pure parser +
+  deps-injected I/O for `~/.pm-go/instances/<name>/config.json`. Lays
+  the groundwork for upcoming "list running instances," "reattach to
+  a previous run," and "kill a stale instance" features. Not yet
+  wired into `pm-go run` — a follow-up commit will use it for
+  multi-instance support.
+
+### Changed
+
+- **`runSupervisor` accepts an optional `onReady` callback.** Lets the
+  supervisor be used as a library: bring up the stack, hand control
+  to the caller (e.g. `pm-go drive`), then tear children down via
+  `pm.stop()` (graceful, no `process.exit`) when the caller returns.
+  `pm-go implement` is the primary consumer.
+- **`pm.stop()` added alongside `pm.shutdown()`.** `stop` is a
+  graceful no-exit teardown — the supervisor uses it for `onReady`
+  callbacks so the caller can choose its own exit code. `shutdown`
+  remains the SIGINT/SIGTERM handler that calls `process.exit`.
+- **`submitSpecAndPlan` now waits for the plan to land in Postgres
+  before returning.** `POST /plans` returns 202 (the SpecToPlanWorkflow
+  is async); previously the supervisor's onReady fired before the
+  plan row was persisted, and `pm-go drive` hit a 404 race on its
+  first poll. Now we wait up to 90s (covers stub <1s and live SDK
+  ~10-60s) for `GET /plans/:id` to return 200.
+- **`--runtime stub` also strips legacy `*_EXECUTOR_MODE=live`.**
+  v0.8.3.1 stripped `*_RUNTIME` keys but missed the older
+  `*_EXECUTOR_MODE` env vars, so a `.env` from a prior dogfood run
+  with `PLANNER_EXECUTOR_MODE=live` etc would silently launch live
+  runners despite `--runtime stub` and then fail when
+  `ANTHROPIC_API_KEY` was empty. Now both var families are wiped
+  when stub mode is requested.
+- **Root usage banner** lists `implement` first — it's the path most
+  users want.
+
+### Internal
+
+- 156/156 CLI tests pass (was 51 at v0.8.3.0; +105 across this
+  session). All 17 package typechecks clean. Sequential workspace
+  test still green.
+- 6 new files: `apps/cli/src/{drive,implement}.ts`,
+  `apps/cli/src/lib/instance-config.ts`, plus their `__tests__`.
+- Three parallel sub-agents in isolated worktrees produced slice 6,
+  slice 2, and slice 3; integration was a single sequential pass at
+  the end. No merge conflicts because each agent was scoped to
+  non-overlapping files.
+
+Deferred to follow-up slices (per the implementation plan):
+- Slice 4 (no-Docker path: `temporal server start-dev` + embedded
+  Postgres)
+- Slice 7 (npm publish + Docker image)
+- Wiring `instance-config.ts` into `pm-go run`/`implement` for
+  multi-instance support
+
 ## v0.8.3.1 — 2026-04-25
 
 Reviewer-driven hardening of the v0.8.3 supervisor. Four findings against

@@ -60,16 +60,21 @@ git clone https://github.com/alex-reysa/pm-go.git
 cd pm-go
 pnpm install
 cp .env.example .env
-pnpm dev --spec ./examples/golden-path/spec.md
+pnpm pm-go implement --repo . --spec ./examples/golden-path/spec.md --runtime stub
 ```
 
 That single command brings up Docker (Postgres + Temporal), applies migrations,
 starts the worker and API as tracked children, waits for `/health`, submits the
-example spec, and starts a plan. Stay in the foreground; press `Ctrl+C` to tear
-the whole stack down cleanly.
+example spec, **and drives the resulting plan all the way to released** —
+running tasks, reviewing them, integrating phases, auditing, and finally
+releasing. Stay in the foreground; press `Ctrl+C` to tear the whole stack down
+cleanly.
 
-When the supervisor prints `pm-go is running`, the API is on
-`http://localhost:3001`. To drive the plan interactively:
+The `--runtime stub` flag uses fixture-driven runners so this completes in
+seconds without an Anthropic API key. For real model-driven work, drop the flag
+(or pass `--runtime sdk` after exporting `ANTHROPIC_API_KEY`).
+
+To watch progress in the operator dashboard while it runs:
 
 ```bash
 pnpm tui     # in a second terminal
@@ -99,17 +104,20 @@ in [docs/getting-started.md](docs/getting-started.md).
 - Docker, for Postgres and Temporal
 - `jq`, for the copy-paste API examples (optional)
 
-### Manual Stack Control
+### Sub-Commands
 
-`pnpm dev` is a thin wrapper around `pm-go run`. The longer form gives you the
-same outcome with explicit flags:
+`pm-go` has four subcommands; pick the one that matches your stage:
 
 ```bash
-pnpm pm-go run --repo . --spec ./examples/golden-path/spec.md --runtime auto
+pm-go implement --repo . --spec ./feature.md     # boot stack + drive to release
+pm-go run       --repo . --spec ./feature.md     # boot stack only; drive yourself
+pm-go drive     --plan <uuid>                    # drive a plan against an already-up stack
+pm-go doctor    [--repair]                       # diagnose + auto-fix infra
 ```
 
-If you prefer to drive the worker, API, and TUI as separate processes — for
-debugging, attaching a profiler, or running them on different machines — see
+`pnpm dev` is a thin wrapper around `pm-go run`. If you prefer to drive the
+worker, API, and TUI as separate processes — for debugging, attaching a
+profiler, or running them on different machines — see
 [docs/getting-started.md](docs/getting-started.md#advanced-running-the-stack-by-hand).
 
 ## Fast Verification

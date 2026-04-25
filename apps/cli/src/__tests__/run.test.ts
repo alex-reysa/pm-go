@@ -214,4 +214,34 @@ describe('buildChildEnv', () => {
       }
     }
   })
+
+  it('--runtime stub also strips legacy *_EXECUTOR_MODE=live (regression: stale .env from dogfood)', () => {
+    const originals: Record<string, string | undefined> = {}
+    const keys = [
+      'PLANNER_EXECUTOR_MODE',
+      'IMPLEMENTER_EXECUTOR_MODE',
+      'REVIEWER_EXECUTOR_MODE',
+      'PHASE_AUDITOR_EXECUTOR_MODE',
+      'COMPLETION_AUDITOR_EXECUTOR_MODE',
+    ]
+    try {
+      for (const k of keys) {
+        originals[k] = process.env[k]
+        process.env[k] = 'live'
+      }
+      const env = buildChildEnv({ ...baseOptions, runtime: 'stub' })
+      for (const k of keys) {
+        assert.strictEqual(
+          env[k],
+          undefined,
+          `${k} should be cleared on --runtime stub but was ${env[k]}`,
+        )
+      }
+    } finally {
+      for (const k of keys) {
+        if (originals[k] === undefined) delete process.env[k]
+        else process.env[k] = originals[k]
+      }
+    }
+  })
 })

@@ -3,26 +3,47 @@
  * pm-go CLI entrypoint.
  *
  * Subcommands:
- *   pm-go run [options]   Bring up the local stack, optionally submit a spec,
- *                          and stay attached. Replaces the three-terminal flow.
- *   pm-go doctor          Probe API keys / local CLIs / runtime resolution.
+ *   pm-go run [options]    Bring up the local stack, optionally submit a spec,
+ *                           and stay attached. Replaces the three-terminal flow.
+ *   pm-go drive [options]  Drive a submitted plan to released by sequencing
+ *                           API calls (run/review/fix/integrate/audit/release).
+ *   pm-go doctor [options] Probe API keys / local CLIs / runtime / infra; can
+ *                           auto-repair fixable problems with --repair.
  *
  * Examples:
  *   pm-go run                                       # boot the stack only
  *   pm-go run --spec ./examples/golden-path/spec.md # boot + submit spec
+ *   pm-go drive --plan <uuid>                       # drive plan to released
  *   pm-go doctor                                    # diagnostics
+ *   pm-go doctor --repair                           # diagnose + auto-fix
  */
 
 import { spawn as nodeSpawn, execFile as execFileCb } from 'node:child_process'
-import { access, mkdir, readFile } from 'node:fs/promises'
+import { access, constants, mkdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
+import { createInterface } from 'node:readline'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
 import { detectAvailableRuntimes } from '@pm-go/runtime-detector'
 
-import { runDoctor } from './doctor.js'
+import {
+  runDoctor,
+  type InfraProbeDeps,
+  type RepairDeps,
+} from './doctor.js'
+import {
+  driveCli,
+  DRIVE_USAGE,
+  type DriveCliDeps,
+  type DriveDeps,
+} from './drive.js'
+import {
+  implementCli,
+  IMPLEMENT_USAGE,
+  type ImplementCliDeps,
+} from './implement.js'
 import { applyDotenv } from './lib/dotenv.js'
 import {
   runCli,
@@ -36,20 +57,107 @@ const execFile = promisify(execFileCb)
 const ROOT_USAGE = `Usage: pm-go <command> [options]
 
 Commands:
-  run         Start the pm-go control plane (one-command supervisor).
-  doctor      Probe runtimes + diagnose configuration.
+  implement   Boot stack + submit spec + drive to release in one command.
+  run         Start the pm-go control plane (supervisor only).
+  drive       Drive a submitted plan to released against a running stack.
+  doctor      Probe runtimes + diagnose configuration. Use --repair to fix.
 
-Run \`pm-go <command> --help\` for command-specific options.`
+Run \`pm-go <command> --help\` for command-specific options.
+
+Quickest path:
+  pm-go implement --repo . --spec ./feature.md`
+
+const DOCTOR_USAGE = `Usage: pm-go doctor [options]
+
+Probe API keys, local CLIs, runtime resolution, and infrastructure
+(docker / postgres / temporal / migrations / writable dirs / API port).
+
+Options:
+  --repair    Attempt to fix what's auto-fixable (create missing dirs,
+              run \`docker compose up -d\`, run \`pnpm db:migrate\`),
+              then re-probe.
+  --verbose   Print extra diagnostic detail on failure.
+  -h, --help  Show this message.`
 
 const [, , subcommand, ...rest] = process.argv
 
 async function main(): Promise<number> {
   switch (subcommand) {
     case 'doctor': {
+      if (rest.includes('--help') || rest.includes('-h')) {
+        console.log(DOCTOR_USAGE)
+        return 0
+      }
+      const repair = rest.includes('--repair')
+      const verbose = rest.includes('--verbose')
+      const monorepoRoot = resolveMonorepoRoot()
+      const productionExec = async (
+        cmd: string,
+        args: readonly string[],
+      ): Promise<{ code: number; stdout: string; stderr: string }> => {
+        try {
+          const { stdout, stderr } = await execFile(cmd, [...args], {
+            cwd: monorepoRoot,
+            maxBuffer: 16 * 1024 * 1024,
+          })
+          return { code: 0, stdout, stderr }
+        } catch (err) {
+          const e = err as NodeJS.ErrnoException & {
+            code?: number | string
+            stdout?: string
+            stderr?: string
+          }
+          if (typeof e.code === 'string' && e.code === 'ENOENT') {
+            // Re-throw so probes can detect "command not found" cleanly.
+            throw err
+          }
+          const numericCode =
+            typeof e.code === 'number' ? e.code : 1
+          return {
+            code: numericCode,
+            stdout: e.stdout ?? '',
+            stderr: e.stderr ?? e.message ?? '',
+          }
+        }
+      }
+      const fileExists = async (p: string) => {
+        try {
+          await access(p)
+          return true
+        } catch {
+          return false
+        }
+      }
+      const isWritable = async (p: string) => {
+        try {
+          await access(p, constants.W_OK)
+          return true
+        } catch {
+          return false
+        }
+      }
+      const infra: InfraProbeDeps = {
+        exec: productionExec,
+        env: process.env,
+        fileExists,
+        isWritable,
+        monorepoRoot,
+      }
+      const repairDeps: RepairDeps = {
+        ...infra,
+        mkdir: async (p, opts) => {
+          await mkdir(p, opts)
+        },
+        log: (l) => console.log(l),
+      }
       return runDoctor({
         detectRuntimes: detectAvailableRuntimes,
         env: process.env,
         write: console.log,
+        infra,
+        repairDeps,
+        repair,
+        verbose,
       })
     }
 
@@ -91,6 +199,53 @@ async function main(): Promise<number> {
           }),
       }
       return runCli(cliDeps)
+    }
+
+    case 'drive': {
+      if (rest[0] === '--help' || rest[0] === '-h') {
+        console.log(DRIVE_USAGE)
+        return 0
+      }
+      const driveCliDeps: DriveCliDeps = {
+        argv: rest,
+        log: (l) => console.log(l),
+        errLog: (l) => console.error(l),
+        buildDriveDeps: () => buildProductionDriveDeps(),
+      }
+      return driveCli(driveCliDeps)
+    }
+
+    case 'implement': {
+      if (rest[0] === '--help' || rest[0] === '-h') {
+        console.log(IMPLEMENT_USAGE)
+        return 0
+      }
+      const userCwd = process.env.INIT_CWD ?? process.cwd()
+      const implementCliDeps: ImplementCliDeps = {
+        argv: rest,
+        cwd: userCwd,
+        monorepoRoot: resolveMonorepoRoot(),
+        log: (l) => console.log(l),
+        errLog: (l) => console.error(l),
+        resolve: (base, p) => (path.isAbsolute(p) ? p : path.resolve(base, p)),
+        buildSupervisorDeps: () => buildProductionSupervisorDeps(),
+        buildDriveDeps: () => buildProductionDriveDeps(),
+        applyDotenv: (p) =>
+          applyDotenv(p, {
+            readFile: (path) => readFile(path, 'utf8'),
+            fileExists: async (path) => {
+              try {
+                await access(path)
+                return true
+              } catch {
+                return false
+              }
+            },
+            env: process.env,
+            log: (l) => console.warn(l),
+          }),
+      }
+      return implementCli(implementCliDeps)
     }
 
     case '--help':
@@ -172,6 +327,33 @@ function buildProductionSupervisorDeps(): Omit<
     sleep: (ms) => delay(ms),
     log: (l) => console.log(l),
     errLog: (l) => console.error(l),
+  }
+}
+
+function buildProductionDriveDeps(): DriveDeps {
+  return {
+    fetch: globalThis.fetch.bind(globalThis),
+    now: () => Date.now(),
+    sleep: (ms) => delay(ms),
+    log: (l) => console.log(l),
+    errLog: (l) => console.error(l),
+    prompt: async (question) => {
+      const rl = createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      })
+      try {
+        const answer = await new Promise<string>((resolve) => {
+          rl.question(question, (a) => resolve(a))
+        })
+        const trimmed = answer.trim().toLowerCase()
+        // Default-Yes: empty / 'y' / 'yes' all approve. Anything else
+        // declines so an accidental Ctrl+C / EOF defaults to safe.
+        return trimmed === '' || trimmed === 'y' || trimmed === 'yes'
+      } finally {
+        rl.close()
+      }
+    },
   }
 }
 

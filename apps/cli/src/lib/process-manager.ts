@@ -47,11 +47,21 @@ export function track(label: string, proc: ChildProcess): TrackedChild {
  *      `gracePeriodMs`, then sends SIGKILL to anything still running.
  *   3. Exits the parent process with the signal-derived exit code so
  *      shells see the supervisor as terminated, not as exit 0.
+ *
+ * Two stop paths:
+ *   - `shutdown(reason, code)` — SIGINT/SIGTERM handler. Stops children
+ *     AND calls `process.exit`. Used when the user kills the supervisor.
+ *   - `stop(reason)` — graceful no-exit teardown. Stops children but
+ *     returns control to the caller so it can pick its own exit code.
+ *     Used by `pm-go implement` when the drive loop completes
+ *     successfully and we want to return the drive's exit code rather
+ *     than the supervisor's.
  */
 export interface ProcessManager {
   add(child: TrackedChild): void
   shutdown(reason: string, exitCode?: number): Promise<never>
-  /** True after `shutdown` has been initiated. Idempotency guard. */
+  stop(reason: string): Promise<void>
+  /** True after `shutdown` or `stop` has been initiated. Idempotency guard. */
   readonly shuttingDown: boolean
 }
 
@@ -62,21 +72,7 @@ export function createProcessManager(
   const children: TrackedChild[] = []
   let shuttingDown = false
 
-  async function shutdown(reason: string, exitCode = 130): Promise<never> {
-    if (shuttingDown) {
-      // Second signal — escalate immediately.
-      deps.log(`[pm-go] second ${reason}; force-killing children`)
-      for (const c of children) {
-        try {
-          c.proc.kill('SIGKILL')
-        } catch {
-          // process already gone — ignore
-        }
-      }
-      // Mirror Bash's 130 for SIGINT, 143 for SIGTERM.
-      process.exit(exitCode)
-    }
-    shuttingDown = true
+  async function tearDownChildren(reason: string): Promise<void> {
     deps.log(`[pm-go] ${reason}; stopping ${children.length} child process(es)`)
     for (const c of children) {
       try {
@@ -101,6 +97,30 @@ export function createProcessManager(
         }
       }
     }
+  }
+
+  async function stop(reason: string): Promise<void> {
+    if (shuttingDown) return
+    shuttingDown = true
+    await tearDownChildren(reason)
+  }
+
+  async function shutdown(reason: string, exitCode = 130): Promise<never> {
+    if (shuttingDown) {
+      // Second signal — escalate immediately.
+      deps.log(`[pm-go] second ${reason}; force-killing children`)
+      for (const c of children) {
+        try {
+          c.proc.kill('SIGKILL')
+        } catch {
+          // process already gone — ignore
+        }
+      }
+      // Mirror Bash's 130 for SIGINT, 143 for SIGTERM.
+      process.exit(exitCode)
+    }
+    shuttingDown = true
+    await tearDownChildren(reason)
     process.exit(exitCode)
   }
 
@@ -116,6 +136,7 @@ export function createProcessManager(
       children.push(child)
     },
     shutdown,
+    stop,
     get shuttingDown() {
       return shuttingDown
     },

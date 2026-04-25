@@ -52,6 +52,21 @@ export interface RunOptions {
   skipMigrate: boolean
 }
 
+/**
+ * Handle passed to a `RunOptions.onReady` callback. Lets the caller
+ * use the supervisor as a library: kick off a downstream flow (e.g.
+ * `pm-go drive`) once the stack is up, then return an exit code that
+ * the supervisor uses as its own. `pm-go implement` is the primary
+ * caller — it submits a spec via the supervisor, then drives the
+ * resulting plan to release.
+ */
+export interface SupervisorReadyHandle {
+  /** UUID of the plan started by --spec, when one was submitted. */
+  planId?: string
+  /** API base URL (e.g. http://localhost:3001). */
+  apiUrl: string
+}
+
 export interface ParsedArgv {
   ok: true
   options: RunOptions
@@ -232,10 +247,17 @@ const POLL_INTERVAL_MS = 500
  * Supervisor entry-point. Returns the parent process exit code:
  *   - 0 when every step succeeded and the user explicitly stopped (SIGINT).
  *   - 1 when a step failed (the failure is logged before return).
+ *
+ * When `onReady` is provided (e.g. by `pm-go implement`), the
+ * supervisor invokes the callback after the stack is up and returns
+ * the callback's exit code instead of blocking on children. The
+ * supervisor still calls `pm.stop()` to tear down children gracefully
+ * before returning.
  */
 export async function runSupervisor(
   options: RunOptions,
   deps: RunDeps,
+  onReady?: (handle: SupervisorReadyHandle) => Promise<number>,
 ): Promise<number> {
   const { log, errLog } = deps
 
@@ -446,6 +468,26 @@ export async function runSupervisor(
 
   printAttachHint(options, planId, deps.log)
 
+  // When a caller (`pm-go implement`) wants to use the supervisor as
+  // a library — boot the stack, run something against it, tear it
+  // down — they pass `onReady`. We invoke it with the planId/apiUrl,
+  // then `pm.stop()` (graceful, no process.exit) so the caller can
+  // return whatever exit code makes sense.
+  if (onReady) {
+    const apiUrl = `http://localhost:${options.apiPort}`
+    let exitCode = 0
+    try {
+      exitCode = await onReady({ ...(planId !== undefined ? { planId } : {}), apiUrl })
+    } catch (err) {
+      errLog(
+        `[pm-go] onReady callback threw: ${err instanceof Error ? err.message : String(err)}`,
+      )
+      exitCode = 1
+    }
+    await deps.pm.stop('onReady completed').catch(() => undefined)
+    return exitCode
+  }
+
   // Block until a child crashes or a signal terminates us.
   const exits = [worker.exit, api.exit].map((p, idx) =>
     p.then((r) => ({ idx, ...r })),
@@ -477,6 +519,22 @@ const RUNTIME_ENV_KEYS = [
 ] as const
 
 /**
+ * Legacy *_EXECUTOR_MODE env vars the worker also inspects when
+ * *_RUNTIME is unset. Carried for backward compatibility with
+ * pre-v0.8 deployments. The worker treats `live` as "use Claude SDK"
+ * and anything else (or unset) as "stub", so a stale
+ * `*_EXECUTOR_MODE=live` left in `.env` from a prior dogfood run
+ * would silently launch live runners despite `--runtime stub`.
+ */
+const EXECUTOR_MODE_ENV_KEYS = [
+  'PLANNER_EXECUTOR_MODE',
+  'IMPLEMENTER_EXECUTOR_MODE',
+  'REVIEWER_EXECUTOR_MODE',
+  'PHASE_AUDITOR_EXECUTOR_MODE',
+  'COMPLETION_AUDITOR_EXECUTOR_MODE',
+] as const
+
+/**
  * Build the env vars passed to the worker + API child processes.
  * Translates `--runtime` into the canonical `*_RUNTIME` env vars for
  * every agent role.
@@ -485,10 +543,11 @@ const RUNTIME_ENV_KEYS = [
  *   - For `--runtime sdk|claude|auto`: explicit shell-exported
  *     `*_RUNTIME=...` wins (advanced users mixing roles); otherwise
  *     the flag fans out to every role.
- *   - For `--runtime stub`: the explicit flag ALWAYS wins. Inherited
- *     `*_RUNTIME=...` from the user's shell is deleted from the child
- *     env so a stale `PLANNER_RUNTIME=sdk` cannot turn an
- *     onboarding/CI smoke into a live run.
+ *   - For `--runtime stub`: the explicit flag ALWAYS wins. BOTH
+ *     inherited `*_RUNTIME=...` AND legacy `*_EXECUTOR_MODE=live`
+ *     are deleted from the child env. A stale .env from a prior
+ *     dogfood run cannot silently turn an onboarding/CI smoke into
+ *     a live run that fails when `ANTHROPIC_API_KEY` is missing.
  */
 export function buildChildEnv(opts: RunOptions): NodeJS.ProcessEnv {
   const base: NodeJS.ProcessEnv = {
@@ -498,10 +557,10 @@ export function buildChildEnv(opts: RunOptions): NodeJS.ProcessEnv {
     REPO_ROOT: opts.repoRoot,
   }
   if (opts.runtime === 'stub') {
-    // Strip any inherited *_RUNTIME so the worker takes its
-    // *_EXECUTOR_MODE branch (which itself defaults to "stub" when
-    // unset, see apps/worker/src/index.ts).
     for (const key of RUNTIME_ENV_KEYS) {
+      delete base[key]
+    }
+    for (const key of EXECUTOR_MODE_ENV_KEYS) {
       delete base[key]
     }
     return base
@@ -569,6 +628,30 @@ async function submitSpecAndPlan(
     throw new Error(`POST /plans → ${planRes.status}: ${text}`)
   }
   const planJson = (await planRes.json()) as { planId: string }
+
+  // POST /plans returns 202 — the SpecToPlanWorkflow is async and the
+  // plan row only lands in Postgres after the planner finishes. Poll
+  // GET /plans/:id until it returns 200 (or timeout) so callers like
+  // `pm-go drive` and `pm-go implement` can immediately operate on
+  // the plan without racing the workflow. 90s covers planner runs in
+  // both stub mode (~1s) and live mode (~10-60s).
+  const planQueryable = await waitFor(
+    async () => {
+      const res = await deps.fetch(`${apiBase}/plans/${planJson.planId}`)
+      return res.ok
+    },
+    {
+      label: 'plan-persistence',
+      timeoutMs: 90_000,
+      intervalMs: POLL_INTERVAL_MS,
+    },
+    deps,
+  )
+  if (planQueryable.status === 'timeout') {
+    throw new Error(
+      `plan ${planJson.planId} did not appear in the API within 90s — the SpecToPlanWorkflow may have failed; check worker logs`,
+    )
+  }
   return planJson.planId
 }
 
