@@ -5,6 +5,71 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 once the public API stabilises.
 
+## v0.8.4.1 — 2026-04-25
+
+Reviewer-driven hardening of the v0.8.4 driver. Four findings against
+`apps/cli/src/{drive,implement}.ts` — two P1, two P2 — closed in one
+focused commit. All v0.8.4 tests still green plus 5 new regression
+tests; total 161/161.
+
+### Fixed
+
+- **Approval polling now happens INSIDE the integration wait, not
+  after** (P1). `PhaseIntegrationWorkflow` opens pending
+  `approval_requests` rows BEFORE flipping the phase from `executing`
+  to `integrating`. Drive's previous wait predicate
+  (`auditing|completed|blocked|failed`) skipped that whole window, so
+  any approval-gated phase sat in `executing` until the integration
+  timeout — even with `--approve all`. New
+  `waitForPhaseStatusOrApprovals` helper polls phase status AND
+  pending approvals on every tick; `--approve all` now unblocks the
+  gate within one poll interval. Regression test exercises the exact
+  ordering: `/integrate` → pending row appears → `/approve-all-pending`
+  fires before phase transition → phase advances to `auditing`.
+- **`runDrive` wraps each `drivePhase` in try/catch** (P1).
+  `drivePhase` can throw on 409s from `/integrate` (phase in wrong
+  state) and on wait timeouts. Pre-fix those escaped past `runDrive`
+  as top-level CLI failures instead of mapping to the documented
+  `EXIT_BLOCKED`. Now all expected operator-action conditions become
+  `exit 1` with an actionable log pointing at `GET /phases/:id` and
+  the re-drive path.
+- **Empty `mergeOrder` falls back to `tasks.map(t => t.id)`** (P2).
+  Pre-fix the comment claimed a fallback to task order but the code
+  used `[]`, so a malformed plan with tasks but empty mergeOrder
+  silently skipped task execution and went straight to integration —
+  no-op'ing the phase instead of surfacing the bad shape. Now the
+  driver fans out to every task in declaration order AND logs a
+  loud warning so the planner bug is visible.
+- **`pm-go implement` keeps the stack ALIVE on approval pauses** (P2).
+  Pre-fix, when drive returned `EXIT_BLOCKED` for a paused approval
+  path, implement returned to runSupervisor → `pm.stop()` → the API
+  + worker died. Operators were told "approve via the TUI/API" by a
+  CLI message that immediately followed by killing the very
+  processes they needed. New `EXIT_PAUSED = 4` distinct from
+  `EXIT_BLOCKED`; implement detects it and waits on SIGINT instead
+  of tearing down. Operator gets clear instructions (curl
+  one-liner + TUI chord + re-run command) and the stack stays up
+  until they Ctrl+C.
+
+### Added
+
+- `EXIT_PAUSED = 4` exit code in `drive.ts` (vs. the existing
+  `EXIT_OK=0`, `EXIT_BLOCKED=1`, `EXIT_ARGV=2`, `EXIT_RELEASE_FAILED=3`).
+- 5 new regression tests in `drive.test.ts`:
+  - P1.1: integration-wait approval polling fires `/approve-all-pending`
+    before phase transition.
+  - P1.2: a thrown error inside `drivePhase` returns `EXIT_BLOCKED`
+    with actionable log.
+  - P2.1a: empty `mergeOrder` with tasks → driver fans out to every
+    task + warns.
+  - P2.1b: empty `mergeOrder` with zero tasks → no false warning.
+  - P2.2: declined approval under `--approve none` → `runDrive`
+    returns `EXIT_PAUSED` (4), not 1.
+
+### Internal
+
+- 161/161 CLI tests pass (was 156). Workspace typecheck still clean.
+
 ## v0.8.4 — 2026-04-25
 
 Setup-as-a-product slices 2, 3, 5, and 6 — `pm-go implement` is now the

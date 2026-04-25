@@ -379,6 +379,72 @@ async function waitForPhaseStatus(
   return last
 }
 
+/**
+ * v0.8.4.1 P1.1: integration-wait that ALSO polls approval rows.
+ *
+ * `PhaseIntegrationWorkflow` opens an approval_requests row BEFORE
+ * flipping the phase to `integrating`. So if drive only polled the
+ * phase status, an approval-gated phase would sit in `executing`
+ * forever (until the workflow's own 24h timeout). This helper
+ * checks both signals on every tick:
+ *
+ *   - if the phase has reached an `acceptable` terminal state → return it
+ *   - else if any pending approval rows exist → call `resolveApprovals`
+ *     - 'ok'    → keep polling (the workflow will progress past the gate)
+ *     - 'paused' → return `{kind: 'paused'}` so the caller can bail
+ *
+ * Timeouts still throw — a hung workflow is a real failure even when
+ * --approve all is in play.
+ */
+type PhaseWaitOutcome =
+  | { kind: 'phase'; status: DrivenPhaseStatus }
+  | { kind: 'paused' }
+
+async function waitForPhaseStatusOrApprovals(
+  opts: DriveOptions,
+  phaseId: string,
+  acceptable: ReadonlySet<DrivenPhaseStatus>,
+  timings: DriveTimings,
+  timeoutMs: number,
+  deps: DriveDeps,
+): Promise<PhaseWaitOutcome> {
+  let lastStatus: DrivenPhaseStatus = 'pending'
+  let paused = false
+  const outcome = await waitFor(
+    async () => {
+      const planRes = await getPlan(opts, deps)
+      const phase = planRes.plan.phases.find((p) => p.id === phaseId)
+      if (phase) {
+        lastStatus = phase.status
+        if (acceptable.has(lastStatus)) return true
+      }
+      // Phase still in flight — see if the workflow is parked at an
+      // approval gate. resolveApprovals is a no-op when nothing's
+      // pending, so we can call it on every tick safely.
+      const approvalOutcome = await resolveApprovals(opts, deps)
+      if (approvalOutcome === 'paused') {
+        paused = true
+        return true // exit the wait loop
+      }
+      return false
+    },
+    {
+      label: `phase ${phaseId} → ${[...acceptable].join('|')} (with approval poll)`,
+      timeoutMs,
+      intervalMs: timings.pollIntervalMs,
+    },
+    deps,
+  )
+  if (paused) return { kind: 'paused' }
+  if (outcome.status === 'timeout') {
+    throw new Error(
+      `timed out waiting for phase ${phaseId} to reach ${[...acceptable].join('|')} ` +
+        `(last status: ${lastStatus}, ${outcome.elapsedMs}ms elapsed)`,
+    )
+  }
+  return { kind: 'phase', status: lastStatus }
+}
+
 // ---------------------------------------------------------------------------
 // Per-task loop
 // ---------------------------------------------------------------------------
@@ -618,9 +684,24 @@ export async function drivePhase(
 
   // 1. Drive every task in mergeOrder to ready_to_merge.
   const taskMap = new Map(tasks.map((t) => [t.id, t]))
-  // mergeOrder is the canonical sequence; fall back to taskIds order
-  // if the planner left it empty (shouldn't happen post-Phase 3).
-  const order = phase.mergeOrder.length > 0 ? phase.mergeOrder : []
+  // mergeOrder is the canonical sequence. When it's empty BUT the
+  // phase has tasks, fall back to the task list order (planner shape
+  // bug we don't want to swallow silently — log it loudly so the
+  // operator can fix the plan, but still drive the tasks rather than
+  // skipping straight to integration on an empty array).
+  let order: readonly string[]
+  if (phase.mergeOrder.length > 0) {
+    order = phase.mergeOrder
+  } else if (tasks.length > 0) {
+    deps.errLog(
+      `[drive] phase ${phase.id} has ${tasks.length} task(s) but empty ` +
+        `mergeOrder — falling back to task-list order. The planner left ` +
+        `this phase malformed; please file a bug.`,
+    )
+    order = tasks.map((t) => t.id)
+  } else {
+    order = []
+  }
   for (const taskId of order) {
     const t = taskMap.get(taskId)
     if (!t) {
@@ -650,9 +731,12 @@ export async function drivePhase(
         `[drive] phase ${phase.id}: already integrating — waiting for next gate`,
       )
     }
-    // Wait for integrate to land in auditing (next gate), completed
-    // (no-audit shortcut), or blocked.
-    phaseStatus = await waitForPhaseStatus(
+    // v0.8.4.1 P1.1: PhaseIntegrationWorkflow opens approval_requests
+    // BEFORE flipping the phase to `integrating`. Use the combined
+    // helper that polls phase status AND pending approvals on every
+    // tick, so --approve all can unblock the gate promptly without
+    // waiting for the integrate timeout.
+    const integrateWait = await waitForPhaseStatusOrApprovals(
       opts,
       phase.id,
       new Set(['auditing', 'completed', 'blocked', 'failed']),
@@ -660,12 +744,13 @@ export async function drivePhase(
       timings.phaseIntegrateTimeoutMs,
       deps,
     )
+    if (integrateWait.kind === 'paused') return 'paused'
+    phaseStatus = integrateWait.status
   }
 
-  // 3. Resolve approvals — integration may pause on an approval gate
-  //    (signaled via the approval_requests table; the workflow itself
-  //    polls). Even after integrate "completes" we may still have
-  //    pending plan-scoped approvals.
+  // 3. Final approval sweep — by now the workflow has crossed the
+  //    integration gate, but a plan-scoped approval may still be
+  //    pending. resolveApprovals is a no-op when nothing's pending.
   const approvalOutcome = await resolveApprovals(opts, deps)
   if (approvalOutcome === 'paused') return 'paused'
 
@@ -724,6 +809,14 @@ export const EXIT_OK = 0
 export const EXIT_BLOCKED = 1
 export const EXIT_ARGV = 2
 export const EXIT_RELEASE_FAILED = 3
+/**
+ * v0.8.4.1: drive paused waiting for an operator to resolve approvals.
+ * Distinct from EXIT_BLOCKED (which means a hard stop the operator
+ * can't fix without `pm-go doctor` / override-review / re-driving).
+ * `pm-go implement` uses this to keep the supervisor stack alive so
+ * the operator can approve via the TUI/API and re-run drive.
+ */
+export const EXIT_PAUSED = 4
 
 /**
  * Drive a plan from its current state to `released`. Returns the
@@ -754,25 +847,45 @@ export async function runDrive(
   // Phases are returned in index order by the API. Drive each in turn.
   for (const phase of planRes.plan.phases) {
     // Refresh task list per phase so mid-loop state changes (e.g.
-    // running tasks finishing) are seen.
-    const refreshed = await getPlan(options, deps)
-    const refreshedPhase = refreshed.plan.phases.find((p) => p.id === phase.id)
-    if (!refreshedPhase) {
-      deps.errLog(`[drive] phase ${phase.id} disappeared mid-loop`)
+    // running tasks finishing) are seen. Wrap the per-phase fetch +
+    // drive in try/catch so expected operator-action conditions
+    // (409 from /integrate when phase is in a wrong state, wait
+    // timeouts, malformed plans) become EXIT_BLOCKED with an
+    // actionable log instead of escaping as top-level CLI failures.
+    // (v0.8.4.1 P1.2: previously these threw past runDrive.)
+    let outcome: 'completed' | 'blocked' | 'paused'
+    try {
+      const refreshed = await getPlan(options, deps)
+      const refreshedPhase = refreshed.plan.phases.find(
+        (p) => p.id === phase.id,
+      )
+      if (!refreshedPhase) {
+        deps.errLog(`[drive] phase ${phase.id} disappeared mid-loop`)
+        return EXIT_BLOCKED
+      }
+      const phaseTasks = refreshed.plan.tasks.filter(
+        (t) => t.phaseId === phase.id,
+      )
+      outcome = await drivePhase(
+        options,
+        refreshedPhase,
+        phaseTasks,
+        timings,
+        deps,
+      )
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      deps.errLog(
+        `[drive] phase ${phase.id} (${phase.title}) drive failed: ${msg}`,
+      )
+      deps.errLog(
+        `[drive] inspect via GET ${options.apiUrl}/phases/${phase.id}; ` +
+          `re-drive after the underlying issue is resolved`,
+      )
       return EXIT_BLOCKED
     }
-    const phaseTasks = refreshed.plan.tasks.filter(
-      (t) => t.phaseId === phase.id,
-    )
-    const outcome = await drivePhase(
-      options,
-      refreshedPhase,
-      phaseTasks,
-      timings,
-      deps,
-    )
     if (outcome === 'blocked') return EXIT_BLOCKED
-    if (outcome === 'paused') return EXIT_BLOCKED
+    if (outcome === 'paused') return EXIT_PAUSED
   }
 
   // All phases completed — kick off completion audit.

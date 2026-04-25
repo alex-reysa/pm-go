@@ -26,7 +26,12 @@
  */
 
 import { runSupervisor, type RunOptions, type RunDeps } from './run.js'
-import { runDrive, type DriveOptions, type DriveDeps } from './drive.js'
+import {
+  runDrive,
+  EXIT_PAUSED,
+  type DriveOptions,
+  type DriveDeps,
+} from './drive.js'
 import {
   createProcessManager,
   type ProcessManager,
@@ -311,6 +316,50 @@ export async function implementCli(cliDeps: ImplementCliDeps): Promise<number> {
       approve: parsed.options.approve,
     }
     const code = await runDrive(driveOptions, driveDeps)
+
+    // v0.8.4.1 P2.2: when drive returns EXIT_PAUSED (an approval was
+    // declined or --approve none surfaced a pending row), the
+    // operator now needs the API + worker to STAY UP so they can
+    // resolve the approval via the TUI / API and then re-run drive.
+    // Pre-fix: implement returned to the supervisor which immediately
+    // tore everything down, leaving the operator with no way to act
+    // on the message they'd just been told to act on.
+    if (code === EXIT_PAUSED) {
+      cliDeps.log('')
+      cliDeps.log(
+        '[implement] drive paused waiting for an approval — stack is staying UP.',
+      )
+      cliDeps.log(
+        `             Resolve via:  curl -X POST ${handle.apiUrl}/plans/${handle.planId}/approve-all-pending \\`,
+      )
+      cliDeps.log(
+        `                            -H 'content-type: application/json' \\`,
+      )
+      cliDeps.log(
+        `                            -d '{"approvedBy":"<you>","reason":"<why>"}'`,
+      )
+      cliDeps.log(
+        `             Or open the TUI: pnpm tui   (find plan ${handle.planId}, press g A)`,
+      )
+      cliDeps.log(
+        `             Then re-run drive:  pnpm pm-go drive --plan ${handle.planId}`,
+      )
+      cliDeps.log('             Press Ctrl+C to stop the supervisor when done.')
+      cliDeps.log('')
+      // Block until the operator sends SIGINT. We register a one-shot
+      // listener that resolves the promise; the supervisor's signal
+      // handler will fire afterwards and tear down children cleanly.
+      await new Promise<void>((resolve) => {
+        const onSig = () => {
+          process.removeListener('SIGINT', onSig)
+          resolve()
+        }
+        process.once('SIGINT', onSig)
+      })
+      cliDeps.log('[implement] received Ctrl+C; releasing supervisor')
+      return EXIT_PAUSED
+    }
+
     cliDeps.log('')
     cliDeps.log(
       code === 0

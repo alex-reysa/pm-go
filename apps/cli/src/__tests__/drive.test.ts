@@ -905,6 +905,292 @@ describe('driveCli', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// v0.8.4.1 reviewer fixes — regression tests
+// ---------------------------------------------------------------------------
+
+const baseOptsForRegression = {
+  planId: PLAN_ID,
+  apiUrl: API_URL,
+  approve: 'all' as const,
+}
+
+describe('v0.8.4.1 P1.1: drivePhase polls approvals during integration wait', () => {
+  it('--approve all auto-resolves an approval that opens during /integrate, before phase flips to auditing', async () => {
+    // Scenario: PhaseIntegrationWorkflow opens a pending approval row
+    // BEFORE flipping the phase from executing → integrating →
+    // auditing. Drive's old wait predicate (auditing/completed/blocked/
+    // failed) skipped that window. The fix: combined wait helper polls
+    // approvals every tick, so --approve all flips the row and the
+    // workflow can advance.
+    const taskDefs: DrivenTask[] = [
+      { id: TASK_A, phaseId: PHASE_1, status: 'ready_to_merge', title: 'A' },
+    ]
+    const phaseDefs: DrivenPhase[] = [
+      {
+        id: PHASE_1,
+        index: 0,
+        title: 'Phase 1',
+        status: 'executing',
+        mergeOrder: [TASK_A],
+      },
+    ]
+    const state = makeState({
+      taskDefs,
+      phaseDefs,
+      tasks: new Map([[TASK_A, 'ready_to_merge']]),
+      phases: new Map([[PHASE_1, 'executing']]),
+      // /integrate opens the pending approval but does NOT flip
+      // phase status (it stays 'executing' until approval is resolved).
+      onPost: new Map<string, (s: MockServerState) => void>([
+        [
+          `POST /phases/${PHASE_1}/integrate`,
+          (s) => {
+            s.approvals = [
+              {
+                id: 'a-late',
+                subject: 'task',
+                status: 'pending',
+                taskId: TASK_A,
+                riskBand: 'medium',
+              },
+            ]
+            // Phase stays 'executing' until approve-all-pending fires.
+          },
+        ],
+        // When approve-all-pending fires, the workflow can advance
+        // and the phase moves to auditing.
+        [
+          `POST /plans/${PLAN_ID}/approve-all-pending`,
+          (s) => s.phases.set(PHASE_1, 'auditing'),
+        ],
+        [
+          `POST /phases/${PHASE_1}/audit`,
+          (s) => s.phases.set(PHASE_1, 'completed'),
+        ],
+      ]),
+    })
+    const deps = makeDeps(state)
+    const outcome = await drivePhase(
+      baseOptsForRegression,
+      { ...phaseDefs[0]! },
+      taskDefs,
+      FAST_TIMINGS,
+      deps,
+    )
+    assert.strictEqual(outcome, 'completed')
+    // The approve-all-pending POST happened before the phase reached
+    // a terminal state — that's the whole point of the fix.
+    const calls = state.calls.map((c) => `${c.method} ${c.url}`)
+    const integrateIdx = calls.indexOf(
+      `POST ${API_URL}/phases/${PHASE_1}/integrate`,
+    )
+    const approveIdx = calls.indexOf(
+      `POST ${API_URL}/plans/${PLAN_ID}/approve-all-pending`,
+    )
+    assert.ok(integrateIdx >= 0 && approveIdx >= 0, 'both calls fired')
+    assert.ok(
+      approveIdx > integrateIdx,
+      'approve happens after integrate but before phase transition',
+    )
+  })
+})
+
+describe('v0.8.4.1 P1.2: runDrive maps phase exceptions to EXIT_BLOCKED', () => {
+  it('a thrown error inside drivePhase becomes EXIT_BLOCKED with an actionable log', async () => {
+    const taskDefs: DrivenTask[] = [
+      { id: TASK_A, phaseId: PHASE_1, status: 'ready_to_merge', title: 'A' },
+    ]
+    const phaseDefs: DrivenPhase[] = [
+      {
+        id: PHASE_1,
+        index: 0,
+        title: 'Phase 1',
+        status: 'executing',
+        mergeOrder: [TASK_A],
+      },
+    ]
+    const state = makeState({
+      taskDefs,
+      phaseDefs,
+      tasks: new Map([[TASK_A, 'ready_to_merge']]),
+      phases: new Map([[PHASE_1, 'executing']]),
+    })
+    const deps = makeDeps(state)
+    // Force the very first plan fetch to throw — simulating a 5xx
+    // mid-drive that would otherwise escape past runDrive.
+    let calls = 0
+    const origFetch = deps.fetch
+    deps.fetch = (async (...args: Parameters<typeof globalThis.fetch>) => {
+      calls += 1
+      if (calls === 2) {
+        // First fetch is the initial plan load (succeeds); second is
+        // the per-phase refresh inside the loop — make THAT throw.
+        throw new Error('synthetic 5xx from API')
+      }
+      return origFetch(...args)
+    }) as typeof globalThis.fetch
+
+    const code = await runDrive(baseOptsForRegression, deps, FAST_TIMINGS)
+    assert.strictEqual(code, 1) // EXIT_BLOCKED
+    assert.ok(
+      deps.errs.some((l) => l.includes('drive failed: synthetic 5xx')),
+      'should log the underlying error message',
+    )
+    assert.ok(
+      deps.errs.some((l) => l.includes('inspect via GET')),
+      'should log an actionable next step',
+    )
+  })
+})
+
+describe('v0.8.4.1 P2.1: drivePhase falls back to task-list order when mergeOrder is empty', () => {
+  it('runs every task instead of skipping straight to integration', async () => {
+    const taskDefs: DrivenTask[] = [
+      { id: TASK_A, phaseId: PHASE_1, status: 'pending', title: 'A' },
+      { id: TASK_B, phaseId: PHASE_1, status: 'pending', title: 'B' },
+    ]
+    // Empty mergeOrder despite having tasks — bug in upstream planner.
+    const phaseDefs: DrivenPhase[] = [
+      {
+        id: PHASE_1,
+        index: 0,
+        title: 'Phase 1',
+        status: 'executing',
+        mergeOrder: [],
+      },
+    ]
+    const state = makeState({
+      taskDefs,
+      phaseDefs,
+      tasks: new Map([
+        [TASK_A, 'pending'],
+        [TASK_B, 'pending'],
+      ]),
+      phases: new Map([[PHASE_1, 'executing']]),
+      onPost: new Map<string, (s: MockServerState) => void>([
+        [`POST /tasks/${TASK_A}/run`, (s) => s.tasks.set(TASK_A, 'in_review')],
+        [
+          `POST /tasks/${TASK_A}/review`,
+          (s) => s.tasks.set(TASK_A, 'ready_to_merge'),
+        ],
+        [`POST /tasks/${TASK_B}/run`, (s) => s.tasks.set(TASK_B, 'in_review')],
+        [
+          `POST /tasks/${TASK_B}/review`,
+          (s) => s.tasks.set(TASK_B, 'ready_to_merge'),
+        ],
+        [
+          `POST /phases/${PHASE_1}/integrate`,
+          (s) => s.phases.set(PHASE_1, 'auditing'),
+        ],
+        [
+          `POST /phases/${PHASE_1}/audit`,
+          (s) => s.phases.set(PHASE_1, 'completed'),
+        ],
+      ]),
+    })
+    const deps = makeDeps(state)
+    const outcome = await drivePhase(
+      baseOptsForRegression,
+      { ...phaseDefs[0]! },
+      taskDefs,
+      FAST_TIMINGS,
+      deps,
+    )
+    assert.strictEqual(outcome, 'completed')
+    // Both tasks got their /run call — the fix exercised the fallback.
+    const calls = state.calls.map((c) => `${c.method} ${c.url}`)
+    assert.ok(calls.includes(`POST ${API_URL}/tasks/${TASK_A}/run`))
+    assert.ok(calls.includes(`POST ${API_URL}/tasks/${TASK_B}/run`))
+    // And the operator was warned about the malformed plan.
+    assert.ok(
+      deps.errs.some(
+        (l) =>
+          l.includes('empty mergeOrder') ||
+          l.includes('falling back to task-list order'),
+      ),
+      'should log a malformed-plan warning',
+    )
+  })
+
+  it('does NOT trigger the warning when phase is genuinely empty', async () => {
+    const phaseDefs: DrivenPhase[] = [
+      {
+        id: PHASE_1,
+        index: 0,
+        title: 'Phase 1',
+        status: 'executing',
+        mergeOrder: [],
+      },
+    ]
+    const state = makeState({
+      taskDefs: [],
+      phaseDefs,
+      tasks: new Map(),
+      phases: new Map([[PHASE_1, 'executing']]),
+      onPost: new Map<string, (s: MockServerState) => void>([
+        [
+          `POST /phases/${PHASE_1}/integrate`,
+          (s) => s.phases.set(PHASE_1, 'completed'),
+        ],
+      ]),
+    })
+    const deps = makeDeps(state)
+    const outcome = await drivePhase(
+      baseOptsForRegression,
+      { ...phaseDefs[0]! },
+      [],
+      FAST_TIMINGS,
+      deps,
+    )
+    assert.strictEqual(outcome, 'completed')
+    assert.ok(
+      !deps.errs.some((l) => l.includes('empty mergeOrder')),
+      'should NOT warn when there are zero tasks',
+    )
+  })
+})
+
+describe('v0.8.4.1 P2.2: runDrive returns EXIT_PAUSED (4) for paused phases', () => {
+  it('returns 4 (not 1) when a phase pauses on a declined approval', async () => {
+    const taskDefs: DrivenTask[] = [
+      { id: TASK_A, phaseId: PHASE_1, status: 'ready_to_merge', title: 'A' },
+    ]
+    const phaseDefs: DrivenPhase[] = [
+      {
+        id: PHASE_1,
+        index: 0,
+        title: 'Phase 1',
+        status: 'executing',
+        mergeOrder: [TASK_A],
+      },
+    ]
+    const state = makeState({
+      taskDefs,
+      phaseDefs,
+      tasks: new Map([[TASK_A, 'ready_to_merge']]),
+      phases: new Map([[PHASE_1, 'executing']]),
+      approvals: [
+        {
+          id: 'a1',
+          subject: 'task',
+          status: 'pending',
+          taskId: TASK_A,
+          riskBand: 'medium',
+        },
+      ],
+      // Phase doesn't progress while waiting; paused approval propagates.
+      onPost: new Map<string, (s: MockServerState) => void>([
+        [`POST /phases/${PHASE_1}/integrate`, (_s) => undefined],
+      ]),
+    })
+    const deps = makeDeps(state)
+    const opts = { ...baseOptsForRegression, approve: 'none' as const }
+    const code = await runDrive(opts, deps, FAST_TIMINGS)
+    assert.strictEqual(code, 4) // EXIT_PAUSED
+  })
+})
+
 // Acknowledge unused imports the test file accepts as part of the module
 // surface but doesn't directly call. (Keeps tsc strict happy if we ever
 // drop one of the assertions above.)
