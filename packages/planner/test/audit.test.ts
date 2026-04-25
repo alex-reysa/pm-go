@@ -59,6 +59,45 @@ describe("auditPlan", () => {
     expect(overlap!.summary).toContain(shared);
   });
 
+  it("flags overlapping fileScope.includes in phase 1+ as a high finding (v0.8.2.1 P2.2)", () => {
+    const plan = clonePlan();
+    const phase0 = plan.phases.find((p) => p.index === 0)!;
+    const phase1 = plan.phases.find((p) => p.index === 1)!;
+    expect(phase1).toBeDefined();
+
+    // Reassign one phase-0 task to phase-1 so phase-1 has two tasks
+    // we can give overlapping scopes to. Update both phase taskIds
+    // arrays so the audit's task-membership lookup matches.
+    const phase0Tasks = plan.tasks.filter((t) => t.phaseId === phase0.id);
+    expect(phase0Tasks.length).toBeGreaterThanOrEqual(2);
+    const movedTask = phase0Tasks[1]!;
+    movedTask.phaseId = phase1.id;
+    phase0.taskIds = phase0.taskIds.filter((id) => id !== movedTask.id);
+    phase1.taskIds = [...phase1.taskIds, movedTask.id];
+    // Drop dependency edges that referenced the moved task in phase 0.
+    phase0.dependencyEdges = phase0.dependencyEdges.filter(
+      (e) => e.fromTaskId !== movedTask.id && e.toTaskId !== movedTask.id,
+    );
+    phase0.mergeOrder = phase0.mergeOrder.filter((id) => id !== movedTask.id);
+    phase1.mergeOrder = [...phase1.mergeOrder, movedTask.id];
+
+    const phase1Tasks = plan.tasks.filter((t) => t.phaseId === phase1.id);
+    expect(phase1Tasks.length).toBe(2);
+    const shared = "packages/contracts/src/plan.ts";
+    phase1Tasks[0]!.fileScope.includes = [shared];
+    phase1Tasks[1]!.fileScope.includes = [shared];
+
+    const outcome = auditPlan(plan);
+    expect(outcome.approved).toBe(false);
+    const overlap = outcome.findings.find(
+      (f) => f.id === "plan_audit.phases.fileScope.disjoint",
+    );
+    expect(overlap).toBeDefined();
+    expect(overlap!.severity).toBe("high");
+    expect(overlap!.title).toContain("Phase 1");
+    expect(overlap!.summary).toContain(shared);
+  });
+
   it("flags a phase-0 dependency cycle with plan_audit.phase1.dependencyEdges.acyclic", () => {
     const plan = clonePlan();
     const phase0 = plan.phases.find((p) => p.index === 0)!;

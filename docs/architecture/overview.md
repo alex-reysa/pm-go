@@ -80,6 +80,11 @@ Workflow names, definitions, and later workflow implementations.
 12. Run a final completion audit across code, specs, findings, and acceptance criteria.
 13. Produce PR-ready output only if the completion audit passes.
 
+To run this sequence locally, use the operator guide in
+[`docs/getting-started.md`](../getting-started.md). The architecture page
+explains the model; the getting-started guide gives the concrete API and TUI
+steps from feature spec to release.
+
 ## V1 Non-Goals
 
 - arbitrary runtime-generated agent roles

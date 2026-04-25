@@ -83,6 +83,10 @@ export function createTaskExecutionActivities(
         kind: row.kind,
         status: row.status,
         riskLevel: row.riskLevel,
+        // v0.8.2.1: hydrate sizeHint so the small-task fast path
+        // actually fires for persisted tasks. Persistence side stamps
+        // size_hint nullable; absent → undefined → effective medium.
+        ...(row.sizeHint !== null ? { sizeHint: row.sizeHint } : {}),
         fileScope: row.fileScope,
         acceptanceCriteria: row.acceptanceCriteria,
         testCommands: row.testCommands,

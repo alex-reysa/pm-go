@@ -29,6 +29,7 @@ import {
   type PhaseAuditorRunner,
   type PlannerRunner,
   type ReviewerRunner,
+  type RunnerDiagnosticArtifact,
   type StubCompletionAuditorSequenceEntry,
   type StubPhaseAuditorSequenceEntry,
   type StubReviewerSequenceEntry,
@@ -321,7 +322,18 @@ async function main() {
 
   const db = createDb(databaseUrl);
 
-  const planPersistence = createPlanPersistenceActivities({ db });
+  // v0.8.2.1 P1.4 — pass the parent artifact dir to the persistence
+  // factory so runner_diagnostic JSON lands under
+  // `<artifactDir-parent>/runner-diagnostics/<artifactId>.json`.
+  // `artifactDir` (above) is the plan_markdown subdir; the parent is
+  // the conventional artifacts root.
+  const runnerDiagnosticParent = resolveFromRepoRoot(
+    process.env.RUNNER_DIAGNOSTIC_DIR ?? "./artifacts",
+  );
+  const planPersistence = createPlanPersistenceActivities({
+    db,
+    artifactDir: runnerDiagnosticParent,
+  });
 
   // Shared failure sink for every Claude-backed runner. When the runner
   // catches + classifies an SDK error it synthesizes a
@@ -333,6 +345,21 @@ async function main() {
   // bury the real error.
   const onAgentRunFailure = async (run: AgentRun): Promise<void> => {
     await planPersistence.persistAgentRun(run);
+  };
+
+  // v0.8.2.1 P1.4 — sibling sink for the structured-output diagnostic
+  // path. When a Claude reviewer / phase-auditor / completion-auditor
+  // returns a payload that fails runtime schema validation, the
+  // runner builds a sanitized RunnerDiagnosticArtifact and hands it
+  // here. Persists the JSON to disk + an `artifacts` row so operators
+  // can diff the malformed payload against the schema after the fact
+  // instead of rerunning the reviewer blind. Also swallowed by
+  // `safeInvokeDiagnosticSink` so the underlying ValidationError
+  // still reaches Temporal.
+  const onSchemaValidationDiagnostic = async (
+    artifact: RunnerDiagnosticArtifact,
+  ): Promise<void> => {
+    await planPersistence.persistRunnerDiagnostic(artifact);
   };
 
   // -------------------------------------------------------------------------
@@ -369,16 +396,28 @@ async function main() {
         ? createClaudeImplementerRunner({ onFailure: onAgentRunFailure })
         : createStubImplementerRunner(buildStubImplementerOptions());
 
+  // v0.8.2.1 P1.4: every Claude-backed reviewer/auditor receives BOTH
+  // failure sinks. `onFailure` captures classified executor errors;
+  // `onSchemaValidationFailure` captures malformed structured_output
+  // payloads as runner_diagnostic artifacts so operators can diff
+  // them against the schema later instead of rerunning blind.
   const reviewerRunner: ReviewerRunner =
     reviewerRuntime !== undefined
       ? await resolveRuntimeRunner(
           reviewerRuntime,
           "REVIEWER_RUNTIME",
-          () => createClaudeReviewerRunner({ onFailure: onAgentRunFailure }),
+          () =>
+            createClaudeReviewerRunner({
+              onFailure: onAgentRunFailure,
+              onSchemaValidationFailure: onSchemaValidationDiagnostic,
+            }),
           () => createProcessReviewerRunner({ onFailure: onAgentRunFailure }),
         )
       : reviewerMode === "live"
-        ? createClaudeReviewerRunner({ onFailure: onAgentRunFailure })
+        ? createClaudeReviewerRunner({
+            onFailure: onAgentRunFailure,
+            onSchemaValidationFailure: onSchemaValidationDiagnostic,
+          })
         : createStubReviewerRunner({
             sequence: parseReviewerSmokeSequence(
               process.env.REVIEWER_SMOKE_SEQUENCE,
@@ -390,12 +429,19 @@ async function main() {
       ? await resolveRuntimeRunner(
           phaseAuditorRuntime,
           "PHASE_AUDITOR_RUNTIME",
-          () => createClaudePhaseAuditorRunner({ onFailure: onAgentRunFailure }),
+          () =>
+            createClaudePhaseAuditorRunner({
+              onFailure: onAgentRunFailure,
+              onSchemaValidationFailure: onSchemaValidationDiagnostic,
+            }),
           () =>
             createProcessPhaseAuditorRunner({ onFailure: onAgentRunFailure }),
         )
       : phaseAuditorMode === "live"
-        ? createClaudePhaseAuditorRunner({ onFailure: onAgentRunFailure })
+        ? createClaudePhaseAuditorRunner({
+            onFailure: onAgentRunFailure,
+            onSchemaValidationFailure: onSchemaValidationDiagnostic,
+          })
         : createStubPhaseAuditorRunner({
             sequence: parsePhaseAuditorSmokeSequence(
               process.env.PHASE_AUDITOR_SMOKE_SEQUENCE,
@@ -410,6 +456,7 @@ async function main() {
           () =>
             createClaudeCompletionAuditorRunner({
               onFailure: onAgentRunFailure,
+              onSchemaValidationFailure: onSchemaValidationDiagnostic,
             }),
           () =>
             createProcessCompletionAuditorRunner({
@@ -417,7 +464,10 @@ async function main() {
             }),
         )
       : completionAuditorMode === "live"
-        ? createClaudeCompletionAuditorRunner({ onFailure: onAgentRunFailure })
+        ? createClaudeCompletionAuditorRunner({
+            onFailure: onAgentRunFailure,
+            onSchemaValidationFailure: onSchemaValidationDiagnostic,
+          })
         : createStubCompletionAuditorRunner({
             sequence: parseCompletionAuditorSmokeSequence(
               process.env.COMPLETION_AUDITOR_SMOKE_SEQUENCE,

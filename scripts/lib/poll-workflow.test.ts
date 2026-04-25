@@ -167,4 +167,40 @@ describe("pollWorkflow", () => {
     expect(outcome.status).toBe("terminal");
     expect(outcome.ticks).toBe(2);
   });
+
+  it("strict mode: returns 'unknown' immediately on a non-terminal observation (v0.8.2.1 P2.3)", async () => {
+    const { deps } = makeDeps({
+      payloads: [{ plan: { status: "executing" } }],
+    });
+    const outcome = await pollWorkflow(
+      { ...BASE_ARGS, strict: true },
+      deps,
+    );
+    expect(outcome.status).toBe("unknown");
+    expect(outcome.observed).toBe("executing");
+    expect(outcome.ticks).toBe(1);
+  });
+
+  it("strict mode: still resolves to terminal when a listed value is observed", async () => {
+    const { deps } = makeDeps({
+      payloads: [{ plan: { status: "completed" } }],
+    });
+    const outcome = await pollWorkflow(
+      { ...BASE_ARGS, strict: true },
+      deps,
+    );
+    expect(outcome.status).toBe("terminal");
+    expect(outcome.observed).toBe("completed");
+  });
+
+  it("strict mode: missing field is still transitional (no false positive on first tick race)", async () => {
+    const { deps } = makeDeps({
+      payloads: [{ plan: {} }, { plan: { status: "completed" } }],
+    });
+    const outcome = await pollWorkflow(
+      { ...BASE_ARGS, strict: true },
+      deps,
+    );
+    expect(outcome.status).toBe("terminal");
+  });
 });

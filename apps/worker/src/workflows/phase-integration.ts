@@ -83,6 +83,16 @@ interface PhaseIntegrationActivityInterface {
     decision: ApprovalDecision;
     approvalRequestId?: UUID;
   }>;
+  // v0.8.2.1 P1.1+P1.2 — DB-backed approval re-check. The signal-only
+  // wait pattern broke down when (a) the API signal targeted the wrong
+  // workflow id, or (b) the worker restarted between the gate
+  // evaluation and the signal. The workflow now races the signal
+  // against periodic isApproved polls so the durable approval_requests
+  // row IS the source of truth, not just the in-memory signal state.
+  isApproved(input: { approvalRequestId: UUID }): Promise<{
+    approved: boolean;
+    rejected: boolean;
+  }>;
   // Phase 7 — budget snapshot at integration time.
   persistBudgetReport(input: { planId: UUID }): Promise<{ id: UUID }>;
 }
@@ -101,6 +111,7 @@ const {
   updatePhaseStatus,
   releaseIntegrationLease,
   evaluateApprovalGateActivity,
+  isApproved,
   persistBudgetReport,
 } = proxyActivities<PhaseIntegrationActivityInterface>({
   startToCloseTimeout: "20 minutes",
@@ -114,6 +125,16 @@ const {
  * fresh integrate POST after the approval lands.
  */
 const APPROVAL_WAIT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * v0.8.2.1 P1.1+P1.2: re-check the approval row directly every 30s
+ * regardless of whether a signal has arrived. Bounds the signal
+ * misdelivery window: even if the API signal targets a stale or
+ * never-existing workflow id, the row flip resolves the wait within
+ * one tick. 30s is short enough to be invisible to operators and
+ * long enough to keep the polling cost cheap.
+ */
+const APPROVAL_POLL_INTERVAL_MS = 30 * 1000;
 
 const MAX_MERGE_RETRY_ATTEMPTS_PER_TASK = 2;
 
@@ -178,10 +199,43 @@ export async function PhaseIntegrationWorkflow(
     setHandler(approveSignal, () => {
       approvalResolved = true;
     });
-    const approved = await condition(
-      () => approvalResolved,
-      APPROVAL_WAIT_TIMEOUT_MS,
-    );
+
+    // v0.8.2.1 P1.1+P1.2: race the in-memory signal against periodic
+    // DB re-checks. The API signal may target a stale workflow id, the
+    // worker may restart, or the signal may simply be lost; in any of
+    // those cases the durable approval_requests row is the source of
+    // truth, and the row flip will resolve this wait within one poll
+    // tick. The signal-driven path remains unchanged for the happy
+    // case — `condition()` resolves immediately when the signal lands,
+    // we don't pay the 30s tick cost.
+    let approved = false;
+    const deadline = Date.now() + APPROVAL_WAIT_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      const tickMs = Math.min(APPROVAL_POLL_INTERVAL_MS, remaining);
+      // Wake on either the signal arriving OR the tick timeout.
+      const sawSignal = await condition(() => approvalResolved, tickMs);
+      if (sawSignal) {
+        approved = true;
+        break;
+      }
+      // Tick fired with no signal — re-check the durable row. If the
+      // API flipped the row but the signal never reached us (mismatched
+      // workflow id, dropped signal, worker restart), this is where we
+      // recover.
+      const dbState = await isApproved({ approvalRequestId });
+      if (dbState.approved) {
+        approved = true;
+        break;
+      }
+      if (dbState.rejected) {
+        // Operator rejection — surface explicitly rather than waiting
+        // out the full timeout. Mirrors the "row is source of truth"
+        // contract for the rejection path too.
+        break;
+      }
+    }
+
     if (!approved) {
       await updatePhaseStatus({
         phaseId: input.phaseId,

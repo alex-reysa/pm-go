@@ -427,6 +427,11 @@ describe("POST /plans/:planId/approve-all-pending (v0.8.2 Task 2.1)", () => {
         [pendingTaskApproval()],
         [{ status: "ready_to_merge", phaseId: "p1" }],
         [{ phaseId: "p1" }],
+        // v0.8.2.1 P1.1: merge_runs lookup to resolve the live
+        // workflow id. Returning one row simulates an integration
+        // workflow having started, so the signal path is exercised
+        // (and its throw bubbles up to 500).
+        [{ id: "merge-run-1" }],
       ],
     });
     const temporal = makeBulkTemporal({
@@ -443,6 +448,58 @@ describe("POST /plans/:planId/approve-all-pending (v0.8.2 Task 2.1)", () => {
     expect(res.status).toBe(500);
   });
 
+  it("signals the reconstructed `phase-integrate-${phaseId}-${N}` workflow id (v0.8.2.1 P1.1)", async () => {
+    const signalSpy = vi.fn().mockResolvedValue(undefined);
+    const getHandle = vi.fn().mockReturnValue({ signal: signalSpy });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const temporal = { workflow: { start: vi.fn(), getHandle } } as any;
+    const db = makeMockDb({
+      selects: [
+        [planRow()],
+        [pendingTaskApproval()],
+        [{ status: "ready_to_merge", phaseId: "p1" }],
+        [{ phaseId: "p1" }],
+        // 3 merge_runs rows simulates the third integrate attempt for
+        // this phase, so the live workflow id is `phase-integrate-p1-3`.
+        [{ id: "mr-1" }, { id: "mr-2" }, { id: "mr-3" }],
+      ],
+    });
+    const app = createApp({ temporal, db, ...APP_DEFAULTS });
+    const res = await app.request(`/plans/${PLAN_ID}/approve-all-pending`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "bulk" }),
+    });
+    expect(res.status).toBe(200);
+    expect(getHandle).toHaveBeenCalledWith("phase-integrate-p1-3");
+    expect(signalSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips the signal silently when no merge_runs row exists yet (workflow never started)", async () => {
+    const signalSpy = vi.fn().mockResolvedValue(undefined);
+    const getHandle = vi.fn().mockReturnValue({ signal: signalSpy });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const temporal = { workflow: { start: vi.fn(), getHandle } } as any;
+    const db = makeMockDb({
+      selects: [
+        [planRow()],
+        [pendingTaskApproval()],
+        [{ status: "ready_to_merge", phaseId: "p1" }],
+        [{ phaseId: "p1" }],
+        [], // no merge_runs — phase has not been integrated yet
+      ],
+    });
+    const app = createApp({ temporal, db, ...APP_DEFAULTS });
+    const res = await app.request(`/plans/${PLAN_ID}/approve-all-pending`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "bulk" }),
+    });
+    expect(res.status).toBe(200);
+    expect(getHandle).not.toHaveBeenCalled();
+    expect(signalSpy).not.toHaveBeenCalled();
+  });
+
   it("treats WorkflowNotFoundError as a graceful no-op (200, row flip stands)", async () => {
     const { WorkflowNotFoundError } = await import("@temporalio/client");
     const db = makeMockDb({
@@ -451,6 +508,7 @@ describe("POST /plans/:planId/approve-all-pending (v0.8.2 Task 2.1)", () => {
         [pendingTaskApproval()],
         [{ status: "ready_to_merge", phaseId: "p1" }],
         [{ phaseId: "p1" }],
+        [{ id: "merge-run-1" }], // v0.8.2.1 P1.1: live integration exists
       ],
     });
     const temporal = makeBulkTemporal({

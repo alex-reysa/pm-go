@@ -1,54 +1,84 @@
-# Golden Path: End-to-End Planner Smoke
+# Golden Path Example
 
-This directory contains a small, realistic specification that the Phase 2
-smoke (`pnpm smoke:phase2`) feeds into the planner pipeline end-to-end.
+This directory contains the smallest realistic feature spec for learning pm-go:
 
-## What the smoke does
+- [spec.md](spec.md): add a phase-scoped API endpoint.
+- [phase3-task-index.json](phase3-task-index.json): fixture metadata used by
+  smoke tests.
 
-1. Boots the Temporal worker and the Hono API locally.
-2. `POST /spec-documents` with `examples/golden-path/spec.md` as the
-   body — this persists a `spec_documents` row plus a
-   `repo_snapshots` row captured from the current working tree.
-3. `POST /plans` with the two returned IDs — this starts the
-   `SpecToPlanWorkflow` on Temporal.
-4. Polls `GET /plans/:planId` until the workflow has persisted the plan.
-5. Verifies the durable rows in Postgres (`plans`, `phases`,
-   `plan_tasks`, `agent_runs`, `artifacts`) and the Markdown artifact
-   on disk under `./artifacts/plans/<planId>.md`.
+Use it when you want to see the product path without inventing a new spec.
 
-## Stub vs live planner
+## What This Example Proves
 
-By default the smoke runs with `PLANNER_EXECUTOR_MODE=stub`, which does
-not require an Anthropic API key. The stub planner returns a canned
-Plan fixture (with the spec / snapshot IDs rebased to the live values),
-so the smoke exercises full workflow wiring, persistence, and artifact
-generation — just not planner quality.
+The spec is intentionally narrow. It gives the planner enough context to create
+one or more scoped implementation tasks, and it gives the reviewer/auditor clear
+acceptance criteria:
 
-To run against the real Claude planner:
+- validate `planId` and `phaseId`;
+- return `404` separately for missing plan and missing phase;
+- return phase and task data from existing tables;
+- add unit tests;
+- avoid unnecessary contract, database, or worker changes.
 
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-export PLANNER_EXECUTOR_MODE=live
-pnpm smoke:phase2
-```
+In stub mode, pm-go uses fixtures to exercise the control plane. In live mode,
+Claude-backed runners perform the actual planning, implementation, review, and
+audit work.
 
-Under live mode the planner is read-only (`Read`, `Grep`, `Glob` only)
-and structured-output-pinned to `PlanSchema`, so the Plan it returns is
-shape-validated before persistence.
+## Run It End To End
 
-## Running it
-
-From the repo root:
+From the repo root, follow the canonical guide:
 
 ```bash
-cp .env.example .env           # if not already
 pnpm install
-pnpm docker:up                 # Postgres + Temporal
+cp .env.example .env
+pnpm docker:up
 pnpm db:migrate
+```
+
+Then open separate terminals for the long-running processes:
+
+```bash
+pnpm dev:worker
+```
+
+```bash
+pnpm dev:api
+```
+
+```bash
+pnpm tui
+```
+
+Then submit `examples/golden-path/spec.md` with the commands in
+[docs/getting-started.md](../../docs/getting-started.md).
+
+The expected operator loop is:
+
+1. Submit the spec through `POST /spec-documents`.
+2. Start planning with `POST /plans`.
+3. Open the generated plan in the TUI.
+4. Run tasks with `g r`.
+5. Review with `g v`; fix with `g f` if needed.
+6. Integrate the phase with `g i`.
+7. Audit the phase with `g a`.
+8. Complete and release with `g c` then `g R`.
+
+## Planner-Only Smoke
+
+The older Phase 2 smoke still uses this directory to prove spec intake and plan
+persistence only:
+
+```bash
 pnpm smoke:phase2
 ```
 
-On success the script prints `PASS: plan=<uuid> phases=<n>
-tasks=<n> artifact=<path>` and exits 0. Any DB/artifact mismatch causes
-the script to exit non-zero with worker and API log tails emitted to
-stderr.
+That smoke:
+
+1. boots the worker and API;
+2. posts [spec.md](spec.md) to `POST /spec-documents`;
+3. starts `SpecToPlanWorkflow` through `POST /plans`;
+4. waits for the plan to persist;
+5. verifies plan rows and the rendered plan artifact.
+
+Use `pnpm smoke:phase7` or the TUI walkthrough when you want the full
+feature-to-release path.

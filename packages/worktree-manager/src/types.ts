@@ -35,4 +35,14 @@ export interface DiffScopeResult {
   violations: string[];
   /** The fileScope that was evaluated, for audit trails. */
   fileScope: FileScope;
+  /**
+   * v0.8.2.1 P2.1: total lines added + removed across all changed files
+   * (i.e. `additions + deletions` from `git diff --shortstat`). Feeds
+   * the small-task fast path's host guard so a single 500-line file
+   * tagged `sizeHint="small"` cannot skip review based on file count
+   * alone. Optional for backward-compatibility with diff results that
+   * predate this addition; absence is treated as "unknown" and the
+   * fast path falls back to the file-count guard only.
+   */
+  linesChanged?: number;
 }

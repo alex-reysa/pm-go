@@ -41,7 +41,7 @@ export function auditPlan(plan: Plan): PlanAuditOutcome {
   const findings: ReviewFinding[] = [];
 
   findings.push(...checkPhaseIndexSequence(plan));
-  findings.push(...checkPhase1FileScopeDisjoint(plan));
+  findings.push(...checkAllPhasesFileScopeDisjoint(plan));
   findings.push(...checkPhase1DependencyEdgesAcyclic(plan));
   findings.push(...checkHighRiskApproval(plan));
   findings.push(...auditPlanTestCommands(plan));
@@ -88,42 +88,52 @@ function checkPhaseIndexSequence(plan: Plan): ReviewFinding[] {
 }
 
 // ---------------------------------------------------------------------------
-// Check 2: phase-0 file scope disjointness
+// Check 2: per-phase file scope disjointness
+//
+// The planner prompt (planner.v1.md §4) requires `fileScope.includes` to
+// be pairwise disjoint across tasks **within a single phase**. Pre-v0.8.2.1
+// this check ran only against the foundation phase, so phases 1+ could
+// ship with overlapping scopes that collided during parallel execution
+// or integration. v0.8.2.1 P2.2 generalizes the check to every phase.
 // ---------------------------------------------------------------------------
 
-function checkPhase1FileScopeDisjoint(plan: Plan): ReviewFinding[] {
-  const phase0 = findFoundationPhase(plan);
-  if (!phase0) return [];
-
-  const phaseTasks = tasksForPhase(plan, phase0);
+function checkAllPhasesFileScopeDisjoint(plan: Plan): ReviewFinding[] {
   const findings: ReviewFinding[] = [];
-
-  for (let i = 0; i < phaseTasks.length; i++) {
-    const a = phaseTasks[i]!;
-    const includesA = a.fileScope.includes ?? [];
-    for (let j = i + 1; j < phaseTasks.length; j++) {
-      const b = phaseTasks[j]!;
-      const includesB = b.fileScope.includes ?? [];
-      const overlap = includesA.filter((p) => includesB.includes(p));
-      if (overlap.length > 0) {
+  for (const phase of plan.phases) {
+    const phaseTasks = tasksForPhase(plan, phase);
+    for (let i = 0; i < phaseTasks.length; i++) {
+      const a = phaseTasks[i]!;
+      const includesA = a.fileScope.includes ?? [];
+      for (let j = i + 1; j < phaseTasks.length; j++) {
+        const b = phaseTasks[j]!;
+        const includesB = b.fileScope.includes ?? [];
+        const overlap = includesA.filter((p) => includesB.includes(p));
+        if (overlap.length === 0) continue;
         findings.push({
-          id: "plan_audit.phase1.fileScope.disjoint",
+          // The id keeps the historical `phase1` substring for the
+          // foundation phase to preserve grep-history continuity with
+          // plans audited under v0.8.2 and earlier; later phases get
+          // the generalised `plan_audit.phases.fileScope.disjoint` id.
+          id:
+            phase.index === 0
+              ? "plan_audit.phase1.fileScope.disjoint"
+              : "plan_audit.phases.fileScope.disjoint",
           severity: "high",
-          title: `Phase 0 file scope overlap between "${a.slug}" and "${b.slug}"`,
+          title: `Phase ${phase.index} file scope overlap between "${a.slug}" and "${b.slug}"`,
           summary:
             `Tasks "${a.slug}" (${a.id}) and "${b.slug}" (${b.id}) share the ` +
             `following fileScope.includes entries: ${overlap
               .map((p) => `"${p}"`)
-              .join(", ")}. Phase-0 tasks must have pairwise-disjoint file scopes.`,
-          filePath: `plan.phases[${phase0.index}].tasks`,
+              .join(", ")}. Tasks within a single phase must have ` +
+            `pairwise-disjoint file scopes.`,
+          filePath: `plan.phases[${phase.index}].tasks`,
           confidence: 1,
           suggestedFixDirection:
-            "Split the overlapping paths so each file belongs to exactly one phase-0 task, or merge the two tasks.",
+            `Split the overlapping paths so each file belongs to exactly one task in phase ${phase.index}, or merge the two tasks.`,
         });
       }
     }
   }
-
   return findings;
 }
 

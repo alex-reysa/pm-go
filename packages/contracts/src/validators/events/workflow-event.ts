@@ -58,6 +58,7 @@ export const ArtifactKindLiteralSchema = Type.Union([
   Type.Literal("event_log"),
   Type.Literal("patch_bundle"),
   Type.Literal("pr_summary"),
+  Type.Literal("runner_diagnostic"),
 ]);
 
 /**

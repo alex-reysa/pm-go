@@ -19,6 +19,11 @@ export const artifactKind = pgEnum("artifact_kind", [
   "event_log",
   "patch_bundle",
   "pr_summary",
+  // v0.8.2.1 P1.4 — sanitized payload + schema-validation summary
+  // captured when a Claude runner's structured_output fails runtime
+  // schema validation. JSON content lives under
+  // <artifactDir>/runner-diagnostics/<artifactId>.json.
+  "runner_diagnostic",
 ]);
 
 export const artifacts = pgTable(

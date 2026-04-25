@@ -1,3 +1,6 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+
 import { and, eq, inArray } from "drizzle-orm";
 
 import type {
@@ -9,6 +12,7 @@ import type {
   SpecDocument,
   UUID,
 } from "@pm-go/contracts";
+import type { RunnerDiagnosticArtifact } from "@pm-go/executor-claude";
 import {
   agentRuns,
   artifacts,
@@ -24,6 +28,13 @@ import { createSpanWriter, withSpan } from "@pm-go/observability";
 
 export interface PlanPersistenceDeps {
   db: PmGoDb;
+  /**
+   * Optional override for the on-disk artifact directory used by
+   * `persistRunnerDiagnostic` to write the sanitized JSON payload.
+   * Defaults to `./artifacts` relative to process cwd. The same
+   * convention as the planner's plan_markdown artifact path.
+   */
+  artifactDir?: string;
 }
 
 export interface PersistPlanResult {
@@ -36,6 +47,19 @@ export interface PlanPersistenceActivities {
   persistPlan(plan: Plan): Promise<PersistPlanResult>;
   persistAgentRun(run: AgentRun): Promise<string>;
   persistArtifact(artifact: Artifact): Promise<string>;
+  /**
+   * v0.8.2.1 P1.4 — durable forensic record for a Claude runner's
+   * structured-output validation failure. Writes the sanitized JSON
+   * payload to disk under `<artifactDir>/runner-diagnostics/<id>.json`
+   * and inserts a metadata row into `artifacts` with
+   * `kind='runner_diagnostic'` and `uri=<file path>`. Best-effort:
+   * sink exceptions are swallowed by `safeInvokeDiagnosticSink`
+   * inside the runner so the underlying ValidationError still
+   * reaches Temporal.
+   */
+  persistRunnerDiagnostic(
+    artifact: RunnerDiagnosticArtifact,
+  ): Promise<{ artifactRowId: UUID; uri: string }>;
   loadSpecDocument(specDocumentId: string): Promise<SpecDocument>;
   loadRepoSnapshot(repoSnapshotId: string): Promise<RepoSnapshot>;
 }
@@ -51,6 +75,7 @@ export function createPlanPersistenceActivities(
   deps: PlanPersistenceDeps,
 ): PlanPersistenceActivities {
   const { db } = deps;
+  const artifactDir = deps.artifactDir ?? "./artifacts";
 
   return {
     async persistPlan(plan: Plan): Promise<PersistPlanResult> {
@@ -86,6 +111,13 @@ export function createPlanPersistenceActivities(
         async () => persistArtifactImpl(db, artifact),
         sink ? { sink } : {},
       );
+    },
+
+    async persistRunnerDiagnostic(
+      artifact: RunnerDiagnosticArtifact,
+    ): Promise<{ artifactRowId: UUID; uri: string }> {
+      const result = await persistRunnerDiagnosticImpl(db, artifactDir, artifact);
+      return result;
     },
 
     async loadSpecDocument(specDocumentId: string): Promise<SpecDocument> {
@@ -433,6 +465,69 @@ async function persistArtifactImpl(
     createdAt: artifact.createdAt,
   });
   return artifact.id;
+}
+
+/**
+ * v0.8.2.1 P1.4 — write the sanitized diagnostic JSON to disk and
+ * insert a matching `artifacts` row. The artifact row carries no
+ * planId/taskId because runner-diagnostic capture happens on a
+ * runner-side error path that doesn't always have those ids in scope
+ * (e.g. malformed phase audits without a stable phaseId at the moment
+ * of failure). The DB CHECK requires (taskId OR planId) to be NOT
+ * NULL, so we synthesize an attribution: the caller-provided
+ * artifact id ALSO seeds the artifact row's id, and we set planId to
+ * NULL but require taskId... actually the diagnostic does not know
+ * either. To satisfy the DB constraint we emit a row only when at
+ * least one is derivable from the diagnostic payload; otherwise we
+ * write the JSON to disk and skip the row insert (the file is the
+ * authoritative artifact, the row is the searchable index).
+ */
+async function persistRunnerDiagnosticImpl(
+  db: PmGoDb,
+  artifactDir: string,
+  artifact: RunnerDiagnosticArtifact,
+): Promise<{ artifactRowId: UUID; uri: string }> {
+  const dir = join(artifactDir, "runner-diagnostics");
+  const filePath = join(dir, `${artifact.id}.json`);
+  await mkdir(dirname(filePath), { recursive: true });
+  await writeFile(filePath, JSON.stringify(artifact, null, 2), "utf8");
+
+  // The artifacts table requires (taskId OR planId). The diagnostic
+  // artifact does not carry either id directly, so we attempt to
+  // derive a planId from the sessionId-attached AgentRun if one is
+  // available. When neither is recoverable, we still write the file
+  // (operators can find it under the artifactDir) but skip the DB
+  // row to respect the CHECK constraint. This preserves the on-disk
+  // forensic trail even when the DB-side index isn't available.
+  let planIdForRow: UUID | null = null;
+  if (artifact.sessionId !== undefined) {
+    const [related] = await db
+      .select({ taskId: agentRuns.taskId })
+      .from(agentRuns)
+      .where(eq(agentRuns.sessionId, artifact.sessionId))
+      .limit(1);
+    if (related?.taskId) {
+      const [task] = await db
+        .select({ planId: planTasks.planId })
+        .from(planTasks)
+        .where(eq(planTasks.id, related.taskId))
+        .limit(1);
+      planIdForRow = task?.planId ?? null;
+    }
+  }
+
+  if (planIdForRow !== null) {
+    await db.insert(artifacts).values({
+      id: artifact.id,
+      taskId: null,
+      planId: planIdForRow,
+      kind: "runner_diagnostic",
+      uri: filePath,
+      createdAt: artifact.createdAt,
+    });
+  }
+
+  return { artifactRowId: artifact.id, uri: filePath };
 }
 
 async function loadSpecDocumentImpl(

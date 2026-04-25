@@ -345,37 +345,47 @@ describe("POST /phases/:phaseId/override-audit (v0.8.2 Task 2.2)", () => {
     expect(res.status).toBe(409);
   });
 
-  it("flips a 'blocked' phase to 'completed' and stamps override columns on the latest audit", async () => {
-    const { client } = makeMockTemporal();
-    const updateCalls: Array<{ values: unknown }> = [];
-    let selectCallIndex = 0;
+  /**
+   * Build a db mock that returns sequential rows for sequential .select()
+   * calls. Captures update payloads. The override-audit handler does
+   * exactly two selects (phase row, latest audit) and two updates
+   * (phase_audit_reports, phases) on the happy path.
+   */
+  function makeOverrideAuditMockDb(opts: {
+    selectsInOrder: unknown[][];
+    updateCalls?: Array<{ values: unknown }>;
+  }) {
+    let selectIdx = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const db: any = {
       select: vi.fn().mockImplementation(() => {
-        const idx = selectCallIndex++;
-        // 0: phase row select; 1: latest audit select.
-        const rows =
-          idx === 0
-            ? [{ id: PHASE_ID, status: "blocked" }]
-            : [{ id: "audit-1" }];
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue(rows),
-              orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue(rows),
-              }),
-            }),
-          }),
-        };
+        const rows = opts.selectsInOrder[selectIdx++] ?? [];
+        const limit = vi.fn().mockResolvedValue(rows);
+        const orderBy = vi.fn().mockReturnValue({ limit });
+        const where = vi.fn().mockReturnValue({ limit, orderBy });
+        const from = vi.fn().mockReturnValue({ where });
+        return { from };
       }),
       update: vi.fn().mockImplementation(() => ({
         set: vi.fn().mockImplementation((values: unknown) => {
-          updateCalls.push({ values });
+          opts.updateCalls?.push({ values });
           return { where: vi.fn().mockResolvedValue(undefined) };
         }),
       })),
     };
+    return db;
+  }
+
+  it("flips a 'blocked' phase to 'completed' when latest audit outcome is 'blocked'", async () => {
+    const { client } = makeMockTemporal();
+    const updateCalls: Array<{ values: unknown }> = [];
+    const db = makeOverrideAuditMockDb({
+      selectsInOrder: [
+        [{ id: PHASE_ID, status: "blocked" }],
+        [{ id: "audit-1", outcome: "blocked" }],
+      ],
+      updateCalls,
+    });
     const app = appWith(db, client);
     const res = await app.request(`/phases/${PHASE_ID}/override-audit`, {
       method: "POST",
@@ -390,11 +400,76 @@ describe("POST /phases/:phaseId/override-audit (v0.8.2 Task 2.2)", () => {
       newStatus: string;
       reason: string;
       overriddenBy?: string;
+      auditReportId: string;
     };
     expect(body.newStatus).toBe("completed");
     expect(body.reason).toContain("operator-accepted");
     expect(body.overriddenBy).toBe("alex");
-    // Both update paths fired: phase_audit_reports and phases.
+    expect(body.auditReportId).toBe("audit-1");
     expect(updateCalls.length).toBe(2);
+  });
+
+  it("flips a 'blocked' phase to 'completed' when latest audit outcome is 'changes_requested'", async () => {
+    const { client } = makeMockTemporal();
+    const updateCalls: Array<{ values: unknown }> = [];
+    const db = makeOverrideAuditMockDb({
+      selectsInOrder: [
+        [{ id: PHASE_ID, status: "blocked" }],
+        [{ id: "audit-1", outcome: "changes_requested" }],
+      ],
+      updateCalls,
+    });
+    const app = appWith(db, client);
+    const res = await app.request(`/phases/${PHASE_ID}/override-audit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "ack the findings" }),
+    });
+    expect(res.status).toBe(200);
+    expect(updateCalls.length).toBe(2);
+  });
+
+  it("refuses (409) when no audit report exists (v0.8.2.1 P1.6)", async () => {
+    const { client } = makeMockTemporal();
+    const updateCalls: Array<{ values: unknown }> = [];
+    const db = makeOverrideAuditMockDb({
+      selectsInOrder: [
+        [{ id: PHASE_ID, status: "blocked" }],
+        [], // no audit reports — phase is blocked for some other reason
+      ],
+      updateCalls,
+    });
+    const app = appWith(db, client);
+    const res = await app.request(`/phases/${PHASE_ID}/override-audit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "force-complete" }),
+    });
+    expect(res.status).toBe(409);
+    expect(updateCalls.length).toBe(0);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("no phase_audit_reports");
+  });
+
+  it("refuses (409) when latest audit outcome is 'pass' (v0.8.2.1 P1.6)", async () => {
+    const { client } = makeMockTemporal();
+    const updateCalls: Array<{ values: unknown }> = [];
+    const db = makeOverrideAuditMockDb({
+      selectsInOrder: [
+        [{ id: PHASE_ID, status: "blocked" }],
+        [{ id: "audit-1", outcome: "pass" }],
+      ],
+      updateCalls,
+    });
+    const app = appWith(db, client);
+    const res = await app.request(`/phases/${PHASE_ID}/override-audit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "force" }),
+    });
+    expect(res.status).toBe(409);
+    expect(updateCalls.length).toBe(0);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("'pass'");
   });
 });

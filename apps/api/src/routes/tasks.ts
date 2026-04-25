@@ -34,6 +34,7 @@ import {
 import { and } from "drizzle-orm";
 
 import { approveSubject } from "./approvals.js";
+import { resolveLatestIntegrationWorkflowId } from "../lib/integration-workflow-id.js";
 import { toIso } from "../lib/timestamps.js";
 
 /**
@@ -561,23 +562,40 @@ export function createTasksRoute(deps: TasksRouteDeps) {
       .limit(1);
 
     if (taskPhaseRow) {
-      const workflowId = `phase-integration-${taskPhaseRow.phaseId}`;
-      try {
-        await deps.temporal.workflow.getHandle(workflowId).signal(approveSignal);
-      } catch (err) {
-        // WorkflowNotFoundError covers "never started" + "already finished":
-        // either way the row flip is the source of truth and the next
-        // PhaseIntegrationWorkflow run will pick up the approved row from
-        // the durable ledger. Other signal failures still surface as 5xx
-        // so a transient gRPC blip is retryable.
-        if (err instanceof WorkflowNotFoundError) {
-          console.warn(
-            `[approve] no live ${workflowId} to signal; row flip stands`,
-          );
-        } else {
-          console.error(`[approve] failed to signal workflow ${workflowId}:`, err);
-          throw err;
+      // v0.8.2.1 P1.1: reconstruct the actual workflow id from
+      // merge_runs (started as `phase-integrate-${phaseId}-${N}`).
+      // Pre-v0.8.2.1 we signaled `phase-integration-${phaseId}`,
+      // which never matched and silently no-op'd under v0.8.2's
+      // WorkflowNotFoundError handler. The DB row flip remains the
+      // source of truth (workflow polls in v0.8.2.1 P1.2), so a
+      // missing live workflow is still safe — it's just no longer
+      // the silent default for the happy path.
+      const workflowId = await resolveLatestIntegrationWorkflowId(
+        deps.db,
+        taskPhaseRow.phaseId,
+      );
+      if (workflowId !== null) {
+        try {
+          await deps.temporal.workflow
+            .getHandle(workflowId)
+            .signal(approveSignal);
+        } catch (err) {
+          if (err instanceof WorkflowNotFoundError) {
+            console.warn(
+              `[approve] no live ${workflowId} to signal; row flip stands`,
+            );
+          } else {
+            console.error(
+              `[approve] failed to signal workflow ${workflowId}:`,
+              err,
+            );
+            throw err;
+          }
         }
+      } else {
+        console.warn(
+          `[approve] phase ${taskPhaseRow.phaseId} has no merge_runs yet; nothing to signal (row flip stands)`,
+        );
       }
     }
 
@@ -659,6 +677,44 @@ export function createTasksRoute(deps: TasksRouteDeps) {
         },
         409,
       );
+    }
+
+    // v0.8.2.1 P1.5: refuse to override when the latest task-scoped
+    // policy_decisions row says the task is blocked for a reason
+    // unrelated to the review cycle (budget overrun, file-scope
+    // violation). Those gates exist to protect spend + scope; the
+    // /override-review path must not bypass them. Operators who need
+    // to recover budget-blocked or scope-blocked tasks should fix the
+    // underlying issue and re-drive, not stamp ready_to_merge here.
+    const [latestDecision] = await deps.db
+      .select({ decision: policyDecisions.decision, reason: policyDecisions.reason })
+      .from(policyDecisions)
+      .where(
+        and(
+          eq(policyDecisions.subjectType, "task"),
+          eq(policyDecisions.subjectId, taskId),
+        ),
+      )
+      .orderBy(desc(policyDecisions.createdAt))
+      .limit(1);
+    if (latestDecision) {
+      const blockingDecisions: ReadonlyArray<typeof latestDecision.decision> = [
+        "budget_exceeded",
+        "scope_violation",
+      ];
+      if (blockingDecisions.includes(latestDecision.decision)) {
+        return c.json(
+          {
+            error:
+              `task ${taskId} is blocked by '${latestDecision.decision}' ` +
+              `(reason: ${latestDecision.reason}); override-review only ` +
+              `applies to review-cycle blockers (retry_denied, requires_human, ` +
+              `or review false-positives). Fix the underlying issue and ` +
+              `re-drive the task instead.`,
+          },
+          409,
+        );
+      }
     }
 
     const decisionId = randomUUID();

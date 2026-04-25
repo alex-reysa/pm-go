@@ -24,12 +24,18 @@ const activityFns = {
 };
 
 let uuidCounter = 0;
+// v0.8.2.1 P1.1+P1.2: the approval-gate path uses condition() to wait
+// on a signal AND falls back to isApproved DB polls. Tests can drive
+// the wait outcome by mutating `mockConditionResolved` (true → signal
+// arrived) and the activity-level `isApproved` mock.
+let mockConditionResolved = false;
+const mockSetHandler = vi.fn();
 vi.mock("@temporalio/workflow", () => ({
   proxyActivities: () => activityFns,
   uuid4: () => `mock-merge-run-${++uuidCounter}`,
-  // Approval-gate poll loop uses condition() + sleep(). Provide
-  // immediate-resolve stubs so the test never spends real time waiting.
-  condition: async (_predicate: () => boolean, _ms?: number) => false,
+  setHandler: (...args: unknown[]) => mockSetHandler(...args),
+  condition: async (_predicate: () => boolean, _ms?: number) =>
+    mockConditionResolved,
   sleep: async (_ms: number) => undefined,
   ApplicationFailure: {
     nonRetryable: (message: string, type: string) => {
@@ -111,6 +117,8 @@ describe("PhaseIntegrationWorkflow", () => {
       fn.mockReset();
       fn.mockResolvedValue(undefined);
     }
+    mockSetHandler.mockReset();
+    mockConditionResolved = false;
     uuidCounter = 0;
     // Phase 7 defaults — approval gate clear, isApproved true,
     // budget snapshot succeeds. Tests that exercise the approval-blocked
@@ -275,6 +283,103 @@ describe("PhaseIntegrationWorkflow", () => {
     });
     expect(activityFns.releaseIntegrationLease).toHaveBeenCalledWith({
       leaseId: LEASE_ID,
+    });
+  });
+
+  describe("v0.8.2.1 P1.1+P1.2: approval-gate race (signal vs DB poll)", () => {
+    function setupApprovalRequired() {
+      const phase = makePhase([TASK_A]);
+      const lease = makeLease();
+      activityFns.loadPhase.mockResolvedValue(phase);
+      activityFns.runPhasePartitionChecks.mockResolvedValue({
+        ok: true,
+        reasons: [],
+      });
+      activityFns.createIntegrationLease.mockResolvedValue(lease);
+      activityFns.loadTask.mockImplementation((input: { taskId: string }) =>
+        Promise.resolve(makeTask(input.taskId)),
+      );
+      activityFns.evaluateApprovalGateActivity.mockResolvedValue({
+        decision: { required: true, riskBand: "high" },
+        approvalRequestId: "appr-1",
+      });
+      activityFns.integrateTask.mockResolvedValue({
+        status: "merged",
+        mergedHeadSha: "b".repeat(40),
+      });
+      activityFns.validatePostMergeState.mockResolvedValue({
+        passed: true,
+        logs: [],
+      });
+      activityFns.readIntegrationWorktreeHeadSha.mockResolvedValue("c".repeat(40));
+      activityFns.capturePostMergeSnapshotAndStamp.mockResolvedValue({
+        snapshotId: "snap-1",
+      });
+    }
+
+    it("resolves immediately when the in-memory signal arrives (happy path)", async () => {
+      setupApprovalRequired();
+      mockConditionResolved = true; // signal arrived
+      activityFns.isApproved.mockResolvedValue({
+        approved: false,
+        rejected: false,
+      });
+
+      const result = await PhaseIntegrationWorkflow({
+        planId: PLAN_ID,
+        phaseId: PHASE_ID,
+      });
+
+      expect(result.mergeRun.mergedTaskIds).toEqual([TASK_A]);
+      // Signal short-circuits the loop — no need to poll the DB.
+      expect(activityFns.isApproved).not.toHaveBeenCalled();
+    });
+
+    it("falls back to DB re-check when the signal never arrives (P1.1 backstop)", async () => {
+      setupApprovalRequired();
+      mockConditionResolved = false; // signal never arrived
+      activityFns.isApproved.mockResolvedValue({
+        approved: true,
+        rejected: false,
+      });
+
+      const result = await PhaseIntegrationWorkflow({
+        planId: PLAN_ID,
+        phaseId: PHASE_ID,
+      });
+
+      expect(result.mergeRun.mergedTaskIds).toEqual([TASK_A]);
+      // Without the row poll, the workflow would have timed out at 24h.
+      expect(activityFns.isApproved).toHaveBeenCalledWith({
+        approvalRequestId: "appr-1",
+      });
+    });
+
+    it("recognises a rejected DB row and bails out without waiting the full timeout", async () => {
+      setupApprovalRequired();
+      mockConditionResolved = false; // no signal
+      activityFns.isApproved.mockResolvedValue({
+        approved: false,
+        rejected: true,
+      });
+
+      // Rejection routes the same way as approval timeout (phase
+      // blocked + nonRetryable failure). The key property is we EXIT
+      // the wait promptly via the rejected branch instead of waiting
+      // the full 24h. The throw confirms we exited the loop.
+      await expect(
+        PhaseIntegrationWorkflow({
+          planId: PLAN_ID,
+          phaseId: PHASE_ID,
+        }),
+      ).rejects.toThrow(/approval timeout/);
+      expect(activityFns.updatePhaseStatus).toHaveBeenCalledWith({
+        phaseId: PHASE_ID,
+        status: "blocked",
+      });
+      // Specifically: isApproved was consulted once (the rejected
+      // result let us bail without re-polling).
+      expect(activityFns.isApproved).toHaveBeenCalledTimes(1);
     });
   });
 

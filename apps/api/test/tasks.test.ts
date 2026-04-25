@@ -535,32 +535,34 @@ describe("POST /tasks/:taskId/override-review (v0.8.2 Task 2.2)", () => {
     expect(res.status).toBe(409);
   });
 
-  it("flips a 'blocked' task to ready_to_merge and inserts a human policy_decisions row", async () => {
-    const { client } = makeMockTemporal();
-    const insertCalled = { v: false };
-    const updateCalled = { v: false };
-    // Build a custom db that captures insert + update calls.
+  /**
+   * Build a db mock that returns sequential rows for sequential .select()
+   * calls, with proper chain support (.where(...).orderBy(...).limit(...)
+   * and .where(...).limit(...) both resolve to the rows). Captures whether
+   * insert + update were invoked.
+   */
+  function makeOverrideReviewMockDb(opts: {
+    selectsInOrder: unknown[][];
+    insertCalled?: { v: boolean };
+    updateCalled?: { v: boolean };
+  }) {
+    let i = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const db: any = {
-      select: vi.fn().mockImplementation(() => ({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([
-              {
-                id: TASK_ID,
-                status: "blocked",
-                riskLevel: "medium",
-              },
-            ]),
-          }),
-        }),
-      })),
+      select: vi.fn().mockImplementation(() => {
+        const rows = opts.selectsInOrder[i++] ?? [];
+        const limit = vi.fn().mockResolvedValue(rows);
+        const orderBy = vi.fn().mockReturnValue({ limit });
+        const where = vi.fn().mockReturnValue({ limit, orderBy });
+        const from = vi.fn().mockReturnValue({ where });
+        return { from };
+      }),
       insert: vi.fn().mockImplementation(() => {
-        insertCalled.v = true;
+        if (opts.insertCalled) opts.insertCalled.v = true;
         return { values: vi.fn().mockResolvedValue(undefined) };
       }),
       update: vi.fn().mockImplementation(() => {
-        updateCalled.v = true;
+        if (opts.updateCalled) opts.updateCalled.v = true;
         return {
           set: vi
             .fn()
@@ -568,6 +570,21 @@ describe("POST /tasks/:taskId/override-review (v0.8.2 Task 2.2)", () => {
         };
       }),
     };
+    return db;
+  }
+
+  it("flips a 'blocked' task to ready_to_merge when the latest policy_decision is a review blocker", async () => {
+    const { client } = makeMockTemporal();
+    const insertCalled = { v: false };
+    const updateCalled = { v: false };
+    const db = makeOverrideReviewMockDb({
+      selectsInOrder: [
+        [{ id: TASK_ID, status: "blocked", riskLevel: "medium" }], // task lookup
+        [{ decision: "retry_denied", reason: "max review cycles" }], // latest policy_decision
+      ],
+      insertCalled,
+      updateCalled,
+    });
     const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
     const res = await app.request(`/tasks/${TASK_ID}/override-review`, {
       method: "POST",
@@ -590,6 +607,79 @@ describe("POST /tasks/:taskId/override-review (v0.8.2 Task 2.2)", () => {
     expect(body.reason).toContain("reviewer flagged");
     expect(body.overriddenBy).toBe("alex");
     expect(typeof body.policyDecisionId).toBe("string");
+  });
+
+  it("flips a 'blocked' task to ready_to_merge when no policy_decision exists (review false-positive)", async () => {
+    const { client } = makeMockTemporal();
+    const insertCalled = { v: false };
+    const updateCalled = { v: false };
+    const db = makeOverrideReviewMockDb({
+      selectsInOrder: [
+        [{ id: TASK_ID, status: "blocked", riskLevel: "medium" }],
+        [], // no policy_decisions for this task
+      ],
+      insertCalled,
+      updateCalled,
+    });
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks/${TASK_ID}/override-review`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "reviewer false positive" }),
+    });
+    expect(res.status).toBe(200);
+    expect(insertCalled.v).toBe(true);
+    expect(updateCalled.v).toBe(true);
+  });
+
+  it("refuses (409) when the latest policy_decision is budget_exceeded (v0.8.2.1 P1.5)", async () => {
+    const { client } = makeMockTemporal();
+    const insertCalled = { v: false };
+    const updateCalled = { v: false };
+    const db = makeOverrideReviewMockDb({
+      selectsInOrder: [
+        [{ id: TASK_ID, status: "blocked", riskLevel: "low" }],
+        [{ decision: "budget_exceeded", reason: "budget_exceeded: +0.5usd" }],
+      ],
+      insertCalled,
+      updateCalled,
+    });
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks/${TASK_ID}/override-review`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "operator says ship" }),
+    });
+    expect(res.status).toBe(409);
+    expect(insertCalled.v).toBe(false);
+    expect(updateCalled.v).toBe(false);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("budget_exceeded");
+  });
+
+  it("refuses (409) when the latest policy_decision is scope_violation (v0.8.2.1 P1.5)", async () => {
+    const { client } = makeMockTemporal();
+    const insertCalled = { v: false };
+    const updateCalled = { v: false };
+    const db = makeOverrideReviewMockDb({
+      selectsInOrder: [
+        [{ id: TASK_ID, status: "blocked", riskLevel: "low" }],
+        [{ decision: "scope_violation", reason: "touched apps/web/page.tsx" }],
+      ],
+      insertCalled,
+      updateCalled,
+    });
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks/${TASK_ID}/override-review`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "approved by sec review out-of-band" }),
+    });
+    expect(res.status).toBe(409);
+    expect(insertCalled.v).toBe(false);
+    expect(updateCalled.v).toBe(false);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("scope_violation");
   });
 });
 

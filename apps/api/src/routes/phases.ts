@@ -410,24 +410,58 @@ export function createPhasesRoute(deps: PhasesRouteDeps) {
       );
     }
 
+    // v0.8.2.1 P1.6: phases get blocked for many reasons (partition
+    // violation, approval timeout, merge failure, test failure, audit
+    // failure). /override-audit specifically means "operator accepts a
+    // blocked AUDIT outcome", not "operator force-completes any blocked
+    // phase". Require an audit report row whose outcome is `blocked`
+    // or `changes_requested` before accepting; refuse otherwise so the
+    // override trail stays meaningful and operators are pointed at the
+    // real blocker (re-drive via /integrate after fixing the cause).
     const [latestAudit] = await deps.db
-      .select({ id: phaseAuditReports.id })
+      .select({
+        id: phaseAuditReports.id,
+        outcome: phaseAuditReports.outcome,
+      })
       .from(phaseAuditReports)
       .where(eq(phaseAuditReports.phaseId, phaseId))
       .orderBy(desc(phaseAuditReports.createdAt))
       .limit(1);
 
-    const overriddenAt = new Date().toISOString();
-    if (latestAudit) {
-      await deps.db
-        .update(phaseAuditReports)
-        .set({
-          overrideReason: reason,
-          overriddenBy,
-          overriddenAt,
-        })
-        .where(eq(phaseAuditReports.id, latestAudit.id));
+    if (!latestAudit) {
+      return c.json(
+        {
+          error:
+            `phase ${phaseId} is blocked but has no phase_audit_reports ` +
+            `row; /override-audit only applies to phases blocked by the ` +
+            `audit step. Investigate the actual blocker (partition ` +
+            `failure / approval timeout / merge failure / test failure) ` +
+            `via GET /phases/${phaseId} and re-drive via /integrate.`,
+        },
+        409,
+      );
     }
+    if (latestAudit.outcome !== "blocked" && latestAudit.outcome !== "changes_requested") {
+      return c.json(
+        {
+          error:
+            `phase ${phaseId} latest audit outcome is '${latestAudit.outcome}'; ` +
+            `override-audit only applies when the audit blocked or requested ` +
+            `changes. Nothing to override here.`,
+        },
+        409,
+      );
+    }
+
+    const overriddenAt = new Date().toISOString();
+    await deps.db
+      .update(phaseAuditReports)
+      .set({
+        overrideReason: reason,
+        overriddenBy,
+        overriddenAt,
+      })
+      .where(eq(phaseAuditReports.id, latestAudit.id));
 
     await deps.db
       .update(phases)
@@ -439,7 +473,7 @@ export function createPhasesRoute(deps: PhasesRouteDeps) {
         phaseId,
         previousStatus: phaseRow.status,
         newStatus: "completed",
-        ...(latestAudit ? { auditReportId: latestAudit.id } : {}),
+        auditReportId: latestAudit.id,
         reason,
         ...(overriddenBy ? { overriddenBy } : {}),
         overriddenAt,

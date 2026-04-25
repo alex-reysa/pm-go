@@ -32,6 +32,17 @@ type TaskStatusTransition = TaskStatus | "ready_for_review";
  */
 const SMALL_FAST_PATH_MAX_CHANGED_FILES = 6;
 
+/**
+ * v0.8.2.1 P2.1: maximum total lines added+removed for the fast path.
+ * The roadmap defines `sizeHint="small"` as `< 25 lines`. We allow
+ * twice that (50) to absorb noise (whitespace, imports, comment-only
+ * touches) without letting a 200-line "small" task slip through. When
+ * `linesChanged` is undefined (e.g. stub diff results), the guard
+ * falls back to the file-count check only — so this is purely an
+ * upgrade for production diffs that compute the count.
+ */
+const SMALL_FAST_PATH_MAX_CHANGED_LINES = 50;
+
 interface FastPathGuardResult {
   eligible: boolean;
   reasons: string[];
@@ -45,6 +56,7 @@ interface FastPathGuardResult {
 function evaluateSmallFastPathGuards(
   task: Task,
   changedFileCount: number,
+  linesChanged: number | undefined,
 ): FastPathGuardResult {
   const reasons: string[] = [];
   if (task.sizeHint !== "small") {
@@ -59,11 +71,28 @@ function evaluateSmallFastPathGuards(
       `changedFiles=${changedFileCount}>${SMALL_FAST_PATH_MAX_CHANGED_FILES}`,
     );
   }
+  // v0.8.2.1 P2.1: line-count guard. Only enforced when the diff
+  // result actually carries `linesChanged`; otherwise the file-count
+  // check stands alone (back-compat with stubs / older activities).
+  if (
+    linesChanged !== undefined &&
+    linesChanged > SMALL_FAST_PATH_MAX_CHANGED_LINES
+  ) {
+    reasons.push(
+      `linesChanged=${linesChanged}>${SMALL_FAST_PATH_MAX_CHANGED_LINES}`,
+    );
+  }
+  const fileGuardOk =
+    changedFileCount <= SMALL_FAST_PATH_MAX_CHANGED_FILES;
+  const lineGuardOk =
+    linesChanged === undefined ||
+    linesChanged <= SMALL_FAST_PATH_MAX_CHANGED_LINES;
   const eligible =
     task.riskLevel === "low" &&
     !task.requiresHumanApproval &&
     !task.reviewerPolicy.required &&
-    changedFileCount <= SMALL_FAST_PATH_MAX_CHANGED_FILES;
+    fileGuardOk &&
+    lineGuardOk;
   return { eligible, reasons };
 }
 
@@ -101,7 +130,15 @@ interface TaskExecutionActivityInterface {
     worktreePath: string;
     baseSha: string;
     fileScope: FileScope;
-  }): Promise<{ changedFiles: string[]; violations: string[] }>;
+  }): Promise<{
+    changedFiles: string[];
+    violations: string[];
+    /**
+     * v0.8.2.1 P2.1: total lines added + removed. Optional for
+     * back-compat with stub diff results that don't compute it.
+     */
+    linesChanged?: number;
+  }>;
   // Phase 7 — policy gate + decision persistence.
   evaluateBudgetGateActivity(input: {
     taskId: string;
@@ -244,6 +281,7 @@ export async function TaskExecutionWorkflow(
     const fastPathGuards = evaluateSmallFastPathGuards(
       task,
       diffResult.changedFiles.length,
+      diffResult.linesChanged,
     );
     if (fastPathGuards.eligible) {
       const policyDecisionId = uuid4();

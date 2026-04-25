@@ -139,7 +139,10 @@ export interface Artifact {
     | "test_report"
     | "event_log"
     | "patch_bundle"
-    | "pr_summary";
+    | "pr_summary"
+    // v0.8.2.1 P1.4 — sanitized structured-output diagnostic captured
+    // when a Claude runner's payload fails runtime schema validation.
+    | "runner_diagnostic";
   uri: string;
   createdAt: string;
 }

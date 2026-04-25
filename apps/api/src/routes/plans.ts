@@ -32,6 +32,7 @@ import {
 } from "@pm-go/db";
 
 import { approveSubject } from "./approvals.js";
+import { resolveLatestIntegrationWorkflowId } from "../lib/integration-workflow-id.js";
 import { toIso } from "../lib/timestamps.js";
 
 /**
@@ -435,21 +436,33 @@ export function createPlansRoute(deps: PlansRouteDeps) {
       .limit(1);
 
     if (integratingPhase) {
-      const workflowId = `phase-integration-${integratingPhase.id}`;
-      try {
-        await deps.temporal.workflow.getHandle(workflowId).signal(approveSignal);
-      } catch (err) {
-        // See tasks.ts /approve for rationale: signal-not-found means the
-        // workflow either hasn't started yet or already completed; the
-        // approval_requests row flip is the source of truth either way.
-        if (err instanceof WorkflowNotFoundError) {
-          console.warn(
-            `[approve] no live ${workflowId} to signal; row flip stands`,
-          );
-        } else {
-          console.error(`[approve] failed to signal workflow ${workflowId}:`, err);
-          throw err;
+      // v0.8.2.1 P1.1: reconstruct the live workflow id from merge_runs.
+      const workflowId = await resolveLatestIntegrationWorkflowId(
+        deps.db,
+        integratingPhase.id,
+      );
+      if (workflowId !== null) {
+        try {
+          await deps.temporal.workflow
+            .getHandle(workflowId)
+            .signal(approveSignal);
+        } catch (err) {
+          if (err instanceof WorkflowNotFoundError) {
+            console.warn(
+              `[approve] no live ${workflowId} to signal; row flip stands`,
+            );
+          } else {
+            console.error(
+              `[approve] failed to signal workflow ${workflowId}:`,
+              err,
+            );
+            throw err;
+          }
         }
+      } else {
+        console.warn(
+          `[approve] phase ${integratingPhase.id} has no merge_runs yet; nothing to signal (row flip stands)`,
+        );
       }
     }
 
@@ -638,7 +651,17 @@ export function createPlansRoute(deps: PlansRouteDeps) {
     }
 
     for (const phaseId of phaseIdsToSignal) {
-      const workflowId = `phase-integration-${phaseId}`;
+      // v0.8.2.1 P1.1: reconstruct the live workflow id from merge_runs.
+      const workflowId = await resolveLatestIntegrationWorkflowId(
+        deps.db,
+        phaseId,
+      );
+      if (workflowId === null) {
+        console.warn(
+          `[approve-all-pending] phase ${phaseId} has no merge_runs yet; nothing to signal (row flip stands)`,
+        );
+        continue;
+      }
       try {
         await deps.temporal.workflow
           .getHandle(workflowId)

@@ -376,6 +376,50 @@ describe("TaskExecutionWorkflow", () => {
       expect(result.status).toBe("ready_for_review");
       expect(activityFns.persistPolicyDecision).not.toHaveBeenCalled();
     });
+
+    it("falls back to ready_for_review when linesChanged exceeds the fast-path host limit (v0.8.2.1 P2.1)", async () => {
+      const task = smallTask();
+      activityFns.loadTask.mockResolvedValue(task);
+      activityFns.updateTaskStatus.mockResolvedValue(undefined);
+      activityFns.leaseWorktree.mockResolvedValue(makeLease());
+      activityFns.runImplementer.mockResolvedValue({
+        agentRun: makeAgentRun(),
+        finalCommitSha: "abc",
+      });
+      activityFns.persistAgentRun.mockResolvedValue("ar");
+      // One file but 200 changed lines — file count alone would let
+      // this through; the line-count guard refuses.
+      activityFns.diffWorktreeAgainstScope.mockResolvedValue({
+        changedFiles: ["packages/x/src/big.ts"],
+        violations: [],
+        linesChanged: 200,
+      });
+
+      const result = await TaskExecutionWorkflow(BASE_INPUT);
+      expect(result.status).toBe("ready_for_review");
+      expect(activityFns.persistPolicyDecision).not.toHaveBeenCalled();
+    });
+
+    it("takes the fast path when linesChanged is well within the limit", async () => {
+      const task = smallTask();
+      activityFns.loadTask.mockResolvedValue(task);
+      activityFns.updateTaskStatus.mockResolvedValue(undefined);
+      activityFns.leaseWorktree.mockResolvedValue(makeLease());
+      activityFns.runImplementer.mockResolvedValue({
+        agentRun: makeAgentRun(),
+        finalCommitSha: "abc",
+      });
+      activityFns.persistAgentRun.mockResolvedValue("ar");
+      activityFns.diffWorktreeAgainstScope.mockResolvedValue({
+        changedFiles: ["packages/x/src/small.ts"],
+        violations: [],
+        linesChanged: 12,
+      });
+
+      const result = await TaskExecutionWorkflow(BASE_INPUT);
+      expect(result.status).toBe("ready_to_merge");
+      expect(activityFns.persistPolicyDecision).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("stamps `failed` when diff-scope itself throws", async () => {

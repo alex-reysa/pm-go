@@ -86,6 +86,17 @@ export async function diffScope(
   }
   const changedFiles = Array.from(all).sort();
 
+  // v0.8.2.1 P2.1: total lines added + removed across baseSha..HEAD plus
+  // uncommitted edits. Feeds the small-task fast path's host guard so a
+  // single 500-line file marked sizeHint=small cannot skip review based
+  // on file count alone. Untracked files don't appear in `--numstat`
+  // output, so we count their lines via wc-equivalent.
+  const linesChanged = await computeLinesChanged({
+    worktreePath,
+    baseSha,
+    untrackedFiles: untracked,
+  });
+
   const violations: string[] = [];
   const scopeExpansions: string[] = [];
 
@@ -130,7 +141,62 @@ export async function diffScope(
     violations,
     scopeExpansions,
     fileScope,
+    linesChanged,
   };
+}
+
+/**
+ * Compute total lines added + removed for the diff plus any untracked
+ * files (counted as full-file additions). Returns 0 on git failure
+ * rather than throwing — the caller may still proceed without the
+ * line-count guard, just falling back to the file-count check.
+ */
+async function computeLinesChanged(args: {
+  worktreePath: string;
+  baseSha: string;
+  untrackedFiles: string[];
+}): Promise<number> {
+  let total = 0;
+  try {
+    // `--numstat baseSha` covers committed + uncommitted (working tree)
+    // diffs in one shot. Each line: <added>\t<removed>\t<path>; binary
+    // files report `-\t-\t<path>`, which we skip.
+    const { stdout } = await execFileAsync("git", [
+      "-C",
+      args.worktreePath,
+      "diff",
+      "--numstat",
+      args.baseSha,
+    ]);
+    for (const raw of stdout.split("\n")) {
+      const trimmed = raw.trim();
+      if (trimmed.length === 0) continue;
+      const [addedRaw, removedRaw] = trimmed.split("\t");
+      if (!addedRaw || !removedRaw) continue;
+      if (addedRaw === "-" || removedRaw === "-") continue;
+      const added = Number(addedRaw);
+      const removed = Number(removedRaw);
+      if (Number.isFinite(added)) total += added;
+      if (Number.isFinite(removed)) total += removed;
+    }
+  } catch {
+    // Git failure → fall back to 0; caller can still use file-count.
+    return 0;
+  }
+  // Untracked files: count their lines as additions (no `--` index
+  // entry for them, so `git diff --numstat` skips them).
+  for (const file of args.untrackedFiles) {
+    try {
+      const { stdout } = await execFileAsync("wc", ["-l", file], {
+        cwd: args.worktreePath,
+      });
+      const m = stdout.trim().match(/^(\d+)/);
+      if (m && m[1]) total += Number(m[1]);
+    } catch {
+      // best-effort; skip files we can't count
+    }
+  }
+  return total;
 }
 
 interface BenignContext {

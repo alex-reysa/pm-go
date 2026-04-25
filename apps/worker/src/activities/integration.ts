@@ -821,6 +821,10 @@ function rowToTaskContract(row: TaskRow): Task {
     kind: row.kind,
     status: row.status,
     riskLevel: row.riskLevel,
+    // v0.8.2.1: include sizeHint in the integration-side hydration too
+    // so phase-integration consumers (audit evidence builders, etc) see
+    // the same Task contract the API returns.
+    ...(row.sizeHint !== null ? { sizeHint: row.sizeHint } : {}),
     fileScope: row.fileScope,
     acceptanceCriteria: row.acceptanceCriteria,
     testCommands: row.testCommands,

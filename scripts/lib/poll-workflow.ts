@@ -172,12 +172,18 @@ export async function pollWorkflow(
     }
 
     if (args.strict && observed !== undefined) {
-      // In strict mode, any value outside `terminal` that is not
-      // explicitly listed as transitional fails the poll. Useful when
-      // the caller already knows the full state machine and wants to
-      // catch typos / surprise transitions immediately.
-      // Strict mode treats unknown values as failure.
-      // (Callers who don't want this behavior should not pass --strict.)
+      // In strict mode, any non-terminal observation is an immediate
+      // failure (exit code 3). The caller has declared the full state
+      // machine via --terminal; anything else is a typo or a surprise
+      // transition we want to surface NOW, not eat for the full
+      // timeout window. Polite mode (no --strict) still keeps
+      // polling unknown values.
+      return {
+        status: "unknown",
+        observed,
+        ticks,
+        elapsedMs: deps.now() - start,
+      };
     }
 
     await deps.sleep(args.intervalSeconds * 1000);
@@ -220,7 +226,13 @@ async function main() {
     );
     process.exit(1);
   }
-  console.error(`[poll] UNKNOWN outcome: ${JSON.stringify(outcome)}`);
+  if (outcome.status === "unknown") {
+    console.error(
+      `[poll] STRICT FAIL: observed ${args.field}=${outcome.observed} which is not in terminal list (${args.terminal.join(", ")}); refusing to keep polling under --strict`,
+    );
+    process.exit(3);
+  }
+  console.error(`[poll] UNHANDLED outcome: ${JSON.stringify(outcome)}`);
   process.exit(2);
 }
 
