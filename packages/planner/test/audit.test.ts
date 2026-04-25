@@ -80,6 +80,20 @@ describe("auditPlan", () => {
     expect(cycle!.severity).toBe("high");
   });
 
+  it("flags `pnpm test --filter` testCommand as plan_audit.tasks.testCommands.hygiene", () => {
+    const plan = clonePlan();
+    plan.tasks[0]!.testCommands = ["pnpm test --filter @pm-go/worker"];
+
+    const outcome = auditPlan(plan);
+    expect(outcome.approved).toBe(false);
+    const finding = outcome.findings.find(
+      (f) => f.id === "plan_audit.tasks.testCommands.hygiene",
+    );
+    expect(finding).toBeDefined();
+    expect(finding!.severity).toBe("high");
+    expect(finding!.summary).toContain("pnpm --filter @pm-go/worker test");
+  });
+
   it("flags an unapproved high-risk entry as a medium finding", () => {
     const plan = clonePlan();
     expect(plan.risks.length).toBeGreaterThan(0);

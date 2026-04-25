@@ -60,13 +60,19 @@ export interface TaskExecutionWorkflowInput {
 
 export interface TaskExecutionWorkflowResult {
   taskId: UUID;
-  status: "ready_for_review" | "blocked" | "failed";
+  status: "ready_for_review" | "ready_to_merge" | "blocked" | "failed";
   leaseId: UUID;
   branchName: string;
   worktreePath: string;
   agentRunId: UUID;
   changedFiles: string[];
   fileScopeViolations: string[];
+  /**
+   * When the small-task fast path applies, names the policy_decisions row
+   * the workflow persisted as the audit trail for the skipped review.
+   * Absent on every other terminal status.
+   */
+  reviewSkippedPolicyDecisionId?: UUID;
 }
 
 export interface TaskReviewWorkflowInput {

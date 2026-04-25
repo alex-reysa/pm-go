@@ -19,6 +19,11 @@ import {
   errorReasonFromClassified,
   safeInvokeFailureSink,
 } from "./errors.js";
+import {
+  buildSchemaValidationDiagnostic,
+  safeInvokeDiagnosticSink,
+  type RunnerDiagnosticSink,
+} from "./diagnostic-artifact.js";
 import type { AgentRunFailureSink } from "./index.js";
 import { findForbiddenBashPatternAgainst } from "./implementer-runner.js";
 import { isInsideCwd, stripSchemaAnnotations } from "./planner-runner.js";
@@ -37,6 +42,8 @@ export interface ClaudeCompletionAuditorRunnerConfig {
   apiKey?: string;
   /** See `ClaudeImplementerRunnerConfig.onFailure`. */
   onFailure?: AgentRunFailureSink;
+  /** v0.8.2 Task 3.1 — see `ClaudeReviewerRunnerConfig.onSchemaValidationFailure`. */
+  onSchemaValidationFailure?: RunnerDiagnosticSink;
 }
 
 /**
@@ -112,6 +119,7 @@ export function createClaudeCompletionAuditorRunner(
       );
 
       let reportPayload: unknown;
+      let sdkResultSubtype: string | undefined;
       let sessionId: string | undefined;
       let inputTokens = 0;
       let outputTokens = 0;
@@ -212,6 +220,7 @@ export function createClaudeCompletionAuditorRunner(
             }
             if (typeof message.subtype === "string") {
               const st = message.subtype;
+              sdkResultSubtype = st;
               if (st.includes("budget")) stopReason = "budget_exceeded";
               else if (st.includes("turn")) stopReason = "turns_exceeded";
               else if (st.includes("error")) stopReason = "error";
@@ -259,16 +268,38 @@ export function createClaudeCompletionAuditorRunner(
       }
 
       if (reportPayload === undefined || reportPayload === null) {
-        throw new CompletionAuditValidationError(
-          "createClaudeCompletionAuditorRunner: SDK returned no structured_output CompletionAuditReport",
-          reportPayload,
+        const message =
+          "createClaudeCompletionAuditorRunner: SDK returned no structured_output CompletionAuditReport";
+        const artifact = buildSchemaValidationDiagnostic({
+          role: "completion-auditor",
+          schemaRef: "CompletionAuditReport@1",
+          validationErrorSummary: message,
+          rawPayload: reportPayload,
+          ...(sdkResultSubtype !== undefined ? { sdkResultSubtype } : {}),
+          ...(sessionId !== undefined ? { sessionId } : {}),
+        });
+        await safeInvokeDiagnosticSink(
+          config.onSchemaValidationFailure,
+          artifact,
         );
+        throw new CompletionAuditValidationError(message, reportPayload);
       }
       if (!validateCompletionAuditReport(reportPayload)) {
-        throw new CompletionAuditValidationError(
-          "createClaudeCompletionAuditorRunner: structured_output failed CompletionAuditReport schema validation",
-          reportPayload,
+        const message =
+          "createClaudeCompletionAuditorRunner: structured_output failed CompletionAuditReport schema validation";
+        const artifact = buildSchemaValidationDiagnostic({
+          role: "completion-auditor",
+          schemaRef: "CompletionAuditReport@1",
+          validationErrorSummary: message,
+          rawPayload: reportPayload,
+          ...(sdkResultSubtype !== undefined ? { sdkResultSubtype } : {}),
+          ...(sessionId !== undefined ? { sessionId } : {}),
+        });
+        await safeInvokeDiagnosticSink(
+          config.onSchemaValidationFailure,
+          artifact,
         );
+        throw new CompletionAuditValidationError(message, reportPayload);
       }
 
       const validatedPayload = reportPayload as CompletionAuditReport;

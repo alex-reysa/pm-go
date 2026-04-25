@@ -341,8 +341,108 @@ export function createPhasesRoute(deps: PhasesRouteDeps) {
               findings: latestAudit.findings,
               summary: latestAudit.summary,
               createdAt: toIso(latestAudit.createdAt),
+              ...(latestAudit.overrideReason !== null
+                ? { overrideReason: latestAudit.overrideReason }
+                : {}),
+              ...(latestAudit.overriddenBy !== null
+                ? { overriddenBy: latestAudit.overriddenBy }
+                : {}),
+              ...(latestAudit.overriddenAt !== null
+                ? { overriddenAt: toIso(latestAudit.overriddenAt) }
+                : {}),
             }
           : null,
+      },
+      200,
+    );
+  });
+
+  // POST /phases/:phaseId/override-audit — v0.8.2 Task 2.2.
+  //
+  // Operator-accepted phase audit override. Replaces the dogfood-era
+  // `psql UPDATE phases SET status='completed'` shortcut with a real
+  // API call that requires a non-empty reason and stamps the override
+  // trail on the latest `phase_audit_reports` row (override_reason,
+  // overridden_by, overridden_at columns added in migration 0016).
+  //
+  // State-machine guard: only `blocked` phases can be overridden. The
+  // override marks the phase `completed` so downstream PhaseIntegration
+  // / FinalRelease workflows can resume.
+  app.post("/:phaseId/override-audit", async (c) => {
+    const phaseId = c.req.param("phaseId");
+    if (!isUuid(phaseId)) {
+      return c.json({ error: "phaseId must be a UUID" }, 400);
+    }
+
+    const body = (await c.req
+      .json()
+      .catch(() => null)) as { reason?: unknown; overriddenBy?: unknown } | null;
+    const reason =
+      body &&
+      typeof body.reason === "string" &&
+      body.reason.trim().length > 0
+        ? body.reason
+        : null;
+    if (reason === null) {
+      return c.json({ error: "reason is required" }, 400);
+    }
+    const overriddenBy =
+      body &&
+      typeof body.overriddenBy === "string" &&
+      body.overriddenBy.trim().length > 0
+        ? body.overriddenBy
+        : null;
+
+    const [phaseRow] = await deps.db
+      .select({ id: phases.id, status: phases.status })
+      .from(phases)
+      .where(eq(phases.id, phaseId))
+      .limit(1);
+    if (!phaseRow) {
+      return c.json({ error: `phase ${phaseId} not found` }, 404);
+    }
+    if (phaseRow.status !== "blocked") {
+      return c.json(
+        {
+          error: `phase ${phaseId} is in status='${phaseRow.status}'; override-audit only applies to status='blocked'`,
+        },
+        409,
+      );
+    }
+
+    const [latestAudit] = await deps.db
+      .select({ id: phaseAuditReports.id })
+      .from(phaseAuditReports)
+      .where(eq(phaseAuditReports.phaseId, phaseId))
+      .orderBy(desc(phaseAuditReports.createdAt))
+      .limit(1);
+
+    const overriddenAt = new Date().toISOString();
+    if (latestAudit) {
+      await deps.db
+        .update(phaseAuditReports)
+        .set({
+          overrideReason: reason,
+          overriddenBy,
+          overriddenAt,
+        })
+        .where(eq(phaseAuditReports.id, latestAudit.id));
+    }
+
+    await deps.db
+      .update(phases)
+      .set({ status: "completed", completedAt: overriddenAt })
+      .where(eq(phases.id, phaseId));
+
+    return c.json(
+      {
+        phaseId,
+        previousStatus: phaseRow.status,
+        newStatus: "completed",
+        ...(latestAudit ? { auditReportId: latestAudit.id } : {}),
+        reason,
+        ...(overriddenBy ? { overriddenBy } : {}),
+        overriddenAt,
       },
       200,
     );

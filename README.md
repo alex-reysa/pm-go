@@ -10,9 +10,9 @@ The repository is intentionally split into two layers:
 The system is assembled across seven phases (see `docs/phases/`). The current tree delivers:
 
 - 14 packages covering contracts, planner, executor-claude, worktree manager, review engine, integration engine, policy engine, observability, orchestrator, repo-intelligence, db, temporal workflows/activities, and sample-repos fixtures
-- Drizzle-managed Postgres schema with migrations `0000–0012`, Temporal workflows with durable retry/stop/budget policies, OpenTelemetry-backed span writer, and Hono API surfacing plans, tasks, approvals, and budget reports
+- Drizzle-managed Postgres schema with migrations `0000–0016`, Temporal workflows with durable retry/stop/budget policies, OpenTelemetry-backed span writer, and Hono API surfacing plans, tasks, approvals, overrides, and budget reports
 - CI runs typecheck, test, `phase7-matrix`, and `phase7-chaos` on every push — all against stub executors, no Docker, no API key. The Docker-backed gates (`phase5`, `phase6`, `phase7` full durable-state + Temporal replay) live under `scripts/` and run locally; see the phase sections below.
-- Operator-facing runbooks in `docs/runbooks/` and historical phase reports in `docs/phases/`
+- Operator-facing runbooks in `docs/runbooks/`, historical phase reports in `docs/phases/`, dogfood observations in `docs/reports/`, and release notes in [`CHANGELOG.md`](./CHANGELOG.md)
 
 ## Quick Start
 
@@ -43,7 +43,9 @@ pnpm docker:up
 pnpm db:migrate
 pnpm typecheck
 pnpm test
-pnpm smoke:phase7          # full durable-state + Temporal replay
+pnpm smoke:bundle-freshness   # static workflow-bundle drift check (~3s)
+pnpm smoke:phase7             # full durable-state + Temporal replay
+pnpm smoke:v082-features      # v0.8.1 + v0.8.2 feature smoke (composes bundle-freshness + phase7)
 ```
 
 All stub-mode smoke tests run without an Anthropic API key. To exercise the live Claude executors, export `ANTHROPIC_API_KEY` and set `PLANNER_EXECUTOR_MODE=live` / `IMPLEMENTER_EXECUTOR_MODE=live` per the phase sections below.

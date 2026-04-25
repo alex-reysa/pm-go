@@ -13,5 +13,22 @@ coverage
 tmp
 runtime
 .worktrees/
+.integration-worktrees/
 artifacts
 
+# Editor / agent-local config — may contain credentials, never ship.
+.claude/
+.mcp.json
+.cursor/
+.aider*/
+
+# Session-scoped pm-go orchestration state. Not a project artifact.
+pm-state.json
+
+# Stray local images / screenshots dropped by the OS or paste targets.
+*.png
+*.jpg
+*.jpeg
+!docs/**/*.png
+!docs/**/*.jpg
+!docs/**/*.jpeg

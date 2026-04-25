@@ -6,6 +6,10 @@ import type {
   Task,
 } from "@pm-go/contracts";
 
+import { auditPlanFileScopeForPackageCreation } from "./file-scope-hygiene.js";
+import { auditPlanSizeHints } from "./size-hint-hygiene.js";
+import { auditPlanTestCommands } from "./test-command-hygiene.js";
+
 /**
  * Deterministic audit outcome for a drafted Plan. Mirrors the semantics
  * of `PlanAuditWorkflowResult` from `@pm-go/contracts`: `approved` is
@@ -40,6 +44,9 @@ export function auditPlan(plan: Plan): PlanAuditOutcome {
   findings.push(...checkPhase1FileScopeDisjoint(plan));
   findings.push(...checkPhase1DependencyEdgesAcyclic(plan));
   findings.push(...checkHighRiskApproval(plan));
+  findings.push(...auditPlanTestCommands(plan));
+  findings.push(...auditPlanFileScopeForPackageCreation(plan));
+  findings.push(...auditPlanSizeHints(plan));
 
   const approved = findings.length === 0;
   return {

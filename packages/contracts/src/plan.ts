@@ -26,6 +26,7 @@ export type TaskKind =
   | "review"
   | "integration"
   | "release";
+export type TaskSizeHint = "small" | "medium" | "large";
 export type PhaseStatus =
   | "pending"
   | "planning"
@@ -83,6 +84,13 @@ export interface Task {
   kind: TaskKind;
   status: TaskStatus;
   riskLevel: RiskLevel;
+  /**
+   * Planner intent for task size — feeds the small-task fast path. The host
+   * is the source of truth: an inconsistent combo (e.g. `small` with
+   * `riskLevel: "high"`) is rejected by the plan audit. Absence is treated
+   * as `medium` everywhere downstream.
+   */
+  sizeHint?: TaskSizeHint;
   fileScope: FileScope;
   acceptanceCriteria: AcceptanceCriterion[];
   testCommands: string[];

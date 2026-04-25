@@ -39,4 +39,24 @@ export {
 
 export { auditPlan, type PlanAuditOutcome } from "./audit.js";
 
+export {
+  normalizeTestCommand,
+  validateTaskTestCommands,
+  auditPlanTestCommands,
+  applyTestCommandRewrites,
+  type TestCommandIssue,
+  type NormalizeOutcome,
+} from "./test-command-hygiene.js";
+
+export {
+  auditPlanFileScopeForPackageCreation,
+  taskSignalsPackageCreation,
+  missingRootArtifactScopes,
+} from "./file-scope-hygiene.js";
+
+export {
+  auditPlanSizeHints,
+  effectiveSizeHint,
+} from "./size-hint-hygiene.js";
+
 export { renderPlanMarkdown } from "./render.js";

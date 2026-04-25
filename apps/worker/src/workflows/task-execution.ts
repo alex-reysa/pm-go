@@ -24,6 +24,50 @@ import {
 type TaskStatusTransition = TaskStatus | "ready_for_review";
 
 /**
+ * Maximum changed-file count for the v0.8.2 small-task fast path. Tasks
+ * that touch more files than this go through normal review even when
+ * every other guard says "small". Picked to match the planner contract
+ * for `sizeHint="small"` (< 25 lines expected) — a small change rarely
+ * needs to fan out across many files.
+ */
+const SMALL_FAST_PATH_MAX_CHANGED_FILES = 6;
+
+interface FastPathGuardResult {
+  eligible: boolean;
+  reasons: string[];
+}
+
+/**
+ * Pure guard function. The host is the source of truth for the small-task
+ * fast path: even if the planner emits `sizeHint="small"`, the workflow
+ * runs through this gauntlet before it short-circuits review.
+ */
+function evaluateSmallFastPathGuards(
+  task: Task,
+  changedFileCount: number,
+): FastPathGuardResult {
+  const reasons: string[] = [];
+  if (task.sizeHint !== "small") {
+    return { eligible: false, reasons: ["sizeHint!=small"] };
+  }
+  reasons.push("sizeHint=small");
+  if (task.riskLevel !== "low") reasons.push("riskLevel!=low");
+  if (task.requiresHumanApproval) reasons.push("requiresHumanApproval=true");
+  if (task.reviewerPolicy.required) reasons.push("reviewerPolicy.required=true");
+  if (changedFileCount > SMALL_FAST_PATH_MAX_CHANGED_FILES) {
+    reasons.push(
+      `changedFiles=${changedFileCount}>${SMALL_FAST_PATH_MAX_CHANGED_FILES}`,
+    );
+  }
+  const eligible =
+    task.riskLevel === "low" &&
+    !task.requiresHumanApproval &&
+    !task.reviewerPolicy.required &&
+    changedFileCount <= SMALL_FAST_PATH_MAX_CHANGED_FILES;
+  return { eligible, reasons };
+}
+
+/**
  * The workflow sandbox forbids dynamic I/O imports: git, disk, Drizzle,
  * and the Claude Agent SDK must all stay behind the activity boundary.
  * This subset is the only activity surface the workflow touches — the
@@ -189,6 +233,45 @@ export async function TaskExecutionWorkflow(
         agentRunId: implementerResult.agentRun.id,
         changedFiles: diffResult.changedFiles,
         fileScopeViolations: diffResult.violations,
+      };
+    }
+
+    // v0.8.2 small-task fast path. When the host-side guards all clear,
+    // skip the formal reviewer and stamp the task ready_to_merge. The
+    // policy_decisions row is the durable audit trail for why review
+    // was skipped — phase audits look for it before approving a
+    // skipped-review task.
+    const fastPathGuards = evaluateSmallFastPathGuards(
+      task,
+      diffResult.changedFiles.length,
+    );
+    if (fastPathGuards.eligible) {
+      const policyDecisionId = uuid4();
+      await persistPolicyDecision({
+        id: policyDecisionId,
+        subjectType: "task",
+        subjectId: input.taskId,
+        riskLevel: task.riskLevel,
+        decision: "approved",
+        reason: `review_skipped_small_task:${fastPathGuards.reasons.join(",")}`,
+        actor: "system",
+        createdAt: new Date().toISOString(),
+      });
+      await updateTaskStatus({
+        taskId: input.taskId,
+        status: "ready_to_merge",
+      });
+
+      return {
+        taskId: input.taskId,
+        status: "ready_to_merge",
+        leaseId: lease.id,
+        branchName: lease.branchName,
+        worktreePath: lease.worktreePath,
+        agentRunId: implementerResult.agentRun.id,
+        changedFiles: diffResult.changedFiles,
+        fileScopeViolations: [],
+        reviewSkippedPolicyDecisionId: policyDecisionId,
       };
     }
 

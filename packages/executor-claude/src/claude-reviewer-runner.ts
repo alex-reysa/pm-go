@@ -15,6 +15,11 @@ import {
   errorReasonFromClassified,
   safeInvokeFailureSink,
 } from "./errors.js";
+import {
+  buildSchemaValidationDiagnostic,
+  safeInvokeDiagnosticSink,
+  type RunnerDiagnosticSink,
+} from "./diagnostic-artifact.js";
 import type { AgentRunFailureSink } from "./index.js";
 import {
   FORBIDDEN_BASH_PATTERNS,
@@ -36,6 +41,14 @@ export interface ClaudeReviewerRunnerConfig {
   apiKey?: string;
   /** See `ClaudeImplementerRunnerConfig.onFailure`. */
   onFailure?: AgentRunFailureSink;
+  /**
+   * v0.8.2 Task 3.1 (F6): invoked once when the reviewer's
+   * `structured_output` payload fails runtime schema validation. The
+   * artifact carries enough context to diff the malformed payload
+   * against the schema; the sink is best-effort and never blocks the
+   * underlying ValidationError from reaching Temporal.
+   */
+  onSchemaValidationFailure?: RunnerDiagnosticSink;
 }
 
 /**
@@ -99,6 +112,7 @@ export function createClaudeReviewerRunner(
       const cleanSchema = stripSchemaAnnotations(ReviewReportJsonSchema);
 
       let reportPayload: unknown;
+      let sdkResultSubtype: string | undefined;
       let sessionId: string | undefined;
       let inputTokens = 0;
       let outputTokens = 0;
@@ -199,6 +213,7 @@ export function createClaudeReviewerRunner(
             }
             if (typeof message.subtype === "string") {
               const st = message.subtype;
+              sdkResultSubtype = st;
               if (st.includes("budget")) stopReason = "budget_exceeded";
               else if (st.includes("turn")) stopReason = "turns_exceeded";
               else if (st.includes("error")) stopReason = "error";
@@ -247,16 +262,38 @@ export function createClaudeReviewerRunner(
       }
 
       if (reportPayload === undefined || reportPayload === null) {
-        throw new ReviewValidationError(
-          "createClaudeReviewerRunner: SDK returned no structured_output ReviewReport",
-          reportPayload,
+        const message =
+          "createClaudeReviewerRunner: SDK returned no structured_output ReviewReport";
+        const artifact = buildSchemaValidationDiagnostic({
+          role: "reviewer",
+          schemaRef: "ReviewReport@1",
+          validationErrorSummary: message,
+          rawPayload: reportPayload,
+          ...(sdkResultSubtype !== undefined ? { sdkResultSubtype } : {}),
+          ...(sessionId !== undefined ? { sessionId } : {}),
+        });
+        await safeInvokeDiagnosticSink(
+          config.onSchemaValidationFailure,
+          artifact,
         );
+        throw new ReviewValidationError(message, reportPayload);
       }
       if (!validateReviewReport(reportPayload)) {
-        throw new ReviewValidationError(
-          "createClaudeReviewerRunner: structured_output failed ReviewReport schema validation",
-          reportPayload,
+        const message =
+          "createClaudeReviewerRunner: structured_output failed ReviewReport schema validation";
+        const artifact = buildSchemaValidationDiagnostic({
+          role: "reviewer",
+          schemaRef: "ReviewReport@1",
+          validationErrorSummary: message,
+          rawPayload: reportPayload,
+          ...(sdkResultSubtype !== undefined ? { sdkResultSubtype } : {}),
+          ...(sessionId !== undefined ? { sessionId } : {}),
+        });
+        await safeInvokeDiagnosticSink(
+          config.onSchemaValidationFailure,
+          artifact,
         );
+        throw new ReviewValidationError(message, reportPayload);
       }
 
       // Never trust model-emitted primary keys. The schema-validated

@@ -88,6 +88,15 @@ export {
   safeInvokeFailureSink,
 } from "./errors.js";
 
+export {
+  buildSchemaValidationDiagnostic,
+  safeInvokeDiagnosticSink,
+  sanitizePayload,
+  type RunnerDiagnosticArtifact,
+  type RunnerDiagnosticSink,
+  type RunnerDiagnosticRole,
+} from "./diagnostic-artifact.js";
+
 /**
  * Sink invoked by a Claude-backed runner when it is about to re-throw
  * a classified error. The sink receives a fully-populated `AgentRun`

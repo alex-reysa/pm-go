@@ -1,6 +1,9 @@
+import { randomUUID } from "node:crypto";
+
 import { Hono } from "hono";
 import { asc, desc, eq } from "drizzle-orm";
 import type { Client as TemporalClient } from "@temporalio/client";
+import { WorkflowNotFoundError } from "@temporalio/client";
 
 import type {
   AgentRun,
@@ -8,6 +11,7 @@ import type {
   AgentRole,
   AgentRunStatus,
   AgentStopReason,
+  PolicyDecision,
   ReviewReport,
   Task,
   TaskExecutionWorkflowInput,
@@ -22,10 +26,12 @@ import {
   agentRuns,
   phases,
   planTasks,
+  policyDecisions,
   reviewReports,
   worktreeLeases,
   type PmGoDb,
 } from "@pm-go/db";
+import { and } from "drizzle-orm";
 
 import { approveSubject } from "./approvals.js";
 import { toIso } from "../lib/timestamps.js";
@@ -211,6 +217,7 @@ export function createTasksRoute(deps: TasksRouteDeps) {
       kind: taskRow.kind,
       status: taskRow.status,
       riskLevel: taskRow.riskLevel,
+      ...(taskRow.sizeHint !== null ? { sizeHint: taskRow.sizeHint } : {}),
       fileScope: taskRow.fileScope,
       acceptanceCriteria: taskRow.acceptanceCriteria,
       testCommands: taskRow.testCommands,
@@ -346,12 +353,48 @@ export function createTasksRoute(deps: TasksRouteDeps) {
         }
       : null;
 
+    // v0.8.2: surface task-scoped policy decisions so the UI can render
+    // "Review skipped (policy)" for the small-task fast path. Filter to
+    // approved/rejected/etc rows whose subjectType='task' and subjectId
+    // is this task. Most common entry is reason='review_skipped_small_task:...'.
+    const taskPolicyDecisionRows = await deps.db
+      .select()
+      .from(policyDecisions)
+      .where(
+        and(
+          eq(policyDecisions.subjectType, "task"),
+          eq(policyDecisions.subjectId, taskId),
+        ),
+      )
+      .orderBy(desc(policyDecisions.createdAt));
+    const taskPolicyDecisionsOut: PolicyDecision[] =
+      taskPolicyDecisionRows.map((r) => ({
+        id: r.id,
+        subjectType: r.subjectType,
+        subjectId: r.subjectId,
+        riskLevel: r.riskLevel,
+        decision: r.decision,
+        reason: r.reason,
+        actor: r.actor,
+        createdAt: toIso(r.createdAt),
+      }));
+    const reviewSkippedDecision: PolicyDecision | undefined =
+      taskPolicyDecisionsOut.find(
+        (d) =>
+          d.decision === "approved" &&
+          d.reason.startsWith("review_skipped_small_task:"),
+      );
+
     return c.json(
       {
         task,
         latestAgentRun,
         latestLease,
         latestReviewReport,
+        taskPolicyDecisions: taskPolicyDecisionsOut,
+        ...(reviewSkippedDecision !== undefined
+          ? { reviewSkippedDecision }
+          : {}),
       },
       200,
     );
@@ -522,8 +565,19 @@ export function createTasksRoute(deps: TasksRouteDeps) {
       try {
         await deps.temporal.workflow.getHandle(workflowId).signal(approveSignal);
       } catch (err) {
-        console.error(`[approve] failed to signal workflow ${workflowId}:`, err);
-        throw err;
+        // WorkflowNotFoundError covers "never started" + "already finished":
+        // either way the row flip is the source of truth and the next
+        // PhaseIntegrationWorkflow run will pick up the approved row from
+        // the durable ledger. Other signal failures still surface as 5xx
+        // so a transient gRPC blip is retryable.
+        if (err instanceof WorkflowNotFoundError) {
+          console.warn(
+            `[approve] no live ${workflowId} to signal; row flip stands`,
+          );
+        } else {
+          console.error(`[approve] failed to signal workflow ${workflowId}:`, err);
+          throw err;
+        }
       }
     }
 
@@ -551,6 +605,94 @@ export function createTasksRoute(deps: TasksRouteDeps) {
       createdAt: toIso(row.createdAt),
     }));
     return c.json({ taskId, reports }, 200);
+  });
+
+  // POST /tasks/:taskId/override-review — v0.8.2 Task 2.2.
+  //
+  // Operator-accepted review override. Replaces the dogfood-era
+  // `psql UPDATE ... SET status='ready_to_merge'` shortcut with a real
+  // API call that requires a non-empty reason and persists a human
+  // policy_decisions row for the audit trail (subjectType='task',
+  // decision='approved', actor='human').
+  //
+  // State-machine guard: only `blocked` or `fixing` tasks can be
+  // overridden. Any other status (running, ready_to_merge, merged,
+  // pending, ...) returns 409 — those are not "review false-positive"
+  // shapes that an operator should bypass with this endpoint.
+  app.post("/:taskId/override-review", async (c) => {
+    const taskId = c.req.param("taskId");
+    if (!isUuid(taskId)) {
+      return c.json({ error: "taskId must be a UUID" }, 400);
+    }
+
+    const body = (await c.req
+      .json()
+      .catch(() => null)) as { reason?: unknown; overriddenBy?: unknown } | null;
+    const reason =
+      body &&
+      typeof body.reason === "string" &&
+      body.reason.trim().length > 0
+        ? body.reason
+        : null;
+    if (reason === null) {
+      return c.json({ error: "reason is required" }, 400);
+    }
+    const overriddenBy =
+      body &&
+      typeof body.overriddenBy === "string" &&
+      body.overriddenBy.trim().length > 0
+        ? body.overriddenBy
+        : undefined;
+
+    const [taskRow] = await deps.db
+      .select({ id: planTasks.id, status: planTasks.status, riskLevel: planTasks.riskLevel })
+      .from(planTasks)
+      .where(eq(planTasks.id, taskId))
+      .limit(1);
+    if (!taskRow) {
+      return c.json({ error: `task ${taskId} not found` }, 404);
+    }
+    if (taskRow.status !== "blocked" && taskRow.status !== "fixing") {
+      return c.json(
+        {
+          error: `task ${taskId} is in status='${taskRow.status}'; override-review only applies to status='blocked' or 'fixing'`,
+        },
+        409,
+      );
+    }
+
+    const decisionId = randomUUID();
+    const decidedAt = new Date().toISOString();
+    const reasonText = overriddenBy
+      ? `review_overridden:by=${overriddenBy};${reason}`
+      : `review_overridden:${reason}`;
+    await deps.db.insert(policyDecisions).values({
+      id: decisionId,
+      subjectType: "task",
+      subjectId: taskId,
+      riskLevel: taskRow.riskLevel,
+      decision: "approved",
+      reason: reasonText,
+      actor: "human",
+      createdAt: decidedAt,
+    });
+
+    await deps.db
+      .update(planTasks)
+      .set({ status: "ready_to_merge" })
+      .where(eq(planTasks.id, taskId));
+
+    return c.json(
+      {
+        taskId,
+        previousStatus: taskRow.status,
+        newStatus: "ready_to_merge",
+        policyDecisionId: decisionId,
+        ...(overriddenBy ? { overriddenBy } : {}),
+        reason,
+      },
+      200,
+    );
   });
 
   return app;

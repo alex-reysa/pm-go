@@ -23,6 +23,15 @@ export const TaskKindSchema = Type.Union([
 ]);
 
 /**
+ * Enumerated `TaskSizeHint` values, mirrored from `plan.ts`.
+ */
+export const TaskSizeHintSchema = Type.Union([
+  Type.Literal("small"),
+  Type.Literal("medium"),
+  Type.Literal("large")
+]);
+
+/**
  * Enumerated `TaskStatus` values, mirrored from `plan.ts`.
  */
 export const TaskStatusSchema = Type.Union([
@@ -50,6 +59,7 @@ export const TaskSchema = Type.Object({
   kind: TaskKindSchema,
   status: TaskStatusSchema,
   riskLevel: RiskLevelSchema,
+  sizeHint: Type.Optional(TaskSizeHintSchema),
   fileScope: FileScopeSchema,
   acceptanceCriteria: Type.Array(AcceptanceCriterionSchema),
   testCommands: Type.Array(Type.String()),

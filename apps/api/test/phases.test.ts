@@ -305,3 +305,96 @@ describe("GET /phases?planId=", () => {
     expect(body.phases[0]!.status).toBe("completed");
   });
 });
+
+describe("POST /phases/:phaseId/override-audit (v0.8.2 Task 2.2)", () => {
+  it("400s when reason is missing", async () => {
+    const { client } = makeMockTemporal();
+    const db = makeMockDbForLookup([]);
+    const app = appWith(db, client);
+    const res = await app.request(`/phases/${PHASE_ID}/override-audit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("404s when the phase is missing", async () => {
+    const { client } = makeMockTemporal();
+    const db = makeMockDbForLookup([[]]);
+    const app = appWith(db, client);
+    const res = await app.request(`/phases/${PHASE_ID}/override-audit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "audit FP" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("409s when the phase is not 'blocked'", async () => {
+    const { client } = makeMockTemporal();
+    const db = makeMockDbForLookup([
+      [{ id: PHASE_ID, status: "completed" }],
+    ]);
+    const app = appWith(db, client);
+    const res = await app.request(`/phases/${PHASE_ID}/override-audit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "audit FP" }),
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it("flips a 'blocked' phase to 'completed' and stamps override columns on the latest audit", async () => {
+    const { client } = makeMockTemporal();
+    const updateCalls: Array<{ values: unknown }> = [];
+    let selectCallIndex = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db: any = {
+      select: vi.fn().mockImplementation(() => {
+        const idx = selectCallIndex++;
+        // 0: phase row select; 1: latest audit select.
+        const rows =
+          idx === 0
+            ? [{ id: PHASE_ID, status: "blocked" }]
+            : [{ id: "audit-1" }];
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue(rows),
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue(rows),
+              }),
+            }),
+          }),
+        };
+      }),
+      update: vi.fn().mockImplementation(() => ({
+        set: vi.fn().mockImplementation((values: unknown) => {
+          updateCalls.push({ values });
+          return { where: vi.fn().mockResolvedValue(undefined) };
+        }),
+      })),
+    };
+    const app = appWith(db, client);
+    const res = await app.request(`/phases/${PHASE_ID}/override-audit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        reason: "operator-accepted blocked audit",
+        overriddenBy: "alex",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      newStatus: string;
+      reason: string;
+      overriddenBy?: string;
+    };
+    expect(body.newStatus).toBe("completed");
+    expect(body.reason).toContain("operator-accepted");
+    expect(body.overriddenBy).toBe("alex");
+    // Both update paths fired: phase_audit_reports and phases.
+    expect(updateCalls.length).toBe(2);
+  });
+});

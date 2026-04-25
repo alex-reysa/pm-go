@@ -290,7 +290,7 @@ async function buildPhaseAuditEvidenceImpl(
   }));
 
   const reviewReportIds = reviewReportsOut.map((r) => r.id);
-  const policyDecisionRows =
+  const reviewPolicyDecisionRows =
     reviewReportIds.length > 0
       ? await db
           .select()
@@ -302,6 +302,25 @@ async function buildPhaseAuditEvidenceImpl(
             ),
           )
       : [];
+  // v0.8.2: include task-level policy decisions for tasks in this phase so
+  // the auditor sees the small-task fast path's `review_skipped_small_task`
+  // approval row alongside the integration-test evidence.
+  const taskPolicyDecisionRows =
+    taskIds.length > 0
+      ? await db
+          .select()
+          .from(policyDecisions)
+          .where(
+            and(
+              eq(policyDecisions.subjectType, "task"),
+              inArray(policyDecisions.subjectId, taskIds),
+            ),
+          )
+      : [];
+  const policyDecisionRows = [
+    ...reviewPolicyDecisionRows,
+    ...taskPolicyDecisionRows,
+  ];
   const policyDecisionsOut: PolicyDecision[] = policyDecisionRows.map((r) => ({
     id: r.id,
     subjectType: r.subjectType,

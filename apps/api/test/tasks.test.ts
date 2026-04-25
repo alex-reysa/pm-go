@@ -326,6 +326,7 @@ function makeTaskRow() {
     },
     requiresHumanApproval: false,
     maxReviewFixCycles: 2,
+    sizeHint: null,
     branchName: null,
     worktreePath: null,
   };
@@ -492,6 +493,176 @@ describe("GET /tasks/:taskId/review-reports", () => {
     expect(payload.reports).toHaveLength(2);
     expect(payload.reports[0]!.cycleNumber).toBe(1);
     expect(payload.reports[1]!.outcome).toBe("pass");
+  });
+});
+
+describe("POST /tasks/:taskId/override-review (v0.8.2 Task 2.2)", () => {
+  it("400s when reason is missing", async () => {
+    const { client } = makeMockTemporal();
+    const db = makeMockDbForLookup([]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks/${TASK_ID}/override-review`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("404s when task is missing", async () => {
+    const { client } = makeMockTemporal();
+    const db = makeMockDbForLookup([[]]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks/${TASK_ID}/override-review`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "false positive" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("409s when task is not in 'blocked' or 'fixing'", async () => {
+    const { client } = makeMockTemporal();
+    const db = makeMockDbForLookup([
+      [{ id: TASK_ID, status: "running", riskLevel: "medium" }],
+    ]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks/${TASK_ID}/override-review`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "x" }),
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it("flips a 'blocked' task to ready_to_merge and inserts a human policy_decisions row", async () => {
+    const { client } = makeMockTemporal();
+    const insertCalled = { v: false };
+    const updateCalled = { v: false };
+    // Build a custom db that captures insert + update calls.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db: any = {
+      select: vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                id: TASK_ID,
+                status: "blocked",
+                riskLevel: "medium",
+              },
+            ]),
+          }),
+        }),
+      })),
+      insert: vi.fn().mockImplementation(() => {
+        insertCalled.v = true;
+        return { values: vi.fn().mockResolvedValue(undefined) };
+      }),
+      update: vi.fn().mockImplementation(() => {
+        updateCalled.v = true;
+        return {
+          set: vi
+            .fn()
+            .mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+        };
+      }),
+    };
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks/${TASK_ID}/override-review`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        reason: "reviewer flagged a stale fix",
+        overriddenBy: "alex",
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(insertCalled.v).toBe(true);
+    expect(updateCalled.v).toBe(true);
+    const body = (await res.json()) as {
+      newStatus: string;
+      reason: string;
+      overriddenBy?: string;
+      policyDecisionId: string;
+    };
+    expect(body.newStatus).toBe("ready_to_merge");
+    expect(body.reason).toContain("reviewer flagged");
+    expect(body.overriddenBy).toBe("alex");
+    expect(typeof body.policyDecisionId).toBe("string");
+  });
+});
+
+describe("GET /tasks/:taskId surfaces small-task review-skip policy decision", () => {
+  it("returns reviewSkippedDecision when a review_skipped_small_task row exists", async () => {
+    const { client } = makeMockTemporal();
+    const taskRow = { ...makeTaskRow(), sizeHint: "small" as const };
+    const reviewSkipped = {
+      id: "55555555-2222-4333-8444-555555555555",
+      subjectType: "task" as const,
+      subjectId: TASK_ID,
+      riskLevel: "low" as const,
+      decision: "approved" as const,
+      reason:
+        "review_skipped_small_task:sizeHint=small,changedFiles=1<=6",
+      actor: "system" as const,
+      createdAt: new Date("2026-04-25T10:00:00.000Z"),
+    };
+    const db = makeMockDbForLookup([
+      [taskRow],
+      [],
+      [],
+      [],
+      [reviewSkipped],
+    ]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks/${TASK_ID}`);
+    expect(res.status).toBe(200);
+    const payload = (await res.json()) as {
+      reviewSkippedDecision?: { reason: string; actor: string };
+      taskPolicyDecisions: Array<{ reason: string }>;
+    };
+    expect(payload.reviewSkippedDecision?.actor).toBe("system");
+    expect(payload.reviewSkippedDecision?.reason).toContain(
+      "review_skipped_small_task",
+    );
+    expect(payload.taskPolicyDecisions).toHaveLength(1);
+  });
+
+  it("omits reviewSkippedDecision when no fast-path policy row exists", async () => {
+    const { client } = makeMockTemporal();
+    const db = makeMockDbForLookup([[makeTaskRow()], [], [], [], []]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks/${TASK_ID}`);
+    const payload = (await res.json()) as Record<string, unknown>;
+    expect("reviewSkippedDecision" in payload).toBe(false);
+    expect(payload.taskPolicyDecisions).toEqual([]);
+  });
+});
+
+describe("GET /tasks/:taskId round-trips sizeHint", () => {
+  it("returns sizeHint='small' when the row carries it", async () => {
+    const { client } = makeMockTemporal();
+    const taskRow = { ...makeTaskRow(), sizeHint: "small" as const };
+    const db = makeMockDbForLookup([[taskRow], [], [], []]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks/${TASK_ID}`);
+    expect(res.status).toBe(200);
+    const payload = (await res.json()) as {
+      task: { sizeHint?: string };
+    };
+    expect(payload.task.sizeHint).toBe("small");
+  });
+
+  it("omits sizeHint when the row stores NULL", async () => {
+    const { client } = makeMockTemporal();
+    const db = makeMockDbForLookup([[makeTaskRow()], [], [], []]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+    const res = await app.request(`/tasks/${TASK_ID}`);
+    const payload = (await res.json()) as {
+      task: Record<string, unknown>;
+    };
+    expect("sizeHint" in payload.task).toBe(false);
   });
 });
 

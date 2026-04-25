@@ -56,4 +56,26 @@ describe("prompt registry", () => {
     expect(body.length).toBeGreaterThan(0);
     expect(body).toContain("Planner prompt");
   });
+
+  it("planner prompt forbids `pnpm test --filter` and lists allowed shapes", () => {
+    const body = loadPrompt("planner", PROMPT_VERSIONS.planner);
+    expect(body).toContain("pnpm test --filter");
+    expect(body).toContain("pnpm --filter <pkg> test");
+    expect(body).toContain("pnpm --filter <pkg> typecheck");
+  });
+
+  it("planner prompt requires fileScope to include root package artifacts when adding a workspace package", () => {
+    const body = loadPrompt("planner", PROMPT_VERSIONS.planner);
+    expect(body).toContain("pnpm-lock.yaml");
+    expect(body).toMatch(/package\.json/);
+    expect(body).toMatch(/workspace package/);
+  });
+
+  it("reviewer prompt names the v0.8.2 blocking-threshold language and the already-implemented guard", () => {
+    const body = loadPrompt("reviewer", PROMPT_VERSIONS.reviewer);
+    expect(body).toContain("Blocking threshold");
+    expect(body).toContain("Already-implemented findings");
+    expect(body).toMatch(/MUST NOT block/i);
+    expect(body).toMatch(/correctness defects/i);
+  });
 });

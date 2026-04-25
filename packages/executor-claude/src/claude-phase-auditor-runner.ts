@@ -19,6 +19,11 @@ import {
   errorReasonFromClassified,
   safeInvokeFailureSink,
 } from "./errors.js";
+import {
+  buildSchemaValidationDiagnostic,
+  safeInvokeDiagnosticSink,
+  type RunnerDiagnosticSink,
+} from "./diagnostic-artifact.js";
 import type { AgentRunFailureSink } from "./index.js";
 import { findForbiddenBashPatternAgainst } from "./implementer-runner.js";
 import { isInsideCwd, stripSchemaAnnotations } from "./planner-runner.js";
@@ -179,6 +184,8 @@ export interface ClaudePhaseAuditorRunnerConfig {
   apiKey?: string;
   /** See `ClaudeImplementerRunnerConfig.onFailure`. */
   onFailure?: AgentRunFailureSink;
+  /** v0.8.2 Task 3.1 — see `ClaudeReviewerRunnerConfig.onSchemaValidationFailure`. */
+  onSchemaValidationFailure?: RunnerDiagnosticSink;
 }
 
 /**
@@ -271,6 +278,7 @@ export function createClaudePhaseAuditorRunner(
       const cleanSchema = stripSchemaAnnotations(PhaseAuditReportJsonSchema);
 
       let reportPayload: unknown;
+      let sdkResultSubtype: string | undefined;
       let sessionId: string | undefined;
       let inputTokens = 0;
       let outputTokens = 0;
@@ -371,6 +379,7 @@ export function createClaudePhaseAuditorRunner(
             }
             if (typeof message.subtype === "string") {
               const st = message.subtype;
+              sdkResultSubtype = st;
               if (st.includes("budget")) stopReason = "budget_exceeded";
               else if (st.includes("turn")) stopReason = "turns_exceeded";
               else if (st.includes("error")) stopReason = "error";
@@ -418,16 +427,38 @@ export function createClaudePhaseAuditorRunner(
       }
 
       if (reportPayload === undefined || reportPayload === null) {
-        throw new PhaseAuditValidationError(
-          "createClaudePhaseAuditorRunner: SDK returned no structured_output PhaseAuditReport",
-          reportPayload,
+        const message =
+          "createClaudePhaseAuditorRunner: SDK returned no structured_output PhaseAuditReport";
+        const artifact = buildSchemaValidationDiagnostic({
+          role: "phase-auditor",
+          schemaRef: "PhaseAuditReport@1",
+          validationErrorSummary: message,
+          rawPayload: reportPayload,
+          ...(sdkResultSubtype !== undefined ? { sdkResultSubtype } : {}),
+          ...(sessionId !== undefined ? { sessionId } : {}),
+        });
+        await safeInvokeDiagnosticSink(
+          config.onSchemaValidationFailure,
+          artifact,
         );
+        throw new PhaseAuditValidationError(message, reportPayload);
       }
       if (!validatePhaseAuditReport(reportPayload)) {
-        throw new PhaseAuditValidationError(
-          "createClaudePhaseAuditorRunner: structured_output failed PhaseAuditReport schema validation",
-          reportPayload,
+        const message =
+          "createClaudePhaseAuditorRunner: structured_output failed PhaseAuditReport schema validation";
+        const artifact = buildSchemaValidationDiagnostic({
+          role: "phase-auditor",
+          schemaRef: "PhaseAuditReport@1",
+          validationErrorSummary: message,
+          rawPayload: reportPayload,
+          ...(sdkResultSubtype !== undefined ? { sdkResultSubtype } : {}),
+          ...(sessionId !== undefined ? { sessionId } : {}),
+        });
+        await safeInvokeDiagnosticSink(
+          config.onSchemaValidationFailure,
+          artifact,
         );
+        throw new PhaseAuditValidationError(message, reportPayload);
       }
 
       // Never trust model-emitted primary keys or foreign keys. The

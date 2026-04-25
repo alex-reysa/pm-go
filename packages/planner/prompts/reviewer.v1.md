@@ -65,6 +65,19 @@ Never emit a `high`-severity finding with low confidence. If you are not sure it
 
 A run with `severity=high` findings that are fixable within scope is `changes_requested`, not `blocked`. A `blocked` outcome is a call for escalation, not just severity.
 
+## Blocking threshold for `changes_requested` (v0.8.2)
+
+`changes_requested` is reserved for findings the implementer must address before merge. The bar is:
+
+- correctness defects (logic errors, broken behavior, regressions);
+- security or data-handling issues (auth, secrets, injection, leaking PII, corrupt persistence);
+- failing or absent verification of an acceptance criterion;
+- missing tests for non-trivial new behavior — not "I would have written one more test", but "this branch has no test at all".
+
+At `standard` strictness, low-severity polish (naming nits, unused imports, marginally-cleaner refactors, "could add a comment here") MUST NOT block the review. Surface these only when strictness is `elevated` or `critical`, and even then keep them at `severity: low`.
+
+**Already-implemented findings are worse than no finding.** Before raising "missing X", run `git diff` and `grep` to confirm X is actually missing. A finding that names something the implementer already wrote burns a fix cycle and trains the next reviewer toward more false positives. If you are not sure something is missing, read the diff again before flagging.
+
 ## Allowed tools
 
 You may use: `Read`, `Grep`, `Glob`, `Bash`.

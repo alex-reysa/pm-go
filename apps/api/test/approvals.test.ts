@@ -207,6 +207,273 @@ describe("POST /tasks/:taskId/approve", () => {
   });
 });
 
+describe("POST /plans/:planId/approve-all-pending (v0.8.2 Task 2.1)", () => {
+  function makeBulkTemporal(opts: { signal?: () => Promise<void> } = {}) {
+    const signal = vi.fn().mockImplementation(opts.signal ?? (async () => {}));
+    const getHandle = vi.fn().mockReturnValue({ signal });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return { workflow: { start: vi.fn(), getHandle } } as any;
+  }
+
+  function planRow() {
+    return { id: PLAN_ID };
+  }
+  function pendingTaskApproval(overrides: Record<string, unknown> = {}) {
+    return {
+      id: APPROVAL_ID,
+      planId: PLAN_ID,
+      taskId: TASK_ID,
+      subject: "task",
+      riskBand: "high",
+      status: "pending",
+      requestedBy: "policy-engine",
+      approvedBy: null,
+      requestedAt: new Date("2026-04-19T10:00:00Z"),
+      decidedAt: null,
+      reason: null,
+      ...overrides,
+    };
+  }
+
+  it("400s when reason body is missing or empty", async () => {
+    const db = makeMockDb({ selects: [] });
+    const app = createApp({
+      temporal: makeBulkTemporal(),
+      db,
+      ...APP_DEFAULTS,
+    });
+    const res = await app.request(`/plans/${PLAN_ID}/approve-all-pending`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("400s when planId is invalid", async () => {
+    const db = makeMockDb({ selects: [] });
+    const app = createApp({
+      temporal: makeBulkTemporal(),
+      db,
+      ...APP_DEFAULTS,
+    });
+    const res = await app.request(`/plans/not-a-uuid/approve-all-pending`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "x" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("404s when the plan does not exist", async () => {
+    const db = makeMockDb({ selects: [[]] }); // plan lookup empty
+    const app = createApp({
+      temporal: makeBulkTemporal(),
+      db,
+      ...APP_DEFAULTS,
+    });
+    const res = await app.request(`/plans/${PLAN_ID}/approve-all-pending`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "bulk" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 0/0 when no pending rows exist (no-op)", async () => {
+    const db = makeMockDb({
+      selects: [[planRow()], []], // plan exists, no pending rows
+    });
+    const app = createApp({
+      temporal: makeBulkTemporal(),
+      db,
+      ...APP_DEFAULTS,
+    });
+    const res = await app.request(`/plans/${PLAN_ID}/approve-all-pending`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "no-op" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      approvedCount: number;
+      skippedCount: number;
+    };
+    expect(body.approvedCount).toBe(0);
+    expect(body.skippedCount).toBe(0);
+  });
+
+  it("approves a task row when the task is already ready_to_merge", async () => {
+    const updateCalled = { v: false };
+    const db = makeMockDb({
+      selects: [
+        [planRow()], // plan lookup
+        [pendingTaskApproval()], // pending rows
+        [{ status: "ready_to_merge", phaseId: "p1" }], // task lookup
+        [{ phaseId: "p1" }], // task->phaseId for signaling
+      ],
+      updateCalled,
+    });
+    const app = createApp({
+      temporal: makeBulkTemporal(),
+      db,
+      ...APP_DEFAULTS,
+    });
+    const res = await app.request(`/plans/${PLAN_ID}/approve-all-pending`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "bulk", approvedBy: "op" }),
+    });
+    expect(res.status).toBe(200);
+    expect(updateCalled.v).toBe(true);
+    const body = (await res.json()) as {
+      approvedCount: number;
+      skippedCount: number;
+      approvedIds: string[];
+    };
+    expect(body.approvedCount).toBe(1);
+    expect(body.approvedIds).toEqual([APPROVAL_ID]);
+  });
+
+  it("skips a catastrophic riskBand row even when status=pending", async () => {
+    const db = makeMockDb({
+      selects: [
+        [planRow()],
+        [pendingTaskApproval({ riskBand: "catastrophic" })],
+      ],
+    });
+    const app = createApp({
+      temporal: makeBulkTemporal(),
+      db,
+      ...APP_DEFAULTS,
+    });
+    const res = await app.request(`/plans/${PLAN_ID}/approve-all-pending`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "bulk" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      approvedCount: number;
+      skippedCount: number;
+      skipped: Array<{ reason: string }>;
+    };
+    expect(body.approvedCount).toBe(0);
+    expect(body.skippedCount).toBe(1);
+    expect(body.skipped[0]!.reason).toContain("catastrophic");
+  });
+
+  it("skips a task row whose latest review did not pass and has no skip-policy decision", async () => {
+    const db = makeMockDb({
+      selects: [
+        [planRow()],
+        [pendingTaskApproval()],
+        [{ status: "in_review", phaseId: "p1" }], // task lookup
+        [{ outcome: "changes_requested" }], // latest review
+        [], // policy_decisions
+      ],
+    });
+    const app = createApp({
+      temporal: makeBulkTemporal(),
+      db,
+      ...APP_DEFAULTS,
+    });
+    const res = await app.request(`/plans/${PLAN_ID}/approve-all-pending`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "bulk" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      approvedCount: number;
+      skippedCount: number;
+    };
+    expect(body.approvedCount).toBe(0);
+    expect(body.skippedCount).toBe(1);
+  });
+
+  it("approves a task row when a review_skipped_small_task policy decision exists", async () => {
+    const db = makeMockDb({
+      selects: [
+        [planRow()],
+        [pendingTaskApproval()],
+        [{ status: "in_review", phaseId: "p1" }],
+        [{ outcome: "changes_requested" }],
+        [{ reason: "review_skipped_small_task:sizeHint=small" }],
+        [{ phaseId: "p1" }],
+      ],
+    });
+    const app = createApp({
+      temporal: makeBulkTemporal(),
+      db,
+      ...APP_DEFAULTS,
+    });
+    const res = await app.request(`/plans/${PLAN_ID}/approve-all-pending`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "bulk" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      approvedCount: number;
+    };
+    expect(body.approvedCount).toBe(1);
+  });
+
+  it("propagates signal failure as 5xx", async () => {
+    const db = makeMockDb({
+      selects: [
+        [planRow()],
+        [pendingTaskApproval()],
+        [{ status: "ready_to_merge", phaseId: "p1" }],
+        [{ phaseId: "p1" }],
+      ],
+    });
+    const temporal = makeBulkTemporal({
+      signal: async () => {
+        throw new Error("temporal down");
+      },
+    });
+    const app = createApp({ temporal, db, ...APP_DEFAULTS });
+    const res = await app.request(`/plans/${PLAN_ID}/approve-all-pending`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "bulk" }),
+    });
+    expect(res.status).toBe(500);
+  });
+
+  it("treats WorkflowNotFoundError as a graceful no-op (200, row flip stands)", async () => {
+    const { WorkflowNotFoundError } = await import("@temporalio/client");
+    const db = makeMockDb({
+      selects: [
+        [planRow()],
+        [pendingTaskApproval()],
+        [{ status: "ready_to_merge", phaseId: "p1" }],
+        [{ phaseId: "p1" }],
+      ],
+    });
+    const temporal = makeBulkTemporal({
+      signal: async () => {
+        throw new WorkflowNotFoundError(
+          "not found",
+          "phase-integration-p1",
+          undefined,
+        );
+      },
+    });
+    const app = createApp({ temporal, db, ...APP_DEFAULTS });
+    const res = await app.request(`/plans/${PLAN_ID}/approve-all-pending`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "bulk" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { approvedCount: number };
+    expect(body.approvedCount).toBe(1);
+  });
+});
+
 describe("POST /plans/:planId/approve", () => {
   it("409s when no pending plan-scoped row exists", async () => {
     const db = makeMockDb({ selects: [[]] });

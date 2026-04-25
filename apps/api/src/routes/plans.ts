@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Client as TemporalClient } from "@temporalio/client";
+import { WorkflowNotFoundError } from "@temporalio/client";
 
 import {
   approveSignal,
@@ -17,12 +18,15 @@ import {
 } from "@pm-go/contracts";
 import { auditPlan } from "@pm-go/planner";
 import {
+  approvalRequests,
   artifacts,
   completionAuditReports,
   mergeRuns,
   phases,
   planTasks,
   plans,
+  policyDecisions,
+  reviewReports,
   taskDependencies,
   type PmGoDb,
 } from "@pm-go/db";
@@ -435,12 +439,235 @@ export function createPlansRoute(deps: PlansRouteDeps) {
       try {
         await deps.temporal.workflow.getHandle(workflowId).signal(approveSignal);
       } catch (err) {
-        console.error(`[approve] failed to signal workflow ${workflowId}:`, err);
-        throw err;
+        // See tasks.ts /approve for rationale: signal-not-found means the
+        // workflow either hasn't started yet or already completed; the
+        // approval_requests row flip is the source of truth either way.
+        if (err instanceof WorkflowNotFoundError) {
+          console.warn(
+            `[approve] no live ${workflowId} to signal; row flip stands`,
+          );
+        } else {
+          console.error(`[approve] failed to signal workflow ${workflowId}:`, err);
+          throw err;
+        }
       }
     }
 
     return c.json({ planId, approval: updated }, 200);
+  });
+
+  // POST /plans/:planId/approve-all-pending — v0.8.2 Task 2.1.
+  //
+  // Bulk-approve every pending approval_requests row for the plan that
+  // passes the safety gate. Replaces the operator-side "approval sniper"
+  // script pattern (per dogfood F10) with a real, audited API.
+  //
+  // Request body:
+  //   { approvedBy?: string, reason: string }
+  //
+  // Strict filters (NEVER weakened — escalations get their own endpoint):
+  //   - status MUST be "pending"
+  //   - planId MUST match the URL
+  //   - riskBand="catastrophic" rows are skipped (require explicit human gate)
+  //   - task-scoped rows must satisfy AT LEAST ONE of:
+  //       * task.status in ("ready_to_merge","merged")
+  //       * latest reviewReport.outcome === "pass"
+  //       * a policy_decisions row with subjectType="task",
+  //         decision="approved", reason starts with "review_skipped_small_task:"
+  //   - plan-scoped non-catastrophic rows are eligible by default
+  //
+  // After flipping, signals the relevant PhaseIntegrationWorkflow for every
+  // phase whose rows were approved.
+  app.post("/:planId/approve-all-pending", async (c) => {
+    const planId = c.req.param("planId");
+    if (!isUuid(planId)) {
+      return c.json({ error: "planId must be a UUID" }, 400);
+    }
+
+    const body = (await c.req
+      .json()
+      .catch(() => null)) as { approvedBy?: unknown; reason?: unknown } | null;
+    const reason =
+      body &&
+      typeof body.reason === "string" &&
+      body.reason.trim().length > 0
+        ? body.reason
+        : null;
+    if (reason === null) {
+      return c.json({ error: "reason is required" }, 400);
+    }
+    const approvedBy =
+      body &&
+      typeof body.approvedBy === "string" &&
+      body.approvedBy.trim().length > 0
+        ? body.approvedBy
+        : undefined;
+
+    const [planRow] = await deps.db
+      .select({ id: plans.id })
+      .from(plans)
+      .where(eq(plans.id, planId))
+      .limit(1);
+    if (!planRow) {
+      return c.json({ error: `plan ${planId} not found` }, 404);
+    }
+
+    const pendingRows = await deps.db
+      .select()
+      .from(approvalRequests)
+      .where(
+        and(
+          eq(approvalRequests.planId, planId),
+          eq(approvalRequests.status, "pending"),
+        ),
+      );
+
+    interface SkipDetail {
+      id: string;
+      taskId: string | null;
+      reason: string;
+    }
+
+    const eligible: typeof pendingRows = [];
+    const skipped: SkipDetail[] = [];
+
+    for (const row of pendingRows) {
+      if (row.riskBand === "catastrophic") {
+        skipped.push({
+          id: row.id,
+          taskId: row.taskId,
+          reason: "riskBand=catastrophic",
+        });
+        continue;
+      }
+
+      if (row.subject === "task" && row.taskId) {
+        const [task] = await deps.db
+          .select({ status: planTasks.status, phaseId: planTasks.phaseId })
+          .from(planTasks)
+          .where(eq(planTasks.id, row.taskId))
+          .limit(1);
+        if (!task) {
+          skipped.push({
+            id: row.id,
+            taskId: row.taskId,
+            reason: "task missing",
+          });
+          continue;
+        }
+        if (task.status === "ready_to_merge" || task.status === "merged") {
+          eligible.push(row);
+          continue;
+        }
+
+        const [latestReview] = await deps.db
+          .select()
+          .from(reviewReports)
+          .where(eq(reviewReports.taskId, row.taskId))
+          .orderBy(desc(reviewReports.createdAt))
+          .limit(1);
+        if (latestReview && latestReview.outcome === "pass") {
+          eligible.push(row);
+          continue;
+        }
+
+        const skipDecisions = await deps.db
+          .select()
+          .from(policyDecisions)
+          .where(
+            and(
+              eq(policyDecisions.subjectType, "task"),
+              eq(policyDecisions.subjectId, row.taskId),
+              eq(policyDecisions.decision, "approved"),
+            ),
+          );
+        const reviewSkipped = skipDecisions.some((d) =>
+          d.reason.startsWith("review_skipped_small_task:"),
+        );
+        if (reviewSkipped) {
+          eligible.push(row);
+          continue;
+        }
+
+        skipped.push({
+          id: row.id,
+          taskId: row.taskId,
+          reason: "no review pass, skip-policy decision, or merge-ready status",
+        });
+        continue;
+      }
+
+      // plan-scoped non-catastrophic — eligible by default.
+      eligible.push(row);
+    }
+
+    const decidedAt = new Date().toISOString();
+    const approvedIds: string[] = [];
+    for (const row of eligible) {
+      await deps.db
+        .update(approvalRequests)
+        .set({
+          status: "approved",
+          ...(approvedBy ? { approvedBy } : {}),
+          decidedAt,
+          reason,
+        })
+        .where(eq(approvalRequests.id, row.id));
+      approvedIds.push(row.id);
+    }
+
+    // Signal each phase whose row was approved. Plan-scoped rows fan out
+    // to every phase under the plan (mirrors the existing /approve route's
+    // single-phase signal behavior, generalized).
+    const phaseIdsToSignal = new Set<string>();
+    for (const row of eligible) {
+      if (row.subject === "task" && row.taskId) {
+        const [t] = await deps.db
+          .select({ phaseId: planTasks.phaseId })
+          .from(planTasks)
+          .where(eq(planTasks.id, row.taskId))
+          .limit(1);
+        if (t?.phaseId) phaseIdsToSignal.add(t.phaseId);
+      } else if (row.subject === "plan") {
+        const planPhases = await deps.db
+          .select({ id: phases.id })
+          .from(phases)
+          .where(eq(phases.planId, planId));
+        for (const p of planPhases) phaseIdsToSignal.add(p.id);
+      }
+    }
+
+    for (const phaseId of phaseIdsToSignal) {
+      const workflowId = `phase-integration-${phaseId}`;
+      try {
+        await deps.temporal.workflow
+          .getHandle(workflowId)
+          .signal(approveSignal);
+      } catch (err) {
+        if (err instanceof WorkflowNotFoundError) {
+          console.warn(
+            `[approve-all-pending] no live ${workflowId} to signal; row flip stands`,
+          );
+          continue;
+        }
+        console.error(
+          `[approve-all-pending] failed to signal ${workflowId}:`,
+          err,
+        );
+        throw err;
+      }
+    }
+
+    return c.json(
+      {
+        planId,
+        approvedCount: approvedIds.length,
+        approvedIds,
+        skippedCount: skipped.length,
+        skipped,
+      },
+      200,
+    );
   });
 
   return app;
@@ -570,6 +797,7 @@ async function loadPlanById(
     kind: row.kind,
     status: row.status,
     riskLevel: row.riskLevel,
+    ...(row.sizeHint !== null ? { sizeHint: row.sizeHint } : {}),
     fileScope: row.fileScope,
     acceptanceCriteria: row.acceptanceCriteria,
     testCommands: row.testCommands,

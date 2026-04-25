@@ -39,6 +39,12 @@ export const taskStatus = pgEnum("task_status", [
 
 export const riskLevel = pgEnum("risk_level", ["low", "medium", "high"]);
 
+export const taskSizeHint = pgEnum("task_size_hint", [
+  "small",
+  "medium",
+  "large",
+]);
+
 export const planTasks = pgTable(
   "plan_tasks",
   {
@@ -55,6 +61,7 @@ export const planTasks = pgTable(
     kind: taskKind("kind").notNull(),
     status: taskStatus("status").notNull(),
     riskLevel: riskLevel("risk_level").notNull(),
+    sizeHint: taskSizeHint("size_hint"),
     fileScope: jsonb("file_scope").$type<FileScope>().notNull(),
     acceptanceCriteria: jsonb("acceptance_criteria")
       .$type<AcceptanceCriterion[]>()

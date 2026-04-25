@@ -23,8 +23,10 @@ const activityFns = {
   persistPolicyDecision: vi.fn(async () => "policy-decision-id"),
 };
 
+let uuid4Counter = 0;
 vi.mock("@temporalio/workflow", () => ({
   proxyActivities: () => activityFns,
+  uuid4: () => `00000000-0000-4000-8000-${String(++uuid4Counter).padStart(12, "0")}`,
 }));
 
 // Import AFTER the mock so the module picks up our stubs.
@@ -225,6 +227,155 @@ describe("TaskExecutionWorkflow", () => {
     );
     // Both status-update calls were attempted.
     expect(activityFns.updateTaskStatus).toHaveBeenCalledTimes(2);
+  });
+
+  describe("small-task fast path", () => {
+    function smallTask(): Task {
+      return {
+        ...taskFixture,
+        sizeHint: "small",
+        riskLevel: "low",
+        requiresHumanApproval: false,
+        reviewerPolicy: {
+          ...taskFixture.reviewerPolicy,
+          required: false,
+        },
+      };
+    }
+
+    it("transitions a clean small task directly to ready_to_merge with a policy_decisions audit row", async () => {
+      const task = smallTask();
+      const lease = makeLease();
+      const agentRun = makeAgentRun();
+      activityFns.loadTask.mockResolvedValue(task);
+      activityFns.updateTaskStatus.mockResolvedValue(undefined);
+      activityFns.leaseWorktree.mockResolvedValue(lease);
+      activityFns.runImplementer.mockResolvedValue({
+        agentRun,
+        finalCommitSha: "abc1234567890",
+      });
+      activityFns.persistAgentRun.mockResolvedValue(agentRun.id);
+      activityFns.diffWorktreeAgainstScope.mockResolvedValue({
+        changedFiles: ["packages/x/src/y.ts"],
+        violations: [],
+      });
+
+      const result = await TaskExecutionWorkflow(BASE_INPUT);
+
+      expect(result.status).toBe("ready_to_merge");
+      expect(result.reviewSkippedPolicyDecisionId).toBeDefined();
+      expect(activityFns.persistPolicyDecision).toHaveBeenCalledTimes(1);
+      const decisionArg = activityFns.persistPolicyDecision.mock.calls[0]![0];
+      expect(decisionArg).toMatchObject({
+        subjectType: "task",
+        subjectId: task.id,
+        decision: "approved",
+        actor: "system",
+      });
+      expect(decisionArg.reason).toContain("review_skipped_small_task:");
+
+      // Ends in ready_to_merge, NOT ready_for_review.
+      const statuses = activityFns.updateTaskStatus.mock.calls.map(
+        (c) => (c[0] as { status: string }).status,
+      );
+      expect(statuses).toEqual(["running", "ready_to_merge"]);
+    });
+
+    it("falls back to ready_for_review when the task is small but riskLevel='high'", async () => {
+      const task: Task = { ...smallTask(), riskLevel: "high" };
+      activityFns.loadTask.mockResolvedValue(task);
+      activityFns.updateTaskStatus.mockResolvedValue(undefined);
+      activityFns.leaseWorktree.mockResolvedValue(makeLease());
+      activityFns.runImplementer.mockResolvedValue({
+        agentRun: makeAgentRun(),
+        finalCommitSha: "abc",
+      });
+      activityFns.persistAgentRun.mockResolvedValue("ar");
+      activityFns.diffWorktreeAgainstScope.mockResolvedValue({
+        changedFiles: ["packages/x/src/y.ts"],
+        violations: [],
+      });
+
+      const result = await TaskExecutionWorkflow(BASE_INPUT);
+      expect(result.status).toBe("ready_for_review");
+      expect(activityFns.persistPolicyDecision).not.toHaveBeenCalled();
+    });
+
+    it("falls back to ready_for_review when reviewerPolicy.required=true (medium task)", async () => {
+      const task: Task = {
+        ...smallTask(),
+        sizeHint: "medium",
+        reviewerPolicy: {
+          ...taskFixture.reviewerPolicy,
+          required: true,
+        },
+      };
+      activityFns.loadTask.mockResolvedValue(task);
+      activityFns.updateTaskStatus.mockResolvedValue(undefined);
+      activityFns.leaseWorktree.mockResolvedValue(makeLease());
+      activityFns.runImplementer.mockResolvedValue({
+        agentRun: makeAgentRun(),
+        finalCommitSha: "abc",
+      });
+      activityFns.persistAgentRun.mockResolvedValue("ar");
+      activityFns.diffWorktreeAgainstScope.mockResolvedValue({
+        changedFiles: ["packages/x/src/y.ts"],
+        violations: [],
+      });
+
+      const result = await TaskExecutionWorkflow(BASE_INPUT);
+      expect(result.status).toBe("ready_for_review");
+      expect(activityFns.persistPolicyDecision).not.toHaveBeenCalled();
+    });
+
+    it("falls back to ready_for_review when requiresHumanApproval=true", async () => {
+      const task: Task = { ...smallTask(), requiresHumanApproval: true };
+      activityFns.loadTask.mockResolvedValue(task);
+      activityFns.updateTaskStatus.mockResolvedValue(undefined);
+      activityFns.leaseWorktree.mockResolvedValue(makeLease());
+      activityFns.runImplementer.mockResolvedValue({
+        agentRun: makeAgentRun(),
+        finalCommitSha: "abc",
+      });
+      activityFns.persistAgentRun.mockResolvedValue("ar");
+      activityFns.diffWorktreeAgainstScope.mockResolvedValue({
+        changedFiles: ["packages/x/src/y.ts"],
+        violations: [],
+      });
+
+      const result = await TaskExecutionWorkflow(BASE_INPUT);
+      expect(result.status).toBe("ready_for_review");
+      expect(activityFns.persistPolicyDecision).not.toHaveBeenCalled();
+    });
+
+    it("falls back to ready_for_review when changed file count exceeds the fast-path host limit", async () => {
+      const task = smallTask();
+      activityFns.loadTask.mockResolvedValue(task);
+      activityFns.updateTaskStatus.mockResolvedValue(undefined);
+      activityFns.leaseWorktree.mockResolvedValue(makeLease());
+      activityFns.runImplementer.mockResolvedValue({
+        agentRun: makeAgentRun(),
+        finalCommitSha: "abc",
+      });
+      activityFns.persistAgentRun.mockResolvedValue("ar");
+      // 7 files > the 6-file host limit.
+      activityFns.diffWorktreeAgainstScope.mockResolvedValue({
+        changedFiles: [
+          "packages/x/src/a.ts",
+          "packages/x/src/b.ts",
+          "packages/x/src/c.ts",
+          "packages/x/src/d.ts",
+          "packages/x/src/e.ts",
+          "packages/x/src/f.ts",
+          "packages/x/src/g.ts",
+        ],
+        violations: [],
+      });
+
+      const result = await TaskExecutionWorkflow(BASE_INPUT);
+      expect(result.status).toBe("ready_for_review");
+      expect(activityFns.persistPolicyDecision).not.toHaveBeenCalled();
+    });
   });
 
   it("stamps `failed` when diff-scope itself throws", async () => {

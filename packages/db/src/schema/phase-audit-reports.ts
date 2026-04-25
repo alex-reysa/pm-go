@@ -59,6 +59,15 @@ export const phaseAuditReports = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
       .notNull()
       .defaultNow(),
+    // v0.8.2: operator override trail. Populated when an operator accepts
+    // a `blocked` audit through POST /phases/:phaseId/override-audit
+    // instead of issuing a direct DB update.
+    overrideReason: text("override_reason"),
+    overriddenBy: text("overridden_by"),
+    overriddenAt: timestamp("overridden_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
   },
   (table) => ({
     // One audit per (phase, merge) — a second attempt against the same

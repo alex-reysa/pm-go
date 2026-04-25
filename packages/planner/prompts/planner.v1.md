@@ -61,6 +61,13 @@ To keep plans demoable and auditable:
 - `tasks[].fileScope.includes`: precise paths or tight globs the task is allowed to touch. Remember phase-0 disjointness.
 - `tasks[].acceptanceCriteria[]`: concrete, verifiable bullets. Each `verificationCommands` entry should be runnable from `repoRoot` (use the repo's existing `testCommands`/`buildCommands` where possible).
 - `tasks[].testCommands`: the commands a reviewer would run to validate this task in isolation.
+  - Workspace-safe shapes only. From `repoRoot`, the allowed forms are:
+    - `pnpm typecheck`
+    - `pnpm test`
+    - `pnpm --filter <pkg> typecheck`
+    - `pnpm --filter <pkg> test`
+  - **Forbidden:** `pnpm test --filter <pkg>` (and any other form that appends `--filter` after `pnpm test`). In this monorepo, `pnpm test` maps to `pnpm -r --if-present test`, which forwards trailing args to every package's test script and fails with `too many arguments`. Use `pnpm --filter <pkg> test` instead.
+  - Tasks that create or modify a workspace package MUST also include `package.json` and `pnpm-lock.yaml` in `fileScope.includes`, plus the relevant `packages/<name>/package.json` or `apps/<name>/package.json`. Adding a package without these scope entries is a planning bug — the integration step will fail file-scope validation on root-level lock/manifest changes.
 - `tasks[].budget.maxWallClockMinutes`: realistic minutes for a Claude implementer to finish. Keep it tight; 15–90 minutes is typical.
 - `tasks[].reviewerPolicy`: `required: true` for anything non-trivial; `strictness: "standard"` by default, `"elevated"` or `"critical"` for security-adjacent or risky tasks; `reviewerWriteAccess: false` always.
 - `tasks[].requiresHumanApproval`: true only when the task itself (not the plan) needs a human in the loop before merge — e.g. production deploys, schema migrations on prod data.

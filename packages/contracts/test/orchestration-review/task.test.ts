@@ -61,4 +61,24 @@ describe("validateTask", () => {
     };
     expect(validateTask(extra)).toBe(false);
   });
+
+  it("accepts a task carrying sizeHint='small'", () => {
+    const withHint = {
+      ...(fixture as Record<string, unknown>),
+      sizeHint: "small"
+    };
+    expect(validateTask(withHint)).toBe(true);
+  });
+
+  it("accepts a task without sizeHint (optional field)", () => {
+    expect(validateTask(fixture)).toBe(true);
+  });
+
+  it("rejects a task whose sizeHint is not a TaskSizeHint literal", () => {
+    const bad = {
+      ...(fixture as Record<string, unknown>),
+      sizeHint: "tiny"
+    };
+    expect(validateTask(bad)).toBe(false);
+  });
 });
