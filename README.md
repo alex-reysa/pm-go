@@ -1,5 +1,7 @@
 # pm-go
 
+![pm-go: durable control plane for AI-assisted software delivery](./pm-go.png)
+
 `pm-go` is a durable control plane for AI-assisted software delivery.
 
 Give it a feature spec and a repository. It turns that input into a typed plan,

@@ -32,3 +32,5 @@ pm-state.json
 !docs/**/*.png
 !docs/**/*.jpg
 !docs/**/*.jpeg
+# Project branding assets at repo root (logo, social preview).
+!pm-go.png
