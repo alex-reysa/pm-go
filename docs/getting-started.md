@@ -128,8 +128,12 @@ Open the plan in the TUI with `enter`. These are the main operator chords:
 | `g f` | Fix selected task after changes requested | `POST /tasks/:taskId/fix` |
 | `g i` | Integrate selected phase | `POST /phases/:phaseId/integrate` |
 | `g a` | Audit selected phase | `POST /phases/:phaseId/audit` |
+| `g A` | Approve a pending high-risk task | `POST /tasks/:taskId/approve` |
 | `g c` | Run completion audit | `POST /plans/:planId/complete` |
 | `g R` | Produce release artifacts | `POST /plans/:planId/release` |
+
+The capital `A` for approve is deliberately distinct from lowercase `a` for
+audit so a typo mid-merge does not fire the wrong action.
 
 Every action opens a confirm modal. The server remains the source of truth; if
 an action is too early, the API returns `409` and the TUI shows the reason.
@@ -280,4 +284,5 @@ can show why this result is safe to merge or why it is blocked."
 | API cannot connect to Temporal | Run `pnpm docker:up` and check `TEMPORAL_ADDRESS=localhost:7233`. |
 | No plans in TUI | Start `pnpm dev:api`; verify `curl http://localhost:3001/plans`. |
 | Task action returns `409` | The state machine is protecting order. Inspect `GET /tasks/:id` or `GET /phases/:id` and run the previous step first. |
+| `/override-review` or `/override-audit` returns `409` | The blocker is not a review/audit false positive. Inspect `GET /tasks/:id` for the latest `policy_decisions` (budget/scope) or `GET /phases/:id` for the audit `outcome`, fix the underlying cause, and re-drive the workflow. Overrides only encode operator judgment about a review or audit verdict. |
 | Live runner starts in stub mode | Set `*_RUNTIME=sdk` or `*_RUNTIME=auto`; new runtime vars override legacy `*_EXECUTOR_MODE`. |

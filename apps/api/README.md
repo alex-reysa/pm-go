@@ -23,6 +23,13 @@ Health check:
 curl -sS http://localhost:3001/health
 ```
 
+Diagnostics (`pm-go doctor`) require the CLI to be built first:
+
+```bash
+pnpm --filter @pm-go/cli build
+pnpm pm-go doctor
+```
+
 ## Required Services
 
 - Postgres from `pnpm docker:up`
@@ -44,21 +51,50 @@ curl -sS http://localhost:3001/health
 | `WORKTREE_ROOT` | `<repo>/.worktrees` | Task worktree root. |
 | `MAX_WORKTREE_LIFETIME_HOURS` | `24` | Lease lifetime for API-started task runs. |
 
-## Main Routes
+## Routes
+
+Spec and plan:
 
 - `POST /spec-documents`
 - `POST /plans`
+- `POST /plans/:planId/audit`
 - `GET /plans`, `GET /plans/:planId`
+
+Task execution and review:
+
+- `GET /tasks`, `GET /tasks/:taskId`
+- `GET /tasks/:taskId/review-reports`
 - `POST /tasks/:taskId/run`
 - `POST /tasks/:taskId/review`
 - `POST /tasks/:taskId/fix`
+- `POST /tasks/:taskId/approve`
+- `POST /tasks/:taskId/override-review`
+
+Phase integration and audit:
+
+- `GET /phases`, `GET /phases/:phaseId`
+- `GET /merge-runs/:id`
+- `GET /phase-audit-reports/:id`
 - `POST /phases/:phaseId/integrate`
 - `POST /phases/:phaseId/audit`
+- `POST /phases/:phaseId/override-audit`
+
+Approvals, completion, release:
+
 - `GET /approvals?planId=:planId`
+- `POST /plans/:planId/approve`
 - `POST /plans/:planId/approve-all-pending`
 - `POST /plans/:planId/complete`
+- `GET /completion-audit-reports/:id`
 - `POST /plans/:planId/release`
-- `GET /events?planId=:planId`
+
+Reads and observability:
+
+- `GET /agent-runs`
+- `GET /artifacts/:id`
+- `GET /plans/:planId/budget-report`
+- `GET /events?planId=:planId` (also SSE with `Accept: text/event-stream`)
+- `GET /health`
 
 See [../../docs/specs/control-plane-api.md](../../docs/specs/control-plane-api.md)
 for payloads, state-machine preconditions, and operator guidance.

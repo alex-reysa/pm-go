@@ -44,6 +44,28 @@ For a full walkthrough, see [../getting-started.md](../getting-started.md).
 - The database is the durable read model. Temporal workflow IDs are an
   implementation detail except in logs.
 
+## Operating Principles
+
+These apply across the surface; they save more debugging time than any single
+endpoint detail.
+
+- **Inspect before forcing.** Before issuing an action that might 409, hit the
+  matching `GET /plans/:id`, `GET /tasks/:id`, or `GET /phases/:id`. Errors
+  carry actionable text but the read model carries the full state machine.
+- **Bulk-approve over per-row loops.** When a plan has many low-risk reviewed
+  tasks, prefer `POST /plans/:planId/approve-all-pending` to scripting
+  per-task approves. The bulk endpoint also enforces the "review pass /
+  skip-policy / merge-ready" gate per row, so it cannot silently approve
+  unreviewed work.
+- **Overrides encode human judgment, not blocker bypass.** `/override-review`
+  is for review false positives; `/override-audit` is for accepted audit
+  outcomes. They refuse (409) when the actual blocker is a budget overrun, a
+  scope violation, a partition failure, an approval timeout, a merge
+  failure, or a test failure. Fix the cause and re-drive instead.
+- **Release means a passing completion audit landed.** A plan is not ready
+  to release until `POST /plans/:id/complete` produces an audit with
+  `outcome="pass"`. `POST /plans/:id/release` enforces this precondition.
+
 ## Spec And Plan
 
 ### `POST /spec-documents`
@@ -107,8 +129,23 @@ Return the reconstructed `Plan`, artifact IDs, and latest completion audit:
 
 ### `POST /plans/:planId/audit`
 
-Run deterministic plan audit against the stored plan. This is synchronous and
-returns findings.
+Run deterministic plan audit against the stored plan. Synchronous; no Temporal
+workflow is started.
+
+Response:
+
+```json
+{
+  "planId": "uuid",
+  "approved": true,
+  "revisionRequested": false,
+  "findings": []
+}
+```
+
+`approved` is the inverse of `revisionRequested`. `findings` is empty when
+`approved=true`; otherwise each entry carries `id`, `severity`, `title`,
+`summary`, `filePath`, `confidence`, and `suggestedFixDirection`.
 
 ## Task Execution
 
@@ -274,6 +311,8 @@ Approve the latest pending plan-scoped approval request.
 
 Bulk approve every eligible pending approval request for a plan.
 
+Request body:
+
 ```json
 {
   "approvedBy": "local-dev",
@@ -281,9 +320,31 @@ Bulk approve every eligible pending approval request for a plan.
 }
 ```
 
-The endpoint skips catastrophic risk rows and task rows without review pass,
-small-task skip policy, or merge-ready status. Response includes approved and
-skipped counts.
+`reason` is required. The endpoint skips catastrophic risk rows and task rows
+without review pass, small-task skip policy, or merge-ready status.
+
+Response:
+
+```json
+{
+  "planId": "uuid",
+  "approvedCount": 2,
+  "approvedIds": ["uuid", "uuid"],
+  "skippedCount": 1,
+  "skipped": [
+    {
+      "id": "uuid",
+      "taskId": "uuid",
+      "reason": "riskBand=catastrophic"
+    }
+  ]
+}
+```
+
+After flipping rows, the API signals the live `PhaseIntegrationWorkflow` for
+each affected phase. The durable approval row is the source of truth — a
+missing live workflow logs and continues; the next workflow run picks up the
+approved row from the ledger.
 
 ### `GET /plans/:planId/budget-report`
 
@@ -344,17 +405,34 @@ Optional query:
 
 - `sinceEventId`: replay events after a known event.
 
+Response:
+
+```json
+{
+  "planId": "uuid",
+  "events": [
+    {
+      "id": "uuid",
+      "kind": "task_status_changed",
+      "createdAt": "2026-04-25T10:00:00.000Z"
+    }
+  ],
+  "lastEventId": "uuid"
+}
+```
+
+`lastEventId` echoes the most recent event id in the page so a polling
+client can pass it back as `?sinceEventId=` without re-reading the array.
+
 ### `GET /events?planId=:planId` with `Accept: text/event-stream`
 
 Stream events as SSE. The TUI uses this path to update plan detail screens.
+The server replays history first, then emits new events on a 1.5s tick, plus
+a heartbeat comment every 15s to keep proxies from closing the connection.
 
-## Operator Guidance
+## See Also
 
-- Use `GET /plans/:id`, `GET /tasks/:id`, and `GET /phases/:id` before forcing
-  an action.
-- Prefer `approve-all-pending` over one-off approval loops when the plan has
-  many low-risk reviewed tasks.
-- Use overrides only to encode a human judgment. If the blocker is a real
-  budget, scope, merge, or test failure, fix the cause and re-drive the workflow.
-- A release is not ready until `POST /plans/:id/complete` produces a passing
-  completion audit.
+- [Getting started](../getting-started.md) — full walkthrough.
+- [Runtimes](../runtimes.md) — runtime mode resolution and diagnostics.
+- [Domain model](domain-model.md) — durable objects and invariants behind
+  the routes above.

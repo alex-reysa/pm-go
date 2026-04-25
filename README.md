@@ -46,7 +46,7 @@ The current tree includes:
   budget reports, events, overrides, completion, and release.
 - Temporal worker hosting planning, task execution, review, fix, integration,
   phase audit, completion audit, and final release workflows.
-- Drizzle-managed Postgres schema with migrations `0000-0016`.
+- Drizzle-managed Postgres schema with migrations `0000-0017`.
 - Ink TUI for inspecting plans and driving task, phase, completion, and release
   actions.
 - Claude SDK/process adapters plus stub runners for repeatable tests.
@@ -128,6 +128,9 @@ PLAN_RESPONSE=$(
 PLAN_ID=$(echo "$PLAN_RESPONSE" | jq -r .planId)
 echo "Plan: $PLAN_ID"
 ```
+
+For a deeper walkthrough of the example, see
+[`examples/golden-path/README.md`](examples/golden-path/README.md).
 
 Then watch the plan in the TUI. The normal operator loop is:
 

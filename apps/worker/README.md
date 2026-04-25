@@ -69,11 +69,17 @@ See [../../docs/runtimes.md](../../docs/runtimes.md) for the full runtime model.
 | `TEMPORAL_NAMESPACE` | `default` | Temporal namespace. |
 | `TEMPORAL_TASK_QUEUE` | `pm-go-worker` | Queue the API starts workflows on. |
 | `PLAN_ARTIFACT_DIR` | `./artifacts/plans` | Rendered plan artifact directory. |
+| `RUNNER_DIAGNOSTIC_DIR` | `./artifacts` | Parent directory for `runner-diagnostics/<id>.json` files written when a Claude reviewer / phase-auditor / completion-auditor structured-output payload fails runtime schema validation. |
 | `REPO_ROOT` | `.` | Main repository root. |
 | `WORKTREE_ROOT` | `.worktrees` | Task implementation worktrees. |
 | `INTEGRATION_WORKTREE_ROOT` | `.integration-worktrees` | Phase integration worktrees. |
 | `WORKTREE_MAX_LIFETIME_HOURS` | `24` | Task lease lifetime. |
 | `ANTHROPIC_API_KEY` | unset | Required for SDK live mode unless another supported auth path is available. |
+
+Relative paths in `WORKTREE_ROOT`, `INTEGRATION_WORKTREE_ROOT`,
+`PLAN_ARTIFACT_DIR`, and `RUNNER_DIAGNOSTIC_DIR` resolve against the repo
+root, not the worker process cwd. Launching the worker from a subdirectory
+is therefore safe.
 
 ## What The Worker Runs
 
@@ -93,5 +99,10 @@ See [../../docs/runtimes.md](../../docs/runtimes.md) for the full runtime model.
 - If live runners resolve to stub, check `*_RUNTIME` and run `pnpm pm-go doctor`.
 - If API requests start workflows but nothing changes, confirm API and worker
   use the same `TEMPORAL_TASK_QUEUE`.
-- Runner diagnostic artifacts are written under the artifacts root when
-  structured output validation fails.
+- When a Claude runner returns a `structured_output` payload that fails
+  runtime schema validation, the worker writes a sanitized diagnostic to
+  `${RUNNER_DIAGNOSTIC_DIR:-./artifacts}/runner-diagnostics/<artifactId>.json`.
+  When the diagnostic carries a session id that resolves to a `planId`, an
+  entry is also added to the `artifacts` table with `kind='runner_diagnostic'`
+  and `uri` pointing at the on-disk file. The on-disk JSON is the
+  authoritative copy; the row exists for grep / dashboard discoverability.
