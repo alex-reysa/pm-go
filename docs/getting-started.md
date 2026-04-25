@@ -40,6 +40,49 @@ git clone https://github.com/alex-reysa/pm-go.git
 cd pm-go
 pnpm install
 cp .env.example .env
+```
+
+Then a single command brings the whole stack up:
+
+```bash
+pnpm dev
+```
+
+That builds the workspace, runs `docker compose up -d`, applies migrations,
+starts the worker + API as tracked children, waits for `/health`, and stays in
+the foreground. `Ctrl+C` cleanly tears everything down.
+
+In a second terminal, attach the TUI:
+
+```bash
+pnpm tui
+```
+
+Check the API directly:
+
+```bash
+curl -sS http://localhost:3001/health | jq
+```
+
+## Submit A Feature With One Command
+
+`pnpm dev` (or `pnpm pm-go run` directly) accepts a `--spec` flag that submits
+the spec and starts a plan as part of boot:
+
+```bash
+pnpm dev --spec ./examples/golden-path/spec.md
+```
+
+The output prints the plan id and the curl commands you'd use to poll it. Skip
+to [Drive The Plan In The TUI](#drive-the-plan-in-the-tui) once the supervisor
+banner appears.
+
+## Advanced: Running The Stack By Hand
+
+Use this when you want to attach a profiler, run worker/API on different
+machines, or debug a startup issue.
+
+```bash
 pnpm docker:up
 pnpm db:migrate
 pnpm --filter @pm-go/cli build
@@ -62,15 +105,11 @@ pnpm dev:api
 pnpm tui
 ```
 
-Check the API:
+## Submit A Feature Spec Manually
 
-```bash
-curl -sS http://localhost:3001/health | jq
-```
-
-## Submit A Feature Spec
-
-The fastest way to learn the flow is to submit the bundled example:
+`pnpm dev --spec ./feature.md` already does this for you. The manual API flow
+below is useful for automation, scripts, or driving plans against a stack you
+brought up another way.
 
 ```bash
 SPEC_RESPONSE=$(
@@ -286,3 +325,5 @@ can show why this result is safe to merge or why it is blocked."
 | Task action returns `409` | The state machine is protecting order. Inspect `GET /tasks/:id` or `GET /phases/:id` and run the previous step first. |
 | `/override-review` or `/override-audit` returns `409` | The blocker is not a review/audit false positive. Inspect `GET /tasks/:id` for the latest `policy_decisions` (budget/scope) or `GET /phases/:id` for the audit `outcome`, fix the underlying cause, and re-drive the workflow. Overrides only encode operator judgment about a review or audit verdict. |
 | Live runner starts in stub mode | Set `*_RUNTIME=sdk` or `*_RUNTIME=auto`; new runtime vars override legacy `*_EXECUTOR_MODE`. |
+| `pnpm dev` says `worker dist not found` | Run `pnpm -r build` once after a fresh checkout. The supervisor spawns `node dist/index.js` directly so children can be SIGTERM'd cleanly, which means the dists must exist. `pnpm dev` does this for you on first boot. |
+| `pnpm dev` reports `EADDRINUSE :3001` | Another pm-go (or anything else) is already on the API port. Pass `--port 3199` (or any other free port) to `pnpm dev` / `pnpm pm-go run`. |

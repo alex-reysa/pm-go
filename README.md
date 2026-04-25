@@ -55,97 +55,62 @@ The current tree includes:
 
 ## Quick Start
 
-Use this when you want to clone the repo, prove the stack is healthy, and then
-run your first feature through pm-go.
-
-### 1. Install
-
-Requirements:
-
-- Node `>=22`
-- pnpm `>=10`
-- Docker, for Postgres and Temporal
-- `jq`, for the copy-paste API examples
-
 ```bash
 git clone https://github.com/alex-reysa/pm-go.git
 cd pm-go
 pnpm install
 cp .env.example .env
-pnpm docker:up
-pnpm db:migrate
-pnpm --filter @pm-go/cli build
-pnpm pm-go doctor
+pnpm dev --spec ./examples/golden-path/spec.md
 ```
 
-### 2. Run The Control Plane
+That single command brings up Docker (Postgres + Temporal), applies migrations,
+starts the worker and API as tracked children, waits for `/health`, submits the
+example spec, and starts a plan. Stay in the foreground; press `Ctrl+C` to tear
+the whole stack down cleanly.
 
-Open three terminals from the repo root.
+When the supervisor prints `pm-go is running`, the API is on
+`http://localhost:3001`. To drive the plan interactively:
 
 ```bash
-# Terminal 1: worker
-set -a; source .env; set +a
-pnpm dev:worker
+pnpm tui     # in a second terminal
 ```
 
-```bash
-# Terminal 2: API
-set -a; source .env; set +a
-pnpm dev:api
-```
-
-```bash
-# Terminal 3: TUI
-pnpm tui
-```
-
-The API listens on `http://localhost:3001` by default.
-
-### 3. Submit The Example Feature
-
-```bash
-SPEC_JSON=$(
-  jq -n \
-    --arg title "Add phase detail endpoint" \
-    --arg body "$(cat examples/golden-path/spec.md)" \
-    --arg repoRoot "$PWD" \
-    '{ title: $title, body: $body, repoRoot: $repoRoot }'
-)
-
-SPEC_RESPONSE=$(
-  curl -sS -X POST http://localhost:3001/spec-documents \
-    -H 'content-type: application/json' \
-    -d "$SPEC_JSON"
-)
-
-SPEC_ID=$(echo "$SPEC_RESPONSE" | jq -r .specDocumentId)
-SNAPSHOT_ID=$(echo "$SPEC_RESPONSE" | jq -r .repoSnapshotId)
-
-PLAN_RESPONSE=$(
-  curl -sS -X POST http://localhost:3001/plans \
-    -H 'content-type: application/json' \
-    -d "$(jq -n --arg specDocumentId "$SPEC_ID" --arg repoSnapshotId "$SNAPSHOT_ID" '{ specDocumentId: $specDocumentId, repoSnapshotId: $repoSnapshotId }')"
-)
-
-PLAN_ID=$(echo "$PLAN_RESPONSE" | jq -r .planId)
-echo "Plan: $PLAN_ID"
-```
-
-For a deeper walkthrough of the example, see
+For a deeper walkthrough of the bundled example, see
 [`examples/golden-path/README.md`](examples/golden-path/README.md).
 
-Then watch the plan in the TUI. The normal operator loop is:
+The TUI operator loop:
 
 1. Run ready tasks with `g r`.
 2. Review tasks with `g v`.
 3. Fix tasks with `g f` when review asks for changes.
 4. Integrate a phase with `g i`.
 5. Audit a phase with `g a`.
-6. Complete the plan with `g c`.
-7. Release after a passing completion audit with `g R`.
+6. Approve a pending high-risk task with `g A`.
+7. Complete the plan with `g c`.
+8. Release after a passing completion audit with `g R`.
 
 The full walkthrough, including API-only commands and state transitions, lives
 in [docs/getting-started.md](docs/getting-started.md).
+
+### Requirements
+
+- Node `>=22`
+- pnpm `>=10`
+- Docker, for Postgres and Temporal
+- `jq`, for the copy-paste API examples (optional)
+
+### Manual Stack Control
+
+`pnpm dev` is a thin wrapper around `pm-go run`. The longer form gives you the
+same outcome with explicit flags:
+
+```bash
+pnpm pm-go run --repo . --spec ./examples/golden-path/spec.md --runtime auto
+```
+
+If you prefer to drive the worker, API, and TUI as separate processes — for
+debugging, attaching a profiler, or running them on different machines — see
+[docs/getting-started.md](docs/getting-started.md#advanced-running-the-stack-by-hand).
 
 ## Fast Verification
 

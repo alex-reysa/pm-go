@@ -5,6 +5,78 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 once the public API stabilises.
 
+## v0.8.3 — 2026-04-25
+
+Setup-as-a-product slice 1: collapse the "open three terminals + run six
+commands" onboarding into a single foreground process. Inspired by
+PwnKit / Paperclip's first-command-is-the-product UX.
+
+### Added
+
+- **`pm-go run` supervisor.** New CLI subcommand that brings the whole
+  local stack up in one command and stays attached:
+  1. Checks Docker is reachable, runs `docker compose up -d` if needed,
+     waits for Postgres + Temporal readiness.
+  2. Applies pending migrations (`pnpm db:migrate`).
+  3. Spawns the worker and API as **direct child PIDs** (not behind
+     `pnpm --filter` wrappers) so SIGINT/SIGTERM actually reach them.
+  4. Waits for the API `/health` endpoint, then prints the next-step
+     hints (curl URL, plan link if a spec was submitted, `pnpm tui`
+     attach command).
+  5. Optionally accepts `--spec ./feature.md` and submits the spec +
+     starts a plan as part of boot.
+  6. Forwards `Ctrl+C` to every tracked child with a 5s grace period
+     before SIGKILL escalation; a second signal force-kills
+     immediately.
+- **`pnpm dev` root script.** One command from the repo root: builds
+  the workspace if needed, then invokes `pm-go run --repo .`. The new
+  canonical contributor onboarding.
+- **`pm-go run --help`** with a complete usage block describing every
+  flag (`--repo`, `--spec`, `--title`, `--runtime`, `--port`,
+  `--database-url`, `--skip-docker`, `--skip-migrate`).
+- **CLI helpers** under `apps/cli/src/lib/`:
+  - `wait-for.ts` — generic poll-with-timeout used for Postgres,
+    Temporal, and API readiness probes; pure with respect to its
+    `now`/`sleep` deps so tests run in microseconds.
+  - `process-manager.ts` — tracks child processes, registers SIGINT +
+    SIGTERM handlers exactly once, escalates to SIGKILL after a grace
+    period, mirrors Bash exit codes (130 / 143).
+- **18 new unit tests** in `apps/cli/src/__tests__/{run,wait-for}.test.ts`
+  covering argv parsing edge cases, runtime env-var translation, title
+  derivation from spec markdown, and the timeout/recovery semantics of
+  the wait-for poll loop.
+
+### Changed
+
+- **README.md hero.** Replaced the "open three terminals + paste six
+  commands" section with `pnpm dev --spec ./examples/golden-path/spec.md`
+  as the first-feature path. The advanced multi-terminal flow is still
+  documented but no longer the default.
+- **docs/getting-started.md.** Same restructure: `pnpm dev` is the
+  primary install-and-boot path; the manual three-terminal flow lives
+  under "Advanced: Running The Stack By Hand" for profiler /
+  multi-machine / debug scenarios. Added two new Common Issues rows
+  for the supervisor's failure modes (missing dist, EADDRINUSE).
+- **`apps/cli/src/index.ts`** dispatches `run` and `doctor`. Resolves
+  the user's actual cwd via `INIT_CWD` (set by pnpm/npm) so
+  `--repo .` means "the repo I typed this from," not the workspace
+  package the CLI happens to live in.
+- **`pnpm test:cli`** picks up every `dist/__tests__/*.test.js` file
+  instead of just `doctor.test.js`.
+
+### Internal
+
+- Live end-to-end validation: `pnpm pm-go run --runtime stub
+  --skip-docker --skip-migrate --port 3199` boots to "pm-go is running"
+  in ~1 second with two direct child PIDs (worker + api), passes
+  `/health`, and exits cleanly on a single SIGINT — zero leftover
+  processes. Workspace typecheck + sequential test run still green
+  (35/35 CLI, 13 test groups workspace-wide).
+- Deferred to follow-up slices (per the implementation plan):
+  daemonized mode, `~/.pm-go/instances/<name>` config, embedded
+  Postgres / `temporal server start-dev` no-Docker path, npm publish
+  + Docker image, `run-to-completion` autopilot.
+
 ## v0.8.2.1 — 2026-04-25
 
 Reviewer-driven follow-up to v0.8.2. A 9-finding audit caught bugs that

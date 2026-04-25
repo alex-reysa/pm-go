@@ -16,6 +16,7 @@
     "db:studio": "tsx node_modules/drizzle-kit/bin.cjs studio",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
+    "dev": "pnpm -r --if-present build && pnpm pm-go run --repo .",
     "dev:worker": "pnpm --filter @pm-go/worker dev",
     "dev:api": "pnpm --filter @pm-go/api dev",
     "start:worker": "pnpm --filter @pm-go/worker start",

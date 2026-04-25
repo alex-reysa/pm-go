@@ -1,0 +1,627 @@
+/**
+ * `pm-go run` — single-command supervisor.
+ *
+ * Replaces the "open three terminals + run six commands" workflow
+ * with one foreground process that:
+ *
+ *   1. Verifies the local Docker / Postgres / Temporal stack is up
+ *      (and brings it up via `docker compose up -d` if not).
+ *   2. Applies pending DB migrations.
+ *   3. Spawns the worker and the API as tracked child processes,
+ *      waiting on each `/health` endpoint to confirm readiness.
+ *   4. Optionally submits a feature spec via `POST /spec-documents`
+ *      and starts a plan via `POST /plans`.
+ *   5. Stays attached, prints next-step hints, and forwards SIGINT
+ *      to the children so `Ctrl+C` cleanly tears everything down.
+ *
+ * Pure argv parsing + plan-emission lives in this file; effectful
+ * I/O lives behind the `RunDeps` interface so the orchestration can
+ * be unit-tested without spawning real processes.
+ */
+
+import type { ChildProcess, SpawnOptions } from 'node:child_process'
+
+import {
+  createProcessManager,
+  track,
+  type ProcessManager,
+} from './lib/process-manager.js'
+import { httpReady, waitFor } from './lib/wait-for.js'
+
+// ---------------------------------------------------------------------------
+// Argv parsing
+// ---------------------------------------------------------------------------
+
+export interface RunOptions {
+  /** Absolute path to the target repository. */
+  repoRoot: string
+  /** Absolute path to the spec markdown file (optional). */
+  specPath: string | undefined
+  /** Title for the spec document. Falls back to first H1 or filename. */
+  title: string | undefined
+  /** Runtime mode for every agent role. */
+  runtime: 'auto' | 'stub' | 'sdk' | 'claude'
+  /** Override the default API port (3001). */
+  apiPort: number
+  /** Override DATABASE_URL when stack is already running externally. */
+  databaseUrl: string
+  /** Skip `docker compose up` even if the stack appears down. */
+  skipDocker: boolean
+  /** Skip `pnpm db:migrate` (e.g. CI already migrated). */
+  skipMigrate: boolean
+}
+
+export interface ParsedArgv {
+  ok: true
+  options: RunOptions
+}
+
+export interface ArgvError {
+  ok: false
+  error: string
+}
+
+const DEFAULT_DATABASE_URL = 'postgres://pmgo:pmgo@localhost:5432/pm_go'
+const DEFAULT_API_PORT = 3001
+
+/**
+ * Parse `pm-go run` argv into a typed RunOptions, resolving relative
+ * paths against `cwd`. Returns a tagged union so callers can render
+ * a friendly error without throwing.
+ */
+export function parseRunArgv(
+  argv: readonly string[],
+  cwd: string,
+  resolve: (a: string, b: string) => string,
+): ParsedArgv | ArgvError {
+  const opts: Partial<RunOptions> = {
+    runtime: 'auto',
+    apiPort: DEFAULT_APR_PORT_FALLBACK(),
+    databaseUrl: DEFAULT_DATABASE_URL,
+    skipDocker: false,
+    skipMigrate: false,
+    specPath: undefined,
+    title: undefined,
+  }
+
+  for (let i = 0; i < argv.length; i++) {
+    const flag = argv[i]
+    const value = argv[i + 1]
+    switch (flag) {
+      case '--repo':
+      case '-r':
+        if (!value) return { ok: false, error: `${flag} requires a path` }
+        opts.repoRoot = resolve(cwd, value)
+        i++
+        break
+      case '--spec':
+      case '-s':
+        if (!value) return { ok: false, error: `${flag} requires a path` }
+        opts.specPath = resolve(cwd, value)
+        i++
+        break
+      case '--title':
+        if (!value) return { ok: false, error: `${flag} requires a value` }
+        opts.title = value
+        i++
+        break
+      case '--runtime': {
+        if (!value) return { ok: false, error: `${flag} requires a value` }
+        const allowed = ['auto', 'stub', 'sdk', 'claude'] as const
+        if (!allowed.includes(value as (typeof allowed)[number])) {
+          return {
+            ok: false,
+            error: `${flag} must be one of ${allowed.join(', ')}`,
+          }
+        }
+        opts.runtime = value as RunOptions['runtime']
+        i++
+        break
+      }
+      case '--port':
+      case '-p': {
+        if (!value) return { ok: false, error: `${flag} requires a number` }
+        const port = Number.parseInt(value, 10)
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+          return { ok: false, error: `${flag} must be an integer 1..65535` }
+        }
+        opts.apiPort = port
+        i++
+        break
+      }
+      case '--database-url':
+        if (!value) return { ok: false, error: `${flag} requires a value` }
+        opts.databaseUrl = value
+        i++
+        break
+      case '--skip-docker':
+        opts.skipDocker = true
+        break
+      case '--skip-migrate':
+        opts.skipMigrate = true
+        break
+      case '--help':
+      case '-h':
+        return { ok: false, error: 'help' }
+      default:
+        return { ok: false, error: `unknown flag: ${flag}` }
+    }
+  }
+
+  if (!opts.repoRoot) {
+    // Default to the cwd — same convention as `npm install` etc.
+    opts.repoRoot = cwd
+  }
+
+  return { ok: true, options: opts as RunOptions }
+}
+
+// Indirection so the default port is visible to argv parsing without
+// circular references; placeholder for a future config-file lookup.
+function DEFAULT_APR_PORT_FALLBACK(): number {
+  return DEFAULT_API_PORT
+}
+
+// ---------------------------------------------------------------------------
+// Side-effect deps (injected for tests)
+// ---------------------------------------------------------------------------
+
+export interface ExecResult {
+  code: number
+  stdout: string
+  stderr: string
+}
+
+export interface SpawnHandle {
+  proc: ChildProcess
+}
+
+export interface RunDeps {
+  /** One-shot subprocess (resolves on exit). */
+  exec: (
+    cmd: string,
+    args: readonly string[],
+    opts?: SpawnOptions,
+  ) => Promise<ExecResult>
+  /** Long-running subprocess. Caller wraps in track(). */
+  spawn: (
+    cmd: string,
+    args: readonly string[],
+    opts?: SpawnOptions,
+  ) => ChildProcess
+  /** HTTP fetch (defaults to globalThis.fetch). */
+  fetch: typeof globalThis.fetch
+  /** Filesystem reads — only `readFile` for spec body. */
+  readFile: (path: string) => Promise<string>
+  fileExists: (path: string) => Promise<boolean>
+  mkdir: (path: string, opts: { recursive?: boolean }) => Promise<void>
+  /** Wall-clock + sleep so waitFor can be mocked. */
+  now: () => number
+  sleep: (ms: number) => Promise<void>
+  /** Output sinks. */
+  log: (line: string) => void
+  errLog: (line: string) => void
+  /** Process-group manager (SIGINT/SIGTERM forwarding). */
+  pm: ProcessManager
+  /** Repo root the supervisor itself was launched from (where pnpm runs). */
+  monorepoRoot: string
+}
+
+// ---------------------------------------------------------------------------
+// Orchestration
+// ---------------------------------------------------------------------------
+
+const POSTGRES_TIMEOUT_MS = 60_000
+const TEMPORAL_TIMEOUT_MS = 60_000
+const API_HEALTH_TIMEOUT_MS = 30_000
+const POLL_INTERVAL_MS = 500
+
+/**
+ * Supervisor entry-point. Returns the parent process exit code:
+ *   - 0 when every step succeeded and the user explicitly stopped (SIGINT).
+ *   - 1 when a step failed (the failure is logged before return).
+ */
+export async function runSupervisor(
+  options: RunOptions,
+  deps: RunDeps,
+): Promise<number> {
+  const { log, errLog } = deps
+
+  log('')
+  log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+  log('  pm-go run')
+  log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+  log(`  repo:    ${options.repoRoot}`)
+  log(`  runtime: ${options.runtime}`)
+  log(`  api:     http://localhost:${options.apiPort}`)
+  if (options.specPath) log(`  spec:    ${options.specPath}`)
+  log('')
+
+  // 0. Sanity: pm-go monorepo + target repo exist.
+  if (!(await deps.fileExists(`${deps.monorepoRoot}/pnpm-workspace.yaml`))) {
+    errLog(
+      `pm-go run must be invoked from a pm-go monorepo checkout (looked at ${deps.monorepoRoot}). ` +
+        'Slice 1 does not yet support remote checkouts.',
+    )
+    return 1
+  }
+  if (!(await deps.fileExists(options.repoRoot))) {
+    errLog(`--repo path does not exist: ${options.repoRoot}`)
+    return 1
+  }
+  if (options.specPath && !(await deps.fileExists(options.specPath))) {
+    errLog(`--spec file not found: ${options.specPath}`)
+    return 1
+  }
+
+  // 1. Docker stack.
+  if (!options.skipDocker) {
+    log('[1/6] starting Docker stack (postgres + temporal)...')
+    const dockerCheck = await deps.exec('docker', ['ps', '--format', '{{.Names}}'], {
+      cwd: deps.monorepoRoot,
+    })
+    if (dockerCheck.code !== 0) {
+      errLog(
+        'docker daemon not reachable. Start Docker Desktop, or pass --skip-docker if running Postgres/Temporal externally.',
+      )
+      return 1
+    }
+    if (!dockerCheck.stdout.includes('pm-go-postgres-1')) {
+      const up = await deps.exec('docker', ['compose', 'up', '-d'], {
+        cwd: deps.monorepoRoot,
+      })
+      if (up.code !== 0) {
+        errLog(`docker compose up failed:\n${up.stderr}`)
+        return 1
+      }
+    }
+    log('       waiting for postgres...')
+    const pgReady = await waitFor(
+      async () => {
+        const r = await deps.exec(
+          'docker',
+          [
+            'exec',
+            'pm-go-postgres-1',
+            'pg_isready',
+            '-U',
+            'pmgo',
+            '-d',
+            'pm_go',
+          ],
+          { cwd: deps.monorepoRoot },
+        )
+        return r.code === 0
+      },
+      { label: 'postgres', timeoutMs: POSTGRES_TIMEOUT_MS, intervalMs: POLL_INTERVAL_MS },
+      deps,
+    )
+    if (pgReady.status === 'timeout') {
+      errLog(`postgres not ready after ${POSTGRES_TIMEOUT_MS}ms (${pgReady.lastError ?? 'no error captured'})`)
+      return 1
+    }
+    log('       waiting for temporal...')
+    const temporalReady = await waitFor(
+      async () => {
+        const r = await deps.exec(
+          'docker',
+          ['exec', 'pm-go-temporal-1', 'tctl', '--ad', 'localhost:7233', 'cluster', 'health'],
+          { cwd: deps.monorepoRoot },
+        )
+        return r.code === 0
+      },
+      { label: 'temporal', timeoutMs: TEMPORAL_TIMEOUT_MS, intervalMs: POLL_INTERVAL_MS },
+      deps,
+    )
+    if (temporalReady.status === 'timeout') {
+      // Temporal CLI shape varies between versions; fall through with a
+      // warning instead of failing the supervisor outright. The worker's
+      // own connect attempt will surface a hard failure if the cluster
+      // really isn't reachable.
+      log('       (temporal health probe inconclusive; continuing — worker will hard-fail if unreachable)')
+    }
+  } else {
+    log('[1/6] --skip-docker: assuming postgres + temporal are already up')
+  }
+
+  // 2. Migrations.
+  if (!options.skipMigrate) {
+    log('[2/6] applying database migrations...')
+    const migrate = await deps.exec('pnpm', ['db:migrate'], {
+      cwd: deps.monorepoRoot,
+      env: { ...process.env, DATABASE_URL: options.databaseUrl },
+    })
+    if (migrate.code !== 0) {
+      errLog(`pnpm db:migrate failed:\n${migrate.stderr || migrate.stdout}`)
+      return 1
+    }
+  } else {
+    log('[2/6] --skip-migrate: not applying migrations')
+  }
+
+  // 3. Worker.
+  // Spawn `node` directly against the compiled dist so SIGTERM lands
+  // on the worker PID, not on a pnpm wrapper process. Requires the
+  // worker package to have been built — checked just below.
+  log('[3/6] starting worker...')
+  const workerEntry = `${deps.monorepoRoot}/apps/worker/dist/index.js`
+  const apiEntry = `${deps.monorepoRoot}/apps/api/dist/index.js`
+  for (const [label, entry] of [
+    ['worker', workerEntry],
+    ['api', apiEntry],
+  ] as const) {
+    if (!(await deps.fileExists(entry))) {
+      errLog(
+        `${label} dist not found at ${entry}. Run \`pnpm -r build\` once before \`pm-go run\`.`,
+      )
+      return 1
+    }
+  }
+  const workerEnv = buildChildEnv(options)
+  const workerProc = deps.spawn(process.execPath, [workerEntry], {
+    cwd: `${deps.monorepoRoot}/apps/worker`,
+    env: workerEnv,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: false,
+  })
+  const worker = track('worker', workerProc)
+  pipeToLog(worker.proc, deps.log, 'worker')
+  deps.pm.add(worker)
+
+  // 4. API.
+  log('[4/6] starting api...')
+  const apiProc = deps.spawn(process.execPath, [apiEntry], {
+    cwd: `${deps.monorepoRoot}/apps/api`,
+    env: workerEnv,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: false,
+  })
+  const api = track('api', apiProc)
+  pipeToLog(api.proc, deps.log, 'api')
+  deps.pm.add(api)
+
+  // 5. Wait for API health.
+  log(`[5/6] waiting for api on http://localhost:${options.apiPort}/health...`)
+  const apiReady = await waitFor(
+    httpReady(deps.fetch, `http://localhost:${options.apiPort}/health`),
+    { label: 'api', timeoutMs: API_HEALTH_TIMEOUT_MS, intervalMs: POLL_INTERVAL_MS },
+    deps,
+  )
+  if (apiReady.status === 'timeout') {
+    errLog(`api /health did not respond after ${API_HEALTH_TIMEOUT_MS}ms`)
+    await deps.pm.shutdown('startup failure', 1).catch(() => undefined)
+    return 1
+  }
+
+  // 6. Optional: submit spec + start plan.
+  let planId: string | undefined
+  if (options.specPath) {
+    log('[6/6] submitting spec + starting plan...')
+    try {
+      planId = await submitSpecAndPlan(options, deps)
+      log(`       plan started: ${planId}`)
+    } catch (err) {
+      errLog(
+        `spec submission failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+      // Don't bring down the supervisor — the user can submit a different
+      // spec via the API or TUI without restarting the stack.
+    }
+  } else {
+    log('[6/6] no --spec provided; skipping plan submission')
+  }
+
+  printAttachHint(options, planId, deps.log)
+
+  // Block until a child crashes or a signal terminates us.
+  const exits = [worker.exit, api.exit].map((p, idx) =>
+    p.then((r) => ({ idx, ...r })),
+  )
+  const crashed = await Promise.race(exits)
+  if (!deps.pm.shuttingDown) {
+    const labels = ['worker', 'api']
+    errLog(
+      `${labels[crashed.idx]} exited with code=${crashed.code} signal=${crashed.signal} — tearing down`,
+    )
+    await deps.pm.shutdown('child crashed', 1).catch(() => undefined)
+    return 1
+  }
+  return 0
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the env vars passed to the worker + API child processes.
+ * Translates `--runtime` into the canonical `*_RUNTIME` env vars for
+ * every agent role.
+ */
+export function buildChildEnv(opts: RunOptions): NodeJS.ProcessEnv {
+  const base: NodeJS.ProcessEnv = {
+    ...process.env,
+    DATABASE_URL: opts.databaseUrl,
+    API_PORT: String(opts.apiPort),
+    REPO_ROOT: opts.repoRoot,
+  }
+  // Inherit *_RUNTIME from the user's environment when set; otherwise
+  // apply the --runtime flag uniformly. Stub mode skips runtime
+  // assignment so the worker's existing fixture-driven path runs.
+  if (opts.runtime !== 'stub') {
+    const role = opts.runtime
+    base.PLANNER_RUNTIME = base.PLANNER_RUNTIME ?? role
+    base.IMPLEMENTER_RUNTIME = base.IMPLEMENTER_RUNTIME ?? role
+    base.REVIEWER_RUNTIME = base.REVIEWER_RUNTIME ?? role
+    base.PHASE_AUDITOR_RUNTIME = base.PHASE_AUDITOR_RUNTIME ?? role
+    base.COMPLETION_AUDITOR_RUNTIME = base.COMPLETION_AUDITOR_RUNTIME ?? role
+  }
+  return base
+}
+
+function pipeToLog(
+  proc: ChildProcess,
+  log: (line: string) => void,
+  label: string,
+): void {
+  const onChunk = (buf: Buffer) => {
+    for (const line of buf.toString('utf8').split('\n')) {
+      if (line.length > 0) log(`[${label}] ${line}`)
+    }
+  }
+  proc.stdout?.on('data', onChunk)
+  proc.stderr?.on('data', onChunk)
+}
+
+async function submitSpecAndPlan(
+  opts: RunOptions,
+  deps: RunDeps,
+): Promise<string> {
+  if (!opts.specPath) throw new Error('specPath required')
+  const body = await deps.readFile(opts.specPath)
+  const title = opts.title ?? deriveTitle(body, opts.specPath)
+
+  const apiBase = `http://localhost:${opts.apiPort}`
+  const specRes = await deps.fetch(`${apiBase}/spec-documents`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      title,
+      body,
+      repoRoot: opts.repoRoot,
+      source: 'manual',
+    }),
+  })
+  if (!specRes.ok) {
+    const text = await specRes.text().catch(() => '')
+    throw new Error(`POST /spec-documents → ${specRes.status}: ${text}`)
+  }
+  const specJson = (await specRes.json()) as {
+    specDocumentId: string
+    repoSnapshotId: string
+  }
+
+  const planRes = await deps.fetch(`${apiBase}/plans`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      specDocumentId: specJson.specDocumentId,
+      repoSnapshotId: specJson.repoSnapshotId,
+      requestedBy: 'pm-go-cli',
+    }),
+  })
+  if (!planRes.ok) {
+    const text = await planRes.text().catch(() => '')
+    throw new Error(`POST /plans → ${planRes.status}: ${text}`)
+  }
+  const planJson = (await planRes.json()) as { planId: string }
+  return planJson.planId
+}
+
+/**
+ * Pull a title from the first `# Heading` line of the spec body, or
+ * fall back to the filename (without extension) if no heading exists.
+ */
+export function deriveTitle(body: string, path: string): string {
+  for (const line of body.split('\n')) {
+    const match = line.match(/^\s*#\s+(.+)$/)
+    if (match && match[1]) return match[1].trim()
+  }
+  const segments = path.split('/')
+  const name = segments[segments.length - 1] ?? 'spec'
+  return name.replace(/\.[^.]+$/, '')
+}
+
+function printAttachHint(
+  opts: RunOptions,
+  planId: string | undefined,
+  log: (line: string) => void,
+): void {
+  log('')
+  log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+  log('  pm-go is running')
+  log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+  log(`  api:     http://localhost:${opts.apiPort}`)
+  log(`  health:  curl http://localhost:${opts.apiPort}/health`)
+  if (planId) {
+    log(`  plan:    curl http://localhost:${opts.apiPort}/plans/${planId} | jq`)
+    log(`  events:  curl -N -H 'accept: text/event-stream' \\`)
+    log(`             http://localhost:${opts.apiPort}/events?planId=${planId}`)
+  } else {
+    log(`  plans:   curl http://localhost:${opts.apiPort}/plans | jq`)
+  }
+  log('  attach:  pnpm tui          # in another terminal')
+  log('  stop:    Ctrl+C            # cleanly tears everything down')
+  log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+  log('')
+}
+
+// ---------------------------------------------------------------------------
+// Public entry-point — wires the production deps and dispatches.
+// ---------------------------------------------------------------------------
+
+export const RUN_USAGE = `Usage: pm-go run [options]
+
+Boots the local pm-go control plane in one foreground process: starts
+the Docker stack (postgres + temporal), applies migrations, launches
+the worker and API as tracked children, optionally submits a feature
+spec to start a plan, and forwards Ctrl+C cleanly to all children.
+
+Options:
+  --repo, -r <path>         Target repository root (default: cwd).
+  --spec, -s <path>         Spec markdown to submit + start a plan for.
+  --title <string>          Title for the spec doc (default: first H1 in body).
+  --runtime <mode>          auto | stub | sdk | claude (default: auto).
+  --port, -p <n>            API port (default: 3001).
+  --database-url <url>      Override DATABASE_URL.
+  --skip-docker             Skip docker compose; assume stack is up.
+  --skip-migrate            Skip pnpm db:migrate.
+  --help, -h                Show this message.
+
+Examples:
+  pm-go run                                         # boot the stack only
+  pm-go run --spec ./examples/golden-path/spec.md   # boot + submit spec
+  pm-go run --runtime stub --skip-docker            # CI / smokes
+`
+
+export interface RunCliDeps {
+  argv: readonly string[]
+  cwd: string
+  monorepoRoot: string
+  log: (line: string) => void
+  errLog: (line: string) => void
+  /** Build the production deps used by runSupervisor. */
+  buildSupervisorDeps: (pm: ProcessManager) => Omit<RunDeps, 'pm' | 'monorepoRoot'>
+  /** Path resolution helper (defaults to node:path resolve). */
+  resolve: (a: string, b: string) => string
+}
+
+/**
+ * CLI dispatcher for `pm-go run`. Parses argv, prints usage on
+ * `--help`, builds the supervisor deps, and runs the orchestration.
+ * Returns the exit code; the index.ts wrapper calls `process.exit`.
+ */
+export async function runCli(cliDeps: RunCliDeps): Promise<number> {
+  const parsed = parseRunArgv(cliDeps.argv, cliDeps.cwd, cliDeps.resolve)
+  if (!parsed.ok) {
+    if (parsed.error === 'help') {
+      cliDeps.log(RUN_USAGE)
+      return 0
+    }
+    cliDeps.errLog(`pm-go run: ${parsed.error}`)
+    cliDeps.errLog('')
+    cliDeps.errLog(RUN_USAGE)
+    return 2
+  }
+
+  const pm = createProcessManager({
+    process,
+    log: (l) => cliDeps.errLog(l),
+  })
+  const supervisorDeps: RunDeps = {
+    ...cliDeps.buildSupervisorDeps(pm),
+    pm,
+    monorepoRoot: cliDeps.monorepoRoot,
+  }
+  return runSupervisor(parsed.options, supervisorDeps)
+}

@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test dist/__tests__/doctor.test.js"
+    "test": "node --test dist/__tests__/*.test.js"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
