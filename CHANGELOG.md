@@ -5,6 +5,77 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 once the public API stabilises.
 
+## v0.8.3.1 — 2026-04-25
+
+Reviewer-driven hardening of the v0.8.3 supervisor. Four findings against
+`apps/cli/src/run.ts` — two P1, two P2 — closed in one focused commit. All
+v0.8.3 tests still green plus 16 new ones for the new behavior.
+
+### Fixed
+
+- **Docker probes no longer hard-code container names** (P1). The
+  supervisor previously ran `docker exec pm-go-postgres-1 pg_isready
+  ...`, which silently broke for anyone who cloned the repo into a
+  directory not named `pm-go` (compose derives container names from the
+  project / directory name). Switched to `docker compose exec -T
+  postgres ...` and `docker compose exec -T temporal ...` so the
+  probes target the service by its compose-file name regardless of
+  project name.
+- **`docker compose up -d` now runs unconditionally** (P1). Pre-fix
+  the supervisor only ran `compose up` when `pm-go-postgres-1` was
+  missing from `docker ps`. A partial stack (Postgres alive, Temporal
+  stopped) would slip through, the Temporal probe would land
+  inconclusive, and the worker would then hard-fail on connect
+  instead of being self-healed at boot. `compose up -d` is idempotent
+  for already-running services, so always running it is a strict
+  upgrade.
+- **`--runtime stub` now wins over inherited `*_RUNTIME` shell
+  exports** (P2). Previous behavior copied `process.env` into the
+  child env first and then refused to override on stub mode, so a
+  developer with `PLANNER_RUNTIME=sdk` exported in their shell would
+  see live runners boot despite passing `--runtime stub`. The flag
+  now explicitly deletes every `*_RUNTIME` key from the child env
+  before fanning it out, making stub mode genuinely deterministic for
+  CI / smokes / first-run.
+- **`pnpm dev` now loads `.env` from the monorepo root** (P2). The
+  README has long instructed users to `cp .env.example .env`, but the
+  supervisor only saw values that the user had also exported in their
+  shell. Added a tiny zero-dependency dotenv parser
+  (`apps/cli/src/lib/dotenv.ts`); the supervisor reads
+  `<monorepoRoot>/.env` exactly once before argv parsing, applying
+  every key only when not already set. Pre-existing shell exports
+  still win, and CLI flags still win over both. The `.env` file
+  remains optional. The supervisor logs a one-line summary (`[pm-go]
+  loaded .env (N applied, M pre-set)`) but never the values
+  themselves, so the banner is safe to paste into bug reports.
+
+### Added
+
+- **`apps/cli/src/lib/dotenv.ts`** — pure parser (`parseDotenv`) plus
+  effectful loader (`applyDotenv`). Supports unquoted, double-quoted,
+  and single-quoted values, `export ` prefix stripping, inline `#`
+  comment stripping, CRLF line endings, and `#` characters preserved
+  inside URL fragments. Warns and skips malformed lines / invalid
+  keys without aborting.
+- **16 new unit tests** across
+  `apps/cli/src/__tests__/{run,dotenv}.test.ts`:
+  9 dotenv parser cases, 4 dotenv loader precedence cases, 2
+  buildChildEnv cases (mixed-role inheritance + stub override), 1
+  hardened existing buildChildEnv assertion.
+
+### Internal
+
+- 51/51 CLI tests pass (was 35).
+- Live-validated end-to-end: supervisor boots in ~1s, `.env`
+  auto-loaded with 29 keys applied + 2 shell-pre-set preserved,
+  `/health` 200, clean SIGINT shutdown, zero leftover processes.
+- Smoke scripts under `scripts/` still hard-code `pm-go-postgres-1`
+  in their probes; they're untouched in this commit because they
+  ship for monorepo-internal dev (where `pm-go/` is the directory
+  name) and the user's directive was specifically the CLI surface.
+  Generalising the smokes can ship in a follow-up if the directive
+  expands.
+
 ## v0.8.3 — 2026-04-25
 
 Setup-as-a-product slice 1: collapse the "open three terminals + run six

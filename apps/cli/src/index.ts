@@ -23,6 +23,7 @@ import { promisify } from 'node:util'
 import { detectAvailableRuntimes } from '@pm-go/runtime-detector'
 
 import { runDoctor } from './doctor.js'
+import { applyDotenv } from './lib/dotenv.js'
 import {
   runCli,
   RUN_USAGE,
@@ -72,6 +73,22 @@ async function main(): Promise<number> {
         errLog: (l) => console.error(l),
         resolve: (base, p) => (path.isAbsolute(p) ? p : path.resolve(base, p)),
         buildSupervisorDeps: () => buildProductionSupervisorDeps(),
+        // Read .env from the monorepo root and apply any unset keys
+        // to process.env. Pre-existing shell exports always win.
+        applyDotenv: (p) =>
+          applyDotenv(p, {
+            readFile: (path) => readFile(path, 'utf8'),
+            fileExists: async (path) => {
+              try {
+                await access(path)
+                return true
+              } catch {
+                return false
+              }
+            },
+            env: process.env,
+            log: (l) => console.warn(l),
+          }),
       }
       return runCli(cliDeps)
     }

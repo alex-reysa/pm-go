@@ -21,6 +21,7 @@
 
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
 
+import { applyDotenv, type ApplyDotenvResult } from './lib/dotenv.js'
 import {
   createProcessManager,
   track,
@@ -77,7 +78,9 @@ export function parseRunArgv(
   const opts: Partial<RunOptions> = {
     runtime: 'auto',
     apiPort: DEFAULT_APR_PORT_FALLBACK(),
-    databaseUrl: DEFAULT_DATABASE_URL,
+    // Honour DATABASE_URL from the environment (.env or shell) before
+    // falling back to the dev-stack default. CLI flag still wins.
+    databaseUrl: process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL,
     skipDocker: false,
     skipMigrate: false,
     specPath: undefined,
@@ -156,9 +159,18 @@ export function parseRunArgv(
   return { ok: true, options: opts as RunOptions }
 }
 
-// Indirection so the default port is visible to argv parsing without
-// circular references; placeholder for a future config-file lookup.
+/**
+ * Default API port lookup. Honors `API_PORT` from the environment
+ * (which may have been populated from `.env` by the time argv parses)
+ * and falls back to 3001 otherwise. Indirected so callers can see
+ * the precedence order in one place.
+ */
 function DEFAULT_APR_PORT_FALLBACK(): number {
+  const fromEnv = process.env.API_PORT
+  if (fromEnv) {
+    const n = Number.parseInt(fromEnv, 10)
+    if (Number.isInteger(n) && n >= 1 && n <= 65535) return n
+  }
   return DEFAULT_API_PORT
 }
 
@@ -266,23 +278,33 @@ export async function runSupervisor(
       )
       return 1
     }
-    if (!dockerCheck.stdout.includes('pm-go-postgres-1')) {
-      const up = await deps.exec('docker', ['compose', 'up', '-d'], {
-        cwd: deps.monorepoRoot,
-      })
-      if (up.code !== 0) {
-        errLog(`docker compose up failed:\n${up.stderr}`)
-        return 1
-      }
+    // Run `docker compose up -d` unconditionally. It's idempotent —
+    // already-running services are a no-op — and it self-heals partial
+    // stacks (e.g. Postgres up but Temporal stopped) which the prior
+    // "only-if-postgres-container-not-found" guard silently missed.
+    const up = await deps.exec('docker', ['compose', 'up', '-d'], {
+      cwd: deps.monorepoRoot,
+    })
+    if (up.code !== 0) {
+      errLog(`docker compose up failed:\n${up.stderr}`)
+      return 1
     }
     log('       waiting for postgres...')
+    // Use `docker compose exec` so the probe targets the service by
+    // its compose-file name (`postgres`), not by a container name
+    // that depends on the project / directory name. A user who
+    // cloned into `~/projects/my-pm-go` would otherwise get a
+    // container called `my-pm-go-postgres-1` and the old probe would
+    // time out forever.
     const pgReady = await waitFor(
       async () => {
         const r = await deps.exec(
           'docker',
           [
+            'compose',
             'exec',
-            'pm-go-postgres-1',
+            '-T',
+            'postgres',
             'pg_isready',
             '-U',
             'pmgo',
@@ -305,7 +327,17 @@ export async function runSupervisor(
       async () => {
         const r = await deps.exec(
           'docker',
-          ['exec', 'pm-go-temporal-1', 'tctl', '--ad', 'localhost:7233', 'cluster', 'health'],
+          [
+            'compose',
+            'exec',
+            '-T',
+            'temporal',
+            'tctl',
+            '--ad',
+            'localhost:7233',
+            'cluster',
+            'health',
+          ],
           { cwd: deps.monorepoRoot },
         )
         return r.code === 0
@@ -314,10 +346,11 @@ export async function runSupervisor(
       deps,
     )
     if (temporalReady.status === 'timeout') {
-      // Temporal CLI shape varies between versions; fall through with a
-      // warning instead of failing the supervisor outright. The worker's
-      // own connect attempt will surface a hard failure if the cluster
-      // really isn't reachable.
+      // Temporal CLI shape varies between image versions (tctl vs
+      // `temporal operator cluster health`); fall through with a
+      // warning instead of failing the supervisor outright. The
+      // worker's own connect attempt will surface a hard failure if
+      // the cluster really isn't reachable.
       log('       (temporal health probe inconclusive; continuing — worker will hard-fail if unreachable)')
     }
   } else {
@@ -433,10 +466,29 @@ export async function runSupervisor(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Every per-role *_RUNTIME env var the worker inspects. Centralised
+ *  so add/remove of a role only touches one constant. */
+const RUNTIME_ENV_KEYS = [
+  'PLANNER_RUNTIME',
+  'IMPLEMENTER_RUNTIME',
+  'REVIEWER_RUNTIME',
+  'PHASE_AUDITOR_RUNTIME',
+  'COMPLETION_AUDITOR_RUNTIME',
+] as const
+
 /**
  * Build the env vars passed to the worker + API child processes.
  * Translates `--runtime` into the canonical `*_RUNTIME` env vars for
  * every agent role.
+ *
+ * Precedence:
+ *   - For `--runtime sdk|claude|auto`: explicit shell-exported
+ *     `*_RUNTIME=...` wins (advanced users mixing roles); otherwise
+ *     the flag fans out to every role.
+ *   - For `--runtime stub`: the explicit flag ALWAYS wins. Inherited
+ *     `*_RUNTIME=...` from the user's shell is deleted from the child
+ *     env so a stale `PLANNER_RUNTIME=sdk` cannot turn an
+ *     onboarding/CI smoke into a live run.
  */
 export function buildChildEnv(opts: RunOptions): NodeJS.ProcessEnv {
   const base: NodeJS.ProcessEnv = {
@@ -445,16 +497,18 @@ export function buildChildEnv(opts: RunOptions): NodeJS.ProcessEnv {
     API_PORT: String(opts.apiPort),
     REPO_ROOT: opts.repoRoot,
   }
-  // Inherit *_RUNTIME from the user's environment when set; otherwise
-  // apply the --runtime flag uniformly. Stub mode skips runtime
-  // assignment so the worker's existing fixture-driven path runs.
-  if (opts.runtime !== 'stub') {
-    const role = opts.runtime
-    base.PLANNER_RUNTIME = base.PLANNER_RUNTIME ?? role
-    base.IMPLEMENTER_RUNTIME = base.IMPLEMENTER_RUNTIME ?? role
-    base.REVIEWER_RUNTIME = base.REVIEWER_RUNTIME ?? role
-    base.PHASE_AUDITOR_RUNTIME = base.PHASE_AUDITOR_RUNTIME ?? role
-    base.COMPLETION_AUDITOR_RUNTIME = base.COMPLETION_AUDITOR_RUNTIME ?? role
+  if (opts.runtime === 'stub') {
+    // Strip any inherited *_RUNTIME so the worker takes its
+    // *_EXECUTOR_MODE branch (which itself defaults to "stub" when
+    // unset, see apps/worker/src/index.ts).
+    for (const key of RUNTIME_ENV_KEYS) {
+      delete base[key]
+    }
+    return base
+  }
+  const role = opts.runtime
+  for (const key of RUNTIME_ENV_KEYS) {
+    base[key] = base[key] ?? role
   }
   return base
 }
@@ -594,14 +648,40 @@ export interface RunCliDeps {
   buildSupervisorDeps: (pm: ProcessManager) => Omit<RunDeps, 'pm' | 'monorepoRoot'>
   /** Path resolution helper (defaults to node:path resolve). */
   resolve: (a: string, b: string) => string
+  /**
+   * Optional .env loader. When present, the dispatcher calls it
+   * exactly once with `<monorepoRoot>/.env` before argv parsing so
+   * env-driven defaults (DATABASE_URL, API_PORT, ANTHROPIC_API_KEY)
+   * are visible to subsequent steps. Tests omit this to keep the
+   * orchestration deterministic.
+   */
+  applyDotenv?: (path: string) => Promise<ApplyDotenvResult>
 }
 
 /**
- * CLI dispatcher for `pm-go run`. Parses argv, prints usage on
- * `--help`, builds the supervisor deps, and runs the orchestration.
+ * CLI dispatcher for `pm-go run`. Loads .env first (so env-driven
+ * defaults are visible to argv parsing), parses argv, prints usage
+ * on `--help`, builds the supervisor deps, and runs the orchestration.
  * Returns the exit code; the index.ts wrapper calls `process.exit`.
+ *
+ * Precedence (highest to lowest):
+ *   1. Explicit `pm-go run` CLI flag
+ *   2. Already-exported shell env var
+ *   3. monorepoRoot/.env value
+ *   4. Hardcoded default
+ *
+ * `.env` is genuinely optional — if the file is absent we just skip
+ * loading (no warning), matching the dotenv convention.
  */
 export async function runCli(cliDeps: RunCliDeps): Promise<number> {
+  // Load .env BEFORE argv parsing so DATABASE_URL / API_PORT defaults
+  // can pick up values placed in the file. Pre-existing shell exports
+  // are preserved (we only fill in unset keys).
+  let dotenvResult: ApplyDotenvResult | undefined
+  if (cliDeps.applyDotenv) {
+    dotenvResult = await cliDeps.applyDotenv(`${cliDeps.monorepoRoot}/.env`)
+  }
+
   const parsed = parseRunArgv(cliDeps.argv, cliDeps.cwd, cliDeps.resolve)
   if (!parsed.ok) {
     if (parsed.error === 'help') {
@@ -612,6 +692,18 @@ export async function runCli(cliDeps: RunCliDeps): Promise<number> {
     cliDeps.errLog('')
     cliDeps.errLog(RUN_USAGE)
     return 2
+  }
+
+  // Surface a single line about .env loading after argv parsing so
+  // `--help` output stays clean. We log COUNTS, never values, to
+  // keep the supervisor's startup banner safe to paste in bug reports.
+  if (dotenvResult?.loaded) {
+    cliDeps.log(
+      `[pm-go] loaded .env (${dotenvResult.applied.length} applied, ${dotenvResult.skipped.length} pre-set in shell)`,
+    )
+    for (const w of dotenvResult.warnings) {
+      cliDeps.errLog(`[pm-go] .env: ${w}`)
+    }
   }
 
   const pm = createProcessManager({

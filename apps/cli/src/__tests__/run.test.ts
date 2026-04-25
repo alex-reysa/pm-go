@@ -167,4 +167,51 @@ describe('buildChildEnv', () => {
       assert.strictEqual(env.COMPLETION_AUDITOR_RUNTIME, mode)
     }
   })
+
+  it('preserves pre-exported per-role *_RUNTIME values for sdk/claude/auto (mixed roles)', () => {
+    const original = process.env.PLANNER_RUNTIME
+    try {
+      process.env.PLANNER_RUNTIME = 'claude'
+      const env = buildChildEnv({ ...baseOptions, runtime: 'sdk' })
+      // Caller's PLANNER_RUNTIME=claude wins; other roles default to sdk.
+      assert.strictEqual(env.PLANNER_RUNTIME, 'claude')
+      assert.strictEqual(env.IMPLEMENTER_RUNTIME, 'sdk')
+      assert.strictEqual(env.REVIEWER_RUNTIME, 'sdk')
+    } finally {
+      if (original === undefined) delete process.env.PLANNER_RUNTIME
+      else process.env.PLANNER_RUNTIME = original
+    }
+  })
+
+  it('--runtime stub strips inherited *_RUNTIME so the explicit flag wins (P2.1)', () => {
+    const originals: Record<string, string | undefined> = {}
+    const keys = [
+      'PLANNER_RUNTIME',
+      'IMPLEMENTER_RUNTIME',
+      'REVIEWER_RUNTIME',
+      'PHASE_AUDITOR_RUNTIME',
+      'COMPLETION_AUDITOR_RUNTIME',
+    ]
+    try {
+      for (const k of keys) {
+        originals[k] = process.env[k]
+        process.env[k] = 'sdk'
+      }
+      const env = buildChildEnv({ ...baseOptions, runtime: 'stub' })
+      // Every *_RUNTIME must be undefined in the child env, otherwise the
+      // worker would resolve to live mode despite the explicit --runtime stub.
+      for (const k of keys) {
+        assert.strictEqual(
+          env[k],
+          undefined,
+          `${k} should be cleared on --runtime stub but was ${env[k]}`,
+        )
+      }
+    } finally {
+      for (const k of keys) {
+        if (originals[k] === undefined) delete process.env[k]
+        else process.env[k] = originals[k]
+      }
+    }
+  })
 })
