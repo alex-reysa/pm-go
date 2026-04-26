@@ -35,6 +35,8 @@ const execFileAsync = promisify(execFile);
 export interface PhaseAuditActivityDeps {
   db: PmGoDb;
   phaseAuditorRunner: PhaseAuditorRunner;
+  /** Claude model id. When unset, the phase-auditor package default applies. */
+  phaseAuditorModel?: string;
 }
 
 /**
@@ -44,7 +46,7 @@ export interface PhaseAuditActivityDeps {
  * durable rows; persists the report idempotently.
  */
 export function createPhaseAuditActivities(deps: PhaseAuditActivityDeps) {
-  const { db, phaseAuditorRunner } = deps;
+  const { db, phaseAuditorRunner, phaseAuditorModel } = deps;
 
   return {
     async runPhaseAuditor(input: {
@@ -91,6 +93,7 @@ export function createPhaseAuditActivities(deps: PhaseAuditActivityDeps) {
           ...(input.parentSessionId
             ? { parentSessionId: input.parentSessionId }
             : {}),
+          ...(phaseAuditorModel !== undefined ? { model: phaseAuditorModel } : {}),
         });
       } catch (err) {
         if (err instanceof PhaseAuditValidationError) {

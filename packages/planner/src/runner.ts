@@ -72,7 +72,7 @@ export async function runPlanner(
 ): Promise<RunPlannerResult> {
   const systemPrompt = loadPrompt("planner", 1);
 
-  const model = input.model ?? "claude-sonnet-4-6";
+  const model = input.model ?? "claude-opus-4-7";
   const budgetUsdCap = input.budgetUsdCap ?? 0.5;
   const maxTurnsCap = input.maxTurnsCap ?? 30;
 

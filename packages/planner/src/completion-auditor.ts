@@ -53,7 +53,7 @@ export async function runCompletionAuditor(
 ): Promise<RunCompletionAuditorResult> {
   const systemPrompt = loadPrompt("completion-auditor", 1);
 
-  const model = input.model ?? "claude-sonnet-4-6";
+  const model = input.model ?? "claude-opus-4-7";
   const budgetUsdCap = input.budgetUsdCap ?? 2.0;
   const maxTurnsCap = input.maxTurnsCap ?? 60;
 

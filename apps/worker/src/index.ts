@@ -299,6 +299,16 @@ async function main() {
     "PLANNER_BUDGET_USD",
     process.env.PLANNER_BUDGET_USD,
   );
+
+  // Model selection. Per-role env vars beat the shared PM_GO_MODEL fallback.
+  // When neither is set the runners keep their package-level defaults so
+  // existing deployments don't change behavior.
+  const sharedModel = process.env.PM_GO_MODEL;
+  const plannerModel = process.env.PLANNER_MODEL ?? sharedModel;
+  const implementerModel = process.env.IMPLEMENTER_MODEL ?? sharedModel;
+  const reviewerModel = process.env.REVIEWER_MODEL ?? sharedModel;
+  const phaseAuditorModel = process.env.PHASE_AUDITOR_MODEL ?? sharedModel;
+  const completionAuditorModel = process.env.COMPLETION_AUDITOR_MODEL ?? sharedModel;
   // Resolve PLAN_ARTIFACT_DIR relative to the repo root, not the worker's
   // cwd. `pnpm --filter @pm-go/worker start` spawns the child with
   // cwd=apps/worker/, so a relative "./artifacts/plans" would otherwise
@@ -484,6 +494,7 @@ async function main() {
     artifactDir,
     ...(plannerMaxTurns !== undefined ? { plannerMaxTurns } : {}),
     ...(plannerBudgetUsd !== undefined ? { plannerBudgetUsd } : {}),
+    ...(plannerModel !== undefined ? { plannerModel } : {}),
   });
   const worktree = createWorktreeActivities({ db });
   const taskExecution = createTaskExecutionActivities({
@@ -491,8 +502,12 @@ async function main() {
     implementerRunner,
     repoRoot,
     worktreeRoot,
+    ...(implementerModel !== undefined ? { implementerModel } : {}),
   });
-  const review = createReviewActivities({ reviewerRunner });
+  const review = createReviewActivities({
+    reviewerRunner,
+    ...(reviewerModel !== undefined ? { reviewerModel } : {}),
+  });
   const reviewPersistence = createReviewPersistenceActivities({ db });
   const integration = createIntegrationActivities({
     db,
@@ -503,11 +518,13 @@ async function main() {
   const phaseAudit = createPhaseAuditActivities({
     db,
     phaseAuditorRunner,
+    ...(phaseAuditorModel !== undefined ? { phaseAuditorModel } : {}),
   });
   const completionAudit = createCompletionAuditActivities({
     db,
     completionAuditorRunner,
     artifactDir,
+    ...(completionAuditorModel !== undefined ? { completionAuditorModel } : {}),
   });
   // Phase 7: policy-engine + observability + events activities. The
   // policy factory loads durable inputs, calls the pure evaluators in
@@ -557,17 +574,35 @@ async function main() {
   // Describe the effective runtime for each role (new *_RUNTIME wins over
   // legacy *_EXECUTOR_MODE; show both when the new var is set so operators
   // can audit the boot config at a glance).
-  const plannerDesc = plannerRuntime ?? `executor-mode:${plannerMode}`;
-  const implementerDesc = implementerRuntime ?? `executor-mode:${implementerMode}`;
-  const reviewerDesc = reviewerRuntime ?? `executor-mode:${reviewerMode}`;
-  const phaseAuditorDesc = phaseAuditorRuntime ?? `executor-mode:${phaseAuditorMode}`;
-  const completionAuditorDesc =
-    completionAuditorRuntime ?? `executor-mode:${completionAuditorMode}`;
+  const plannerDesc = describeRole(plannerRuntime, plannerMode, plannerModel);
+  const implementerDesc = describeRole(implementerRuntime, implementerMode, implementerModel);
+  const reviewerDesc = describeRole(reviewerRuntime, reviewerMode, reviewerModel);
+  const phaseAuditorDesc = describeRole(phaseAuditorRuntime, phaseAuditorMode, phaseAuditorModel);
+  const completionAuditorDesc = describeRole(
+    completionAuditorRuntime,
+    completionAuditorMode,
+    completionAuditorModel,
+  );
 
   console.log(
     `worker starting (planner=${plannerDesc} implementer=${implementerDesc} reviewer=${reviewerDesc} phase-auditor=${phaseAuditorDesc} completion-auditor=${completionAuditorDesc} integration-root=${integrationRoot})`,
   );
   await worker.run();
+}
+
+/**
+ * Format a role's boot summary as `<runtime>[/model=<id>]`. `runtime` is
+ * either the explicit `*_RUNTIME` value or the legacy `executor-mode:<x>`
+ * fallback. `model` is appended only when an env var actually overrode
+ * the package-level default, so a vanilla boot stays terse.
+ */
+function describeRole(
+  runtime: string | undefined,
+  mode: string,
+  model: string | undefined,
+): string {
+  const base = runtime ?? `executor-mode:${mode}`;
+  return model !== undefined ? `${base}/model=${model}` : base;
 }
 
 /**

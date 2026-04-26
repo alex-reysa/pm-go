@@ -241,6 +241,7 @@ export interface RunDeps {
 const POSTGRES_TIMEOUT_MS = 60_000
 const TEMPORAL_TIMEOUT_MS = 60_000
 const API_HEALTH_TIMEOUT_MS = 30_000
+const PLAN_PERSISTENCE_TIMEOUT_MS = 20 * 60_000
 const POLL_INTERVAL_MS = 500
 
 /**
@@ -633,8 +634,9 @@ async function submitSpecAndPlan(
   // plan row only lands in Postgres after the planner finishes. Poll
   // GET /plans/:id until it returns 200 (or timeout) so callers like
   // `pm-go drive` and `pm-go implement` can immediately operate on
-  // the plan without racing the workflow. 90s covers planner runs in
-  // both stub mode (~1s) and live mode (~10-60s).
+  // the plan without racing the workflow. Live Opus planning on large
+  // specs can run for several minutes, so keep this comfortably above
+  // the startup-scale timeouts.
   const planQueryable = await waitFor(
     async () => {
       const res = await deps.fetch(`${apiBase}/plans/${planJson.planId}`)
@@ -642,14 +644,14 @@ async function submitSpecAndPlan(
     },
     {
       label: 'plan-persistence',
-      timeoutMs: 90_000,
+      timeoutMs: PLAN_PERSISTENCE_TIMEOUT_MS,
       intervalMs: POLL_INTERVAL_MS,
     },
     deps,
   )
   if (planQueryable.status === 'timeout') {
     throw new Error(
-      `plan ${planJson.planId} did not appear in the API within 90s — the SpecToPlanWorkflow may have failed; check worker logs`,
+      `plan ${planJson.planId} did not appear in the API within ${PLAN_PERSISTENCE_TIMEOUT_MS / 1000}s — the SpecToPlanWorkflow may have failed; check worker logs`,
     )
   }
   return planJson.planId

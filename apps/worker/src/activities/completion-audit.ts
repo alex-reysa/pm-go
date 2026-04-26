@@ -56,6 +56,8 @@ export interface CompletionAuditActivityDeps {
   completionAuditorRunner: CompletionAuditorRunner;
   /** Directory into which PR summary + evidence bundle files are written. */
   artifactDir: string;
+  /** Claude model id. When unset, the completion-auditor package default applies. */
+  completionAuditorModel?: string;
 }
 
 /**
@@ -67,7 +69,7 @@ export interface CompletionAuditActivityDeps {
 export function createCompletionAuditActivities(
   deps: CompletionAuditActivityDeps,
 ) {
-  const { db, completionAuditorRunner, artifactDir } = deps;
+  const { db, completionAuditorRunner, artifactDir, completionAuditorModel } = deps;
 
   return {
     async runCompletionAuditor(input: {
@@ -125,6 +127,9 @@ export function createCompletionAuditActivities(
             : {}),
           ...(input.parentSessionId
             ? { parentSessionId: input.parentSessionId }
+            : {}),
+          ...(completionAuditorModel !== undefined
+            ? { model: completionAuditorModel }
             : {}),
         });
       } catch (err) {

@@ -16,6 +16,8 @@ export interface PlannerActivityDeps {
   artifactDir: string;
   plannerMaxTurns?: number;
   plannerBudgetUsd?: number;
+  /** Claude model id. When unset, the planner package default applies. */
+  plannerModel?: string;
 }
 
 export interface PlannerActivities {
@@ -65,6 +67,7 @@ export function createPlannerActivities(
         runner: deps.plannerRunner,
         ...(deps.plannerMaxTurns !== undefined ? { maxTurnsCap: deps.plannerMaxTurns } : {}),
         ...(deps.plannerBudgetUsd !== undefined ? { budgetUsdCap: deps.plannerBudgetUsd } : {}),
+        ...(deps.plannerModel !== undefined ? { model: deps.plannerModel } : {}),
       });
       return { plan, agentRun };
     },

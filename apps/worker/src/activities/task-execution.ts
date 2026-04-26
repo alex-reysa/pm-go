@@ -24,6 +24,8 @@ export interface TaskExecutionActivityDeps {
   implementerRunner: ImplementerRunner;
   repoRoot: string;
   worktreeRoot: string;
+  /** Claude model id. When unset, the implementer package default applies. */
+  implementerModel?: string;
 }
 
 /**
@@ -205,6 +207,7 @@ export function createTaskExecutionActivities(
           : "task-execution-workflow",
         runner: deps.implementerRunner,
         ...(input.reviewFeedback ? { reviewFeedback: input.reviewFeedback } : {}),
+        ...(deps.implementerModel !== undefined ? { model: deps.implementerModel } : {}),
       });
       return result.finalCommitSha !== undefined
         ? { agentRun: result.agentRun, finalCommitSha: result.finalCommitSha }

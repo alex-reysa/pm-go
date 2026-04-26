@@ -11,6 +11,8 @@ import { runReviewer as runReviewerPkg } from "@pm-go/planner";
 
 export interface ReviewActivityDeps {
   reviewerRunner: ReviewerRunner;
+  /** Claude model id. When unset, the reviewer package default applies. */
+  reviewerModel?: string;
 }
 
 /**
@@ -46,6 +48,7 @@ export function createReviewActivities(deps: ReviewActivityDeps) {
         ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
         requestedBy: "task-review-workflow",
         runner: deps.reviewerRunner,
+        ...(deps.reviewerModel !== undefined ? { model: deps.reviewerModel } : {}),
       });
 
       // Ensure the report's taskId matches the task under review. Stub

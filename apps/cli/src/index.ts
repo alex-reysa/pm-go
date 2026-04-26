@@ -51,6 +51,7 @@ import {
   type RunCliDeps,
   type RunDeps,
 } from './run.js'
+import { runStatus, STATUS_USAGE } from './status.js'
 
 const execFile = promisify(execFileCb)
 
@@ -60,6 +61,7 @@ Commands:
   implement   Boot stack + submit spec + drive to release in one command.
   run         Start the pm-go control plane (supervisor only).
   drive       Drive a submitted plan to released against a running stack.
+  status      Show worker config, API health, and open Temporal workflows.
   doctor      Probe runtimes + diagnose configuration. Use --repair to fix.
 
 Run \`pm-go <command> --help\` for command-specific options.
@@ -91,6 +93,23 @@ async function main(): Promise<number> {
       const repair = rest.includes('--repair')
       const verbose = rest.includes('--verbose')
       const monorepoRoot = resolveMonorepoRoot()
+      // Load .env before probing so doctor sees the same env vars
+      // that `run` / `implement` will see at boot. Without this,
+      // doctor reported keys as missing even though .env defined
+      // them, which sent operators down false paths.
+      await applyDotenv(path.join(monorepoRoot, '.env'), {
+        readFile: (p) => readFile(p, 'utf8'),
+        fileExists: async (p) => {
+          try {
+            await access(p)
+            return true
+          } catch {
+            return false
+          }
+        },
+        env: process.env,
+        log: (l) => console.warn(l),
+      })
       const productionExec = async (
         cmd: string,
         args: readonly string[],
@@ -213,6 +232,60 @@ async function main(): Promise<number> {
         buildDriveDeps: () => buildProductionDriveDeps(),
       }
       return driveCli(driveCliDeps)
+    }
+
+    case 'status': {
+      if (rest[0] === '--help' || rest[0] === '-h') {
+        console.log(STATUS_USAGE)
+        return 0
+      }
+      const monorepoRoot = resolveMonorepoRoot()
+      // Mirror the doctor case: load .env so status reflects the same
+      // env the supervisor would see at boot.
+      await applyDotenv(path.join(monorepoRoot, '.env'), {
+        readFile: (p) => readFile(p, 'utf8'),
+        fileExists: async (p) => {
+          try {
+            await access(p)
+            return true
+          } catch {
+            return false
+          }
+        },
+        env: process.env,
+        log: (l) => console.warn(l),
+      })
+      const statusExec = async (
+        cmd: string,
+        args: readonly string[],
+      ): Promise<{ code: number; stdout: string; stderr: string }> => {
+        try {
+          const { stdout, stderr } = await execFile(cmd, [...args], {
+            cwd: monorepoRoot,
+            maxBuffer: 16 * 1024 * 1024,
+          })
+          return { code: 0, stdout, stderr }
+        } catch (err) {
+          const e = err as NodeJS.ErrnoException & {
+            code?: number | string
+            stdout?: string
+            stderr?: string
+          }
+          const numericCode = typeof e.code === 'number' ? e.code : 1
+          return {
+            code: numericCode,
+            stdout: e.stdout ?? '',
+            stderr: e.stderr ?? e.message ?? '',
+          }
+        }
+      }
+      return runStatus({
+        exec: statusExec,
+        env: process.env,
+        fetch: globalThis.fetch.bind(globalThis),
+        write: console.log,
+        monorepoRoot,
+      })
     }
 
     case 'implement': {
