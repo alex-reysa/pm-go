@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+#
+# pm-go launcher — resolves a possibly-symlinked invocation back to the
+# repository root, ensures the CLI is built, and execs it under node.
+#
+# Designed so:
+#   - `~/.local/bin/pm-go -> /path/to/pm-go/bin/pm-go` works
+#   - `INIT_CWD` is preserved, so `pm-go run --repo .` resolves against
+#     the directory the user typed the command from, not the launcher's
+#     install dir
+#   - first-run friction is minimal: if dist/ is missing we say so with
+#     the exact command to fix instead of failing cryptically
+
+set -euo pipefail
+
+# Resolve the canonical script location, walking through any symlinks.
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  [[ "$src" != /* ]] && src="$dir/$src"
+done
+PM_GO_DIR="$(cd -P "$(dirname "$src")/.." && pwd)"
+ENTRY="$PM_GO_DIR/apps/cli/dist/index.js"
+
+if [ ! -f "$ENTRY" ]; then
+  cat >&2 <<EOF
+pm-go: $ENTRY not found.
+
+The CLI hasn't been built yet. Run:
+
+    cd "$PM_GO_DIR" && pnpm install && pnpm -r build
+
+Or re-run the installer:
+
+    bash "$PM_GO_DIR/scripts/install.sh"
+EOF
+  exit 1
+fi
+
+# `INIT_CWD` is what npm/pnpm use to remember the user's launch
+# directory. The CLI reads it for `--repo .` resolution; preserve any
+# value the parent shell already set, otherwise stamp it now.
+exec env INIT_CWD="${INIT_CWD:-$PWD}" node "$ENTRY" "$@"

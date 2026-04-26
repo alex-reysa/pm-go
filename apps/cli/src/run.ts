@@ -189,6 +189,39 @@ function DEFAULT_APR_PORT_FALLBACK(): number {
   return DEFAULT_API_PORT
 }
 
+/**
+ * Describe the auth source the worker will use, in priority order
+ * matching `hasSdkAccess()` in apps/worker:
+ *
+ *   1. ANTHROPIC_API_KEY env var → SDK
+ *   2. ~/.claude/.credentials.json present → SDK (Claude Code OAuth)
+ *   3. claude CLI on PATH → CLI runner
+ *   4. otherwise → none (will throw on first activity)
+ *
+ * `--runtime stub` short-circuits to "stub" since the worker won't
+ * call any auth-dependent factory.
+ *
+ * Pure on `process.env`/fs — no network. Async because OAuth
+ * detection needs `fileExists`.
+ */
+async function describeAuthSource(
+  deps: { fileExists: (p: string) => Promise<boolean> },
+  runtime: RunOptions['runtime'],
+): Promise<string> {
+  if (runtime === 'stub') return 'stub mode (no Claude calls)'
+  if (process.env.ANTHROPIC_API_KEY) return 'ANTHROPIC_API_KEY (env)'
+  const home = process.env.HOME ?? process.env.USERPROFILE
+  if (home) {
+    const oauth = `${home}/.claude/.credentials.json`
+    if (await deps.fileExists(oauth)) {
+      return 'Claude Code OAuth (~/.claude/.credentials.json)'
+    }
+  }
+  // We can't easily detect `claude --version` here (would shell out
+  // and slow boot); the worker will fall back to CLI / fail loudly.
+  return 'none detected — worker will fail unless --runtime stub'
+}
+
 // ---------------------------------------------------------------------------
 // Side-effect deps (injected for tests)
 // ---------------------------------------------------------------------------
@@ -262,12 +295,18 @@ export async function runSupervisor(
 ): Promise<number> {
   const { log, errLog } = deps
 
+  // Resolve which auth source the worker would pick up, mirroring
+  // `hasSdkAccess()` in apps/worker so the banner is honest. Async
+  // because we need to fileExists the OAuth credentials path.
+  const authSource = await describeAuthSource(deps, options.runtime)
+
   log('')
   log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
   log('  pm-go run')
   log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
   log(`  repo:    ${options.repoRoot}`)
   log(`  runtime: ${options.runtime}`)
+  log(`  auth:    ${authSource}`)
   log(`  api:     http://localhost:${options.apiPort}`)
   if (options.specPath) log(`  spec:    ${options.specPath}`)
   log('')

@@ -1,6 +1,9 @@
 {
   "name": "pm-go",
   "private": true,
+  "bin": {
+    "pm-go": "./bin/pm-go"
+  },
   "packageManager": "pnpm@10.0.0",
   "engines": {
     "node": ">=22.0.0",

@@ -169,6 +169,23 @@ async function main(): Promise<number> {
         },
         log: (l) => console.log(l),
       }
+      // Probe for a Claude Code OAuth session — same signal the
+      // worker uses inside `hasSdkAccess()`. Doctor and worker stay
+      // aligned: if the worker would happily pick `anthropic-sdk`,
+      // doctor reports it instead of falsely flagging the SDK key
+      // as missing.
+      const home = process.env.HOME ?? process.env.USERPROFILE ?? ''
+      const oauthPath = home ? path.join(home, '.claude', '.credentials.json') : ''
+      const hasOAuth = oauthPath
+        ? async () => {
+            try {
+              await access(oauthPath)
+              return true
+            } catch {
+              return false
+            }
+          }
+        : undefined
       return runDoctor({
         detectRuntimes: detectAvailableRuntimes,
         env: process.env,
@@ -177,6 +194,7 @@ async function main(): Promise<number> {
         repairDeps,
         repair,
         verbose,
+        ...(hasOAuth ? { hasOAuth } : {}),
       })
     }
 

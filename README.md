@@ -55,24 +55,38 @@ The current tree includes:
 
 ## Quick Start
 
+### Install (global `pm-go` command)
+
 ```bash
-git clone https://github.com/alex-reysa/pm-go.git
-cd pm-go
-pnpm install
-cp .env.example .env
-pnpm pm-go implement --repo . --spec ./examples/golden-path/spec.md --runtime stub
+curl -fsSL https://raw.githubusercontent.com/alex-reysa/pm-go/main/scripts/install.sh | bash
+```
+
+The installer clones into `~/.pm-go/pm-go`, builds the workspace, and symlinks
+`pm-go` into `/usr/local/bin` (or `~/.local/bin` if `/usr/local/bin` isn't
+writable). After install, `pm-go` works from any directory.
+
+To upgrade later, re-run the same command. To install a clone in place, run
+`bash scripts/install.sh` from the repo root.
+
+### Use it
+
+```bash
+cd /path/to/your/repo
+pm-go implement --spec ./feature.md --runtime stub
 ```
 
 That single command brings up Docker (Postgres + Temporal), applies migrations,
 starts the worker and API as tracked children, waits for `/health`, submits the
-example spec, **and drives the resulting plan all the way to released** —
-running tasks, reviewing them, integrating phases, auditing, and finally
-releasing. Stay in the foreground; press `Ctrl+C` to tear the whole stack down
-cleanly.
+spec, **and drives the resulting plan all the way to released** — running tasks,
+reviewing them, integrating phases, auditing, and finally releasing. Stay in
+the foreground; press `Ctrl+C` to tear the whole stack down cleanly.
 
 The `--runtime stub` flag uses fixture-driven runners so this completes in
-seconds without an Anthropic API key. For real model-driven work, drop the flag
-(or pass `--runtime sdk` after exporting `ANTHROPIC_API_KEY`).
+seconds without an Anthropic API key. For real model-driven work, drop the flag.
+
+`--runtime auto` (the default) auto-detects, in order: `ANTHROPIC_API_KEY`, a
+Claude Code OAuth session at `~/.claude/.credentials.json`, then the `claude`
+CLI on `PATH`. Run `pm-go doctor` to confirm which auth source it found.
 
 To watch progress in the operator dashboard while it runs:
 
@@ -106,12 +120,13 @@ in [docs/getting-started.md](docs/getting-started.md).
 
 ### Sub-Commands
 
-`pm-go` has four subcommands; pick the one that matches your stage:
+`pm-go` has five subcommands; pick the one that matches your stage:
 
 ```bash
 pm-go implement --repo . --spec ./feature.md     # boot stack + drive to release
 pm-go run       --repo . --spec ./feature.md     # boot stack only; drive yourself
 pm-go drive     --plan <uuid>                    # drive a plan against an already-up stack
+pm-go status                                     # show worker config, API health, open workflows
 pm-go doctor    [--repair]                       # diagnose + auto-fix infra
 ```
 

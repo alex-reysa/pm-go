@@ -62,6 +62,40 @@ describe('resolveAutoRuntime', () => {
     )
     assert.strictEqual(result.kind, 'anthropic-sdk')
   })
+
+  it('(d) OAuth session present, no SDK key, no CLI → anthropic-sdk (oauth)', () => {
+    const result = resolveAutoRuntime({}, [], { hasOAuth: true })
+    assert.strictEqual(result.kind, 'anthropic-sdk')
+    assert.ok(result.reason.toLowerCase().includes('oauth'))
+  })
+
+  it('(e) OAuth + claude CLI: OAuth wins (SDK preferred over CLI)', () => {
+    const result = resolveAutoRuntime(
+      {},
+      [makeRuntime('claude', '1.2.3')],
+      { hasOAuth: true },
+    )
+    assert.strictEqual(result.kind, 'anthropic-sdk')
+  })
+
+  it('(f) OAuth + ANTHROPIC_API_KEY: API key wins (env beats OAuth)', () => {
+    const result = resolveAutoRuntime(
+      { ANTHROPIC_API_KEY: 'sk-ant-test' },
+      [],
+      { hasOAuth: true },
+    )
+    assert.strictEqual(result.kind, 'anthropic-sdk')
+    assert.ok(result.reason.includes('ANTHROPIC_API_KEY'))
+  })
+
+  it('(g) hasOAuth=false explicit → falls through to CLI/etc', () => {
+    const result = resolveAutoRuntime(
+      {},
+      [makeRuntime('claude', '1.2.3')],
+      { hasOAuth: false },
+    )
+    assert.strictEqual(result.kind, 'claude-cli')
+  })
 })
 
 // ---------------------------------------------------------------------------

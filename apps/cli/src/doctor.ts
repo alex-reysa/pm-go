@@ -29,6 +29,13 @@ export interface DoctorDeps {
   infra?: InfraProbeDeps
   /** Optional repair deps; when omitted, --repair is a no-op. */
   repairDeps?: RepairDeps
+  /**
+   * Optional probe for a Claude Code OAuth session. Production wires
+   * this to `fileExists("~/.claude/.credentials.json")` so doctor's
+   * runtime resolution agrees with the worker's `hasSdkAccess()`.
+   * Tests omit it and keep the legacy behavior.
+   */
+  hasOAuth?: () => Promise<boolean>
 }
 
 // ---------------------------------------------------------------------------
@@ -47,22 +54,43 @@ export interface ResolutionResult {
   reason: string
 }
 
+export interface ResolveAutoRuntimeOpts {
+  /**
+   * When true, treat a Claude Code OAuth session (i.e.
+   * `~/.claude/.credentials.json` present) as equivalent to
+   * `ANTHROPIC_API_KEY` for SDK access. The worker's
+   * `hasSdkAccess()` already uses this signal, so passing it here
+   * keeps doctor and worker aligned. Optional so callers (and the
+   * existing snapshot tests) that don't probe OAuth behave exactly
+   * as before.
+   */
+  hasOAuth?: boolean
+}
+
 /**
  * Resolve --runtime auto for the default role set.
  *
  * Priority order:
- *   1. ANTHROPIC_API_KEY set → anthropic-sdk
- *   2. claude CLI on PATH    → claude-cli
- *   3. OPENROUTER_API_KEY    → openrouter-sdk
- *   4. OPENAI_API_KEY        → openai-sdk
- *   5. nothing               → none
+ *   1. ANTHROPIC_API_KEY set                    → anthropic-sdk
+ *   2. Claude Code OAuth session present        → anthropic-sdk (oauth)
+ *   3. claude CLI on PATH                       → claude-cli
+ *   4. OPENROUTER_API_KEY                       → openrouter-sdk
+ *   5. OPENAI_API_KEY                           → openai-sdk
+ *   6. nothing                                  → none
  */
 export function resolveAutoRuntime(
   env: Record<string, string | undefined>,
   runtimes: DetectedRuntime[],
+  opts: ResolveAutoRuntimeOpts = {},
 ): ResolutionResult {
   if (env['ANTHROPIC_API_KEY']) {
     return { kind: 'anthropic-sdk', reason: 'ANTHROPIC_API_KEY is set' }
+  }
+  if (opts.hasOAuth === true) {
+    return {
+      kind: 'anthropic-sdk',
+      reason: 'Claude Code OAuth session found (~/.claude/.credentials.json)',
+    }
   }
   if (runtimes.some((r) => r.adapter.cliCommand === 'claude')) {
     return { kind: 'claude-cli', reason: 'claude CLI found on PATH' }
@@ -89,6 +117,7 @@ const COL = 24 // left-column width for name
 export function buildDoctorReport(
   env: Record<string, string | undefined>,
   runtimes: DetectedRuntime[],
+  opts: ResolveAutoRuntimeOpts = {},
 ): string {
   const lines: string[] = []
 
@@ -103,6 +132,12 @@ export function buildDoctorReport(
     const marker = env[key] ? '✓ set' : 'not set'
     lines.push(`  ${key.padEnd(COL)} ${marker}`)
   }
+  // Only render the OAuth row when the caller probed for it. Tests
+  // (and any caller that omits opts) keep the historical layout.
+  if (opts.hasOAuth !== undefined) {
+    const marker = opts.hasOAuth ? '✓ found' : 'not found'
+    lines.push(`  ${'claude oauth'.padEnd(COL)} ${marker}`)
+  }
   lines.push('')
 
   // Local CLIs block
@@ -116,7 +151,7 @@ export function buildDoctorReport(
   lines.push('')
 
   // Runtime resolution block
-  const resolution = resolveAutoRuntime(env, runtimes)
+  const resolution = resolveAutoRuntime(env, runtimes, opts)
   lines.push('Runtime resolution')
   if (resolution.kind === 'none') {
     lines.push(`  --runtime auto           → ${resolution.reason}`)
@@ -681,7 +716,10 @@ function dirPathFor(probeName: string, monorepoRoot: string): string | null {
  */
 export async function runDoctor(deps: DoctorDeps): Promise<number> {
   const runtimes = await deps.detectRuntimes()
-  const baseReport = buildDoctorReport(deps.env, runtimes)
+  const hasOAuth = deps.hasOAuth ? await deps.hasOAuth() : undefined
+  const reportOpts: ResolveAutoRuntimeOpts =
+    hasOAuth === undefined ? {} : { hasOAuth }
+  const baseReport = buildDoctorReport(deps.env, runtimes, reportOpts)
   // Strip the placeholder Infrastructure block — we'll re-emit it below
   // with real probes when infra deps are available, otherwise leave it.
   const baseLines = baseReport.split('\n')
@@ -728,7 +766,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<number> {
     }
   }
 
-  const resolution = resolveAutoRuntime(deps.env, runtimes)
+  const resolution = resolveAutoRuntime(deps.env, runtimes, reportOpts)
   const runtimeOk = resolution.kind !== 'none'
   const infraOk =
     infraProbes === null || infraProbes.every((p) => p.status !== 'fail')
