@@ -70,6 +70,14 @@ export async function runStatus(deps: StatusDeps): Promise<number> {
   // Open workflows. tctl is the most portable surface inside the
   // temporal container; we don't parse its output — operators read it
   // verbatim. If tctl is unavailable (container down) we say so.
+  //
+  // The temporal server binds only to the container's bridge IP
+  // (e.g. 172.21.0.3:7233), not to `localhost` / `127.0.0.1`, so
+  // tctl-from-inside-container with the loopback address is refused.
+  // `$(hostname -i)` resolves to that bridge IP at runtime regardless
+  // of which Docker network compose picked. Discovered during the
+  // v0.8.6 dogfood when `pm-go status` falsely reported temporal down.
+  // Using `sh -c` because we need shell substitution.
   write(`Open workflows (namespace=${namespace})`)
   try {
     const args = [
@@ -77,16 +85,9 @@ export async function runStatus(deps: StatusDeps): Promise<number> {
       'exec',
       '-T',
       'temporal',
-      'tctl',
-      '--ad',
-      'localhost:7233',
-      '--ns',
-      namespace,
-      'workflow',
-      'list',
-      '-m',
-      '50',
-      '-op',
+      'sh',
+      '-c',
+      `tctl --ad "$(hostname -i):7233" --ns ${shellQuote(namespace)} workflow list -m 50 -op`,
     ]
     const r = await exec('docker', args)
     if (r.code === 0) {
@@ -117,6 +118,15 @@ export async function runStatus(deps: StatusDeps): Promise<number> {
   // check. status's exit code is always 0 so it composes well in
   // shell pipelines (`pm-go status && pm-go drive --plan ...`).
   return 0
+}
+
+/**
+ * Single-quote a value for safe substitution into a `sh -c` command.
+ * Used by the workflow-list call so that an attacker-controlled
+ * namespace value can't escape into shell metacharacters.
+ */
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`
 }
 
 export const STATUS_USAGE = `Usage: pm-go status

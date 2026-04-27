@@ -110,6 +110,7 @@ When `pm-go implement` pauses for approval, it leaves the API + worker UP and pr
 - **Diff-scope violation** — the implementer wrote files outside the task's `fileScope`. Either widen the scope (requires a plan re-draft) or tighten the task description.
 - **Content-filter rejection** — `agent_runs.error_reason="ContentFilterError"` and the task is `blocked`. Adjust the spec wording for the affected task and re-run.
 - **Phase won't advance** — every task in the phase must be `ready_to_merge`. Find the laggards: `curl http://localhost:3001/plans/<id>` and look for tasks in `reviewing` / `fixing`.
+- **Workflow-id collision on resume** — `drive` reports `WorkflowExecutionAlreadyStarted` after a supervisor restart. Run `pm-go recover --plan <id>` to attach to the existing audit/integration workflow instead of spawning a duplicate.
 
 ## API Surface (advanced)
 
@@ -149,7 +150,7 @@ Useful for smoke-testing pm-go itself, not for solving real specs. Stub fixtures
 
 - **Don't pre-check `ANTHROPIC_API_KEY`.** OAuth alone is sufficient. Ask the supervisor instead — it prints which source it picked at boot.
 - **Don't edit `packages/planner/src/*.ts` to swap models.** Use `PM_GO_MODEL` or per-role env vars.
-- **Don't `pkill -f pm-go`** — it kills the operator's monitors too. Use `Ctrl+C` on the supervisor or kill the tracked PIDs `pm-go run` printed at boot.
+- **Don't `pkill -f pm-go`** — it kills the operator's monitors too. Use `pm-go ps` to inspect the supervisor-owned process registry, then `pm-go stop` to shut them down cleanly. (Both commands target only pm-go's tracked PIDs, so editor and dev-server processes survive.)
 - **Don't run two supervisors against the same Postgres + Temporal.** Port 3001 collides. `pm-go status` will tell you something is already on that port.
 
 ## Reference
