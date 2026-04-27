@@ -331,7 +331,7 @@ describe('probeInfrastructure', () => {
       execs: {
         'docker ps': { code: 0 },
         'docker compose exec -T postgres pg_isready -U pmgo -d pm_go': { code: 0 },
-        'docker compose exec -T temporal tctl --ad localhost:7233 cluster health': {
+        'docker compose exec -T temporal sh -c tctl --ad "$(hostname -i):7233" cluster health': {
           code: 0,
         },
         'docker compose exec -T postgres psql -U pmgo -d pm_go -c SELECT 1': {
@@ -369,7 +369,7 @@ describe('probeInfrastructure', () => {
       execs: {
         'docker ps': { code: 0 },
         'docker compose exec -T postgres pg_isready -U pmgo -d pm_go': { code: 0 },
-        'docker compose exec -T temporal tctl --ad localhost:7233 cluster health': {
+        'docker compose exec -T temporal sh -c tctl --ad "$(hostname -i):7233" cluster health': {
           code: 1,
           stdout: 'temporal.api.workflowservice.v1.WorkflowService: SERVING',
         },
@@ -665,7 +665,7 @@ describe('runDoctor with infra deps', () => {
       execs: {
         'docker ps': { code: 0 },
         'docker compose exec -T postgres pg_isready -U pmgo -d pm_go': { code: 0 },
-        'docker compose exec -T temporal tctl --ad localhost:7233 cluster health': {
+        'docker compose exec -T temporal sh -c tctl --ad "$(hostname -i):7233" cluster health': {
           code: 0,
         },
         'docker compose exec -T postgres psql -U pmgo -d pm_go -c SELECT 1': { code: 0 },
