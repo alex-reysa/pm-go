@@ -450,3 +450,378 @@ describe("TaskExecutionWorkflow", () => {
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// v0.8.6 P0 hygiene-guard tests for the activity itself.
+//
+// The workflow tests above mock `commitAgentWork` end-to-end. These tests
+// exercise the real activity with a stubbed `checkIgnore` and a stubbed
+// `exec` so we can prove the guard's two branches:
+//   1. check-ignore returns paths      → typed failure, no commit, task
+//                                          blocked, paths persisted on the
+//                                          agent run.
+//   2. check-ignore returns empty list → existing happy path runs unchanged
+//                                          (stage + commit + return sha).
+// ---------------------------------------------------------------------------
+const {
+  createTaskExecutionActivities,
+  IGNORED_ARTIFACT_COMMITTED,
+} = await import("../src/activities/task-execution.js");
+
+interface FakeDb {
+  select: ReturnType<typeof vi.fn>;
+  update: ReturnType<typeof vi.fn>;
+  insert: ReturnType<typeof vi.fn>;
+  transaction: ReturnType<typeof vi.fn>;
+  // Tracks every set() payload for later assertions.
+  updateCalls: Array<{ table: string; set: Record<string, unknown> }>;
+  // Tracks every insert(...).values(payload) we observe so tests can
+  // assert that the hygiene-guard rejection projects a
+  // `task_status_changed` row onto workflow_events (alongside the
+  // observability span emitted by withSpan).
+  insertCalls: Array<{ values: Record<string, unknown> }>;
+}
+
+/**
+ * Build a tiny drizzle-shaped mock that returns the supplied rows for
+ * the selects the activity issues (worktree_leases lookup, then
+ * agent_runs lookup). `update` and `insert` are no-ops that record
+ * their arguments for assertion.
+ */
+function makeFakeDb(rows: {
+  leaseRows: Array<{ taskId: string | null }>;
+  agentRunRows: Array<{ id: string }>;
+  // For updateTaskStatus() if it ends up being called; defaults to one
+  // row with status `running`.
+  prevTaskRows?: Array<{ status: string; planId: string; phaseId: string }>;
+}): FakeDb {
+  const updateCalls: Array<{ table: string; set: Record<string, unknown> }> =
+    [];
+  let selectCount = 0;
+  // commitAgentWork issues exactly two selects in the rejection branch:
+  // (1) worktree_leases by worktreePath, (2) agent_runs by taskId.
+  // updateTaskStatus would issue a third (plan_tasks by id) — supplied
+  // for completeness even though the activity-level test path never
+  // calls updateTaskStatus directly.
+  const selectQueue: Array<unknown[]> = [
+    rows.leaseRows,
+    rows.agentRunRows,
+    rows.prevTaskRows ?? [
+      { status: "running", planId: "plan-1", phaseId: "phase-1" },
+    ],
+  ];
+  const select = vi.fn().mockImplementation(() => {
+    const next = selectQueue[selectCount++] ?? [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const chain: any = {};
+    chain.from = vi.fn().mockReturnValue(chain);
+    chain.where = vi.fn().mockReturnValue(chain);
+    chain.orderBy = vi.fn().mockReturnValue(chain);
+    chain.limit = vi.fn().mockResolvedValue(next);
+    return chain;
+  });
+  const update = vi.fn().mockImplementation((table: { _: { name?: string } }) => {
+    const tableName =
+      (table as unknown as { [s: symbol]: { name?: string } })?.[
+        Symbol.for("drizzle:Name")
+      ]?.name ??
+      // Drizzle stores the table name on a few different internal
+      // symbols across versions. Fall back to a stringification.
+      String((table as { _name?: string })._name ?? "unknown");
+    return {
+      set: vi.fn().mockImplementation((payload: Record<string, unknown>) => {
+        updateCalls.push({ table: tableName, set: payload });
+        return {
+          where: vi.fn().mockResolvedValue(undefined),
+        };
+      }),
+    };
+  });
+  const insertCalls: Array<{ values: Record<string, unknown> }> = [];
+  const insert = vi.fn().mockReturnValue({
+    values: vi.fn().mockImplementation((payload: Record<string, unknown>) => {
+      insertCalls.push({ values: payload });
+      return Promise.resolve(undefined);
+    }),
+    onConflictDoUpdate: vi.fn().mockReturnValue({
+      values: vi.fn().mockImplementation((payload: Record<string, unknown>) => {
+        insertCalls.push({ values: payload });
+        return Promise.resolve(undefined);
+      }),
+    }),
+  });
+  const transaction = vi.fn().mockImplementation(async (cb: (tx: unknown) => unknown) =>
+    cb({ select, update, insert }),
+  );
+  return {
+    select,
+    update,
+    insert,
+    transaction,
+    updateCalls,
+    insertCalls,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any;
+}
+
+describe("commitAgentWork hygiene guard (v0.8.6 P0)", () => {
+  const taskId = "11111111-2222-4333-8444-555555555555";
+  const agentRunId = "22222222-3333-4444-8555-666666666666";
+  const worktreePath = "/tmp/worktrees/stub";
+
+  it("rejects when check-ignore returns ignored paths and persists them on the agent run", async () => {
+    const checkIgnore = vi.fn().mockResolvedValue([
+      "node_modules/foo",
+      "node_modules/bar/baz.js",
+    ]);
+    const exec = vi
+      .fn()
+      // listPendingPaths uses `git status --porcelain`. We return one
+      // `?? <path>` entry so check-ignore has something to filter; the
+      // exact contents don't matter because the guard delegates to the
+      // stubbed checkIgnore.
+      .mockResolvedValueOnce({ stdout: "?? node_modules/foo\n", stderr: "" });
+    const db = makeFakeDb({
+      leaseRows: [{ taskId }],
+      agentRunRows: [{ id: agentRunId }],
+    });
+
+    const acts = createTaskExecutionActivities({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: db as any,
+      implementerRunner: {
+        run: async () => {
+          throw new Error("not used in this test");
+        },
+      },
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/worktrees",
+      checkIgnore,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      exec: exec as any,
+    });
+
+    const result = await acts.commitAgentWork({
+      worktreePath,
+      taskSlug: "demo",
+      commitTitle: "feat(demo): demo",
+    });
+
+    // 1. Typed failure surfaces back to the caller. `taskId` is the
+    //    resolved lease.taskId so callers can distinguish "rejected
+    //    and persisted" from the lease-missing branch covered below.
+    expect(result).toEqual({
+      ok: false,
+      reason: IGNORED_ARTIFACT_COMMITTED,
+      paths: ["node_modules/foo", "node_modules/bar/baz.js"],
+      taskId,
+    });
+
+    // 2. No staging or committing happened — exec was only called once,
+    //    for `git status --porcelain`. `git add`, `git commit`, and
+    //    `git rev-parse` were NOT invoked.
+    expect(exec).toHaveBeenCalledTimes(1);
+    const argv = exec.mock.calls[0]?.[1] as string[];
+    expect(argv[0]).toBe("status");
+
+    // 3. Offending paths land on the agent run record. The guard joins
+    //    the paths into the errorReason text prefixed by the symbol.
+    const agentRunUpdate = db.updateCalls.find((c) =>
+      typeof c.set.errorReason === "string",
+    );
+    expect(agentRunUpdate?.set.errorReason).toContain(
+      IGNORED_ARTIFACT_COMMITTED,
+    );
+    expect(agentRunUpdate?.set.errorReason).toContain("node_modules/foo");
+    expect(agentRunUpdate?.set.errorReason).toContain(
+      "node_modules/bar/baz.js",
+    );
+
+    // 4. Task transitions to `blocked`.
+    const blockedUpdate = db.updateCalls.find(
+      (c) => c.set.status === "blocked",
+    );
+    expect(blockedUpdate, "expected a plan_tasks update with status=blocked").toBeDefined();
+
+    // 5. The running→blocked transition emits a task_status_changed
+    //    row on workflow_events. Operators rely on this projection
+    //    to see the rejection on the SSE stream — the hygiene-guard
+    //    branch has to stay symmetrical with updateTaskStatus.
+    const statusChange = db.insertCalls.find(
+      (c) => c.values.kind === "task_status_changed",
+    );
+    expect(
+      statusChange,
+      "expected workflow_events.task_status_changed for running→blocked",
+    ).toBeDefined();
+    expect(statusChange?.values.taskId).toBe(taskId);
+    expect(statusChange?.values.payload).toMatchObject({
+      previousStatus: "running",
+      nextStatus: "blocked",
+    });
+  });
+
+  it("logs a warn and returns taskId=null when the worktree lease lookup misses", async () => {
+    const checkIgnore = vi
+      .fn()
+      .mockResolvedValue(["node_modules/torn"]);
+    const exec = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: "?? node_modules/torn\n", stderr: "" });
+    const db = makeFakeDb({
+      // No matching lease row — simulates a torn lease / racing GC.
+      leaseRows: [],
+      agentRunRows: [],
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      const acts = createTaskExecutionActivities({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        db: db as any,
+        implementerRunner: {
+          run: async () => {
+            throw new Error("not used in this test");
+          },
+        },
+        repoRoot: "/tmp/repo",
+        worktreeRoot: "/tmp/worktrees",
+        checkIgnore,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        exec: exec as any,
+      });
+
+      const result = await acts.commitAgentWork({
+        worktreePath,
+        taskSlug: "demo",
+        commitTitle: "feat(demo): demo",
+      });
+
+      // Typed failure still surfaces, but with taskId=null so callers
+      // can detect the partial-failure path. The hygiene rule held —
+      // no commit was attempted — but no DB row was stamped either.
+      expect(result).toEqual({
+        ok: false,
+        reason: IGNORED_ARTIFACT_COMMITTED,
+        paths: ["node_modules/torn"],
+        taskId: null,
+      });
+
+      // No update touched plan_tasks or agent_runs (lease missing).
+      expect(db.updateCalls).toEqual([]);
+
+      // Operator-facing diagnostic so the gap doesn't go silent.
+      expect(warn).toHaveBeenCalled();
+      const warnMsg = (warn.mock.calls[0]?.[0] ?? "") as string;
+      expect(warnMsg).toContain("worktree_leases lookup");
+      expect(warnMsg).toContain("node_modules/torn");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("preserves stub-runtime e2e behavior when check-ignore returns empty", async () => {
+    const checkIgnore = vi.fn().mockResolvedValue([]);
+    // exec receives all of `git status`, `git add`, `git commit`, and
+    // `git rev-parse` calls in order. Resolve the stdout each one
+    // expects so the activity reaches the sha-return branch.
+    const exec = vi.fn().mockImplementation(async (...args: unknown[]) => {
+      const argv = args[1] as string[];
+      // git status --porcelain v1 format: "XY <path>" — two status chars
+      // and a separator before the path. Use the canonical " M " (space
+      // + M + space) for an unstaged modification.
+      if (argv[0] === "status") return { stdout: " M packages/x/y.ts\n", stderr: "" };
+      if (argv[0] === "add") return { stdout: "", stderr: "" };
+      if (argv[0] === "commit") return { stdout: "[main abc] commit", stderr: "" };
+      if (argv[0] === "rev-parse") return { stdout: "abc1234\n", stderr: "" };
+      return { stdout: "", stderr: "" };
+    });
+    const db = makeFakeDb({
+      leaseRows: [],
+      agentRunRows: [],
+    });
+
+    const acts = createTaskExecutionActivities({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: db as any,
+      implementerRunner: {
+        run: async () => {
+          throw new Error("not used in this test");
+        },
+      },
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/worktrees",
+      checkIgnore,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      exec: exec as any,
+    });
+
+    const result = await acts.commitAgentWork({
+      worktreePath,
+      taskSlug: "demo",
+      commitTitle: "feat(demo): demo",
+    });
+
+    // Happy path: typed success with the resolved sha. No update calls
+    // touched plan_tasks or agent_runs because the guard short-circuited
+    // *before* attempting any persistence.
+    expect(result).toEqual({ ok: true, sha: "abc1234" });
+
+    // checkIgnore saw the porcelain-derived path; assert it was actually
+    // invoked with the candidate path so the contract is exercised.
+    expect(checkIgnore).toHaveBeenCalledWith(
+      worktreePath,
+      ["packages/x/y.ts"],
+    );
+
+    // No DB persistence on the happy path.
+    expect(db.updateCalls).toEqual([]);
+  });
+
+  it("skips the check-ignore subprocess entirely when the worktree has no pending changes", async () => {
+    const checkIgnore = vi.fn().mockResolvedValue([]);
+    const exec = vi.fn().mockImplementation(async (...args: unknown[]) => {
+      const argv = args[1] as string[];
+      // Empty status output → no pending paths → guard short-circuits
+      // and falls through to the legacy stage/commit path. The
+      // subsequent commit attempt fails with "nothing to commit" which
+      // we expect the activity to translate to `{ ok: true }` (no sha).
+      if (argv[0] === "status") return { stdout: "", stderr: "" };
+      if (argv[0] === "add") return { stdout: "", stderr: "" };
+      if (argv[0] === "commit") {
+        const err = Object.assign(new Error("nothing to commit"), {
+          stdout: "nothing to commit, working tree clean",
+          stderr: "",
+        });
+        throw err;
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const db = makeFakeDb({ leaseRows: [], agentRunRows: [] });
+
+    const acts = createTaskExecutionActivities({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: db as any,
+      implementerRunner: {
+        run: async () => {
+          throw new Error("not used in this test");
+        },
+      },
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/worktrees",
+      checkIgnore,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      exec: exec as any,
+    });
+
+    const result = await acts.commitAgentWork({
+      worktreePath,
+      taskSlug: "demo",
+      commitTitle: "feat(demo): demo",
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(checkIgnore).not.toHaveBeenCalled();
+  });
+});
+
