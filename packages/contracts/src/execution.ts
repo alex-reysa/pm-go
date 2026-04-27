@@ -147,6 +147,53 @@ export interface Artifact {
   createdAt: string;
 }
 
+/**
+ * Implementer committed one or more paths that the repository's ignore
+ * policy (`.gitignore` and friends) says should never be tracked —
+ * typically generated artifacts, build outputs, or local scratch files.
+ * The integrator refuses to merge such commits and surfaces the
+ * offending paths so the task can be re-planned or repaired.
+ */
+export interface IgnoredArtifactCommittedBlock {
+  kind: "IGNORED_ARTIFACT_COMMITTED";
+  /**
+   * Repo-relative paths the implementer attempted to commit. At least
+   * one entry is always populated when this block reason is raised;
+   * ordering is not significant. Paths are POSIX-style ("/" separators)
+   * relative to the repo root captured in the originating `WorktreeLease`.
+   */
+  paths: string[];
+}
+
+/**
+ * Reason a task / agent run was blocked from progressing further.
+ *
+ * Modeled as a discriminated union (`kind` is the discriminator) so
+ * each reason can carry its own structured context — for
+ * `IGNORED_ARTIFACT_COMMITTED` that's the offending repo-relative
+ * `paths`, for future variants it's whatever the blocker needs.
+ *
+ * Lives here in `execution.ts` (alongside `AgentRun` and
+ * `WorktreeLease`) rather than as ad-hoc fields on the consumer side,
+ * so phase-2 worker code (the integrator activity in `apps/worker`)
+ * and any future pm-go task-repair flow share one canonical shape.
+ *
+ * Consumers should narrow by `kind` and treat the union as open: new
+ * members get appended over time and downstream code is expected to
+ * handle the unknown-kind case gracefully (e.g. exhaustiveness checks
+ * with a `never`-assigned default branch).
+ */
+export type TaskBlockReason = IgnoredArtifactCommittedBlock;
+
+/**
+ * String-literal union of the `kind` discriminators on
+ * `TaskBlockReason`. Useful for consumers that need to reference a
+ * specific reason name without importing the full union variant — for
+ * example, mapping persisted DB rows back into `TaskBlockReason` or
+ * filtering events by reason kind.
+ */
+export type TaskBlockReasonKind = TaskBlockReason["kind"];
+
 export interface MergeRun {
   id: UUID;
   /**
