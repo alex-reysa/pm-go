@@ -41,6 +41,13 @@ export interface PlanningActivities {
   loadSpecDocument(specDocumentId: UUID): Promise<SpecDocument>;
   loadRepoSnapshot(repoSnapshotId: UUID): Promise<RepoSnapshot>;
   generatePlan(input: {
+    /**
+     * API-supplied plan UUID. The activity rewrites the model-returned
+     * `plan.id` to this value before validation completes, so the
+     * persisted `plans.id` matches the id the caller (the API's
+     * `POST /plans` handler) committed to in its 202 response.
+     */
+    planId?: UUID;
     specDocumentId: UUID;
     repoSnapshotId: UUID;
     requestedBy: string;

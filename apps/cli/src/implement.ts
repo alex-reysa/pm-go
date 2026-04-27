@@ -332,10 +332,36 @@ export async function implementCli(cliDeps: ImplementCliDeps): Promise<number> {
 
   return runSupervisor(runOptions, supervisorDeps, async (handle) => {
     if (!handle.planId) {
+      // Two ways we can land here:
+      //   (a) Spec submission errored hard (HTTP 4xx/5xx) — the
+      //       supervisor already logged the failure and there's
+      //       nothing to drive against. Tearing the stack down is
+      //       fine but unhelpful; the operator usually wants the API
+      //       up so they can re-submit a corrected spec.
+      //   (b) Plan-persistence wait timed out (20-minute ceiling).
+      //       The plan was almost certainly persisted under a
+      //       different UUID (see the recovery-message logged by
+      //       submitSpecAndPlan); the operator MUST keep the API
+      //       running to look it up and resume with `pm-go drive`.
+      // In both cases the right move is to STAY UP and wait for
+      // SIGINT — never tear children down out from under a recovery
+      // session that has no other way to find the real plan id.
       cliDeps.errLog(
         '[implement] supervisor finished boot but did not capture a planId. ' +
-          'This usually means the spec submission failed; see the log above.',
+          'See the log above for details. Stack is staying UP so you can ' +
+          'recover (find the plan id and run `pm-go drive --plan <id>`, ' +
+          'or re-submit a corrected spec).',
       )
+      cliDeps.log('             Press Ctrl+C to stop the supervisor when done.')
+      cliDeps.log('')
+      await new Promise<void>((resolve) => {
+        const onSig = () => {
+          process.removeListener('SIGINT', onSig)
+          resolve()
+        }
+        process.once('SIGINT', onSig)
+      })
+      cliDeps.log('[implement] received Ctrl+C; releasing supervisor')
       return 1
     }
 

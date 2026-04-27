@@ -25,6 +25,16 @@ export interface RunPlannerInput {
   budgetUsdCap?: number;
   /** Hard turn cap for the planner run. Defaults to 30. */
   maxTurnsCap?: number;
+  /**
+   * Caller-supplied plan UUID. When set, {@link runPlanner} overrides
+   * the `plan.id` returned by the runner with this value before the
+   * function returns — so the persisted plan row uses the id the
+   * caller (typically the API's `POST /plans` handler) already
+   * committed to. When omitted, whatever id the runner produced is
+   * preserved unchanged. The override happens after `validatePlan`
+   * confirms the rest of the plan is well-formed.
+   */
+  planId?: string;
 }
 
 /**
@@ -96,7 +106,37 @@ export async function runPlanner(
     );
   }
 
-  return { plan: result.plan, agentRun: result.agentRun };
+  // Override the model-supplied id with the caller-supplied one. The
+  // API generates a planId up-front and returns it to the caller in
+  // the `POST /plans` response — without this rewrite the persisted
+  // row would land under the model's own UUID and supervisors polling
+  // `GET /plans/<api-id>` would 404 forever. Rewriting after
+  // `validatePlan` keeps the rest of the schema check authoritative
+  // (the id field validator is just a UUID-shape check, which any
+  // randomUUID() value satisfies).
+  //
+  // Phases and tasks both carry a `planId` foreign-key field that must
+  // be rewritten in lock-step, otherwise the plan-persistence activity
+  // would write children referencing the model's stale id and the
+  // reconstructed plan would fail integrity checks. Phase/task ids
+  // themselves are NOT touched — only their parent pointer.
+  const plan: Plan =
+    input.planId !== undefined
+      ? {
+          ...result.plan,
+          id: input.planId,
+          phases: result.plan.phases.map((phase) => ({
+            ...phase,
+            planId: input.planId!,
+          })),
+          tasks: result.plan.tasks.map((task) => ({
+            ...task,
+            planId: input.planId!,
+          })),
+        }
+      : result.plan;
+
+  return { plan, agentRun: result.agentRun };
 }
 
 /**

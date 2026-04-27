@@ -9,13 +9,16 @@ pm-go pulls planning, retries, approvals, budgets, worktree lifecycle, merge ord
 
 ## Activation Loop (start here)
 
-When the user wants to use pm-go on a spec, default to **one command**:
+When the user wants to use pm-go on a spec, pick based on spec size:
 
-```bash
-pm-go implement --repo /path/to/target/repo --spec /path/to/spec.md
-```
+| Spec | Use |
+|---|---|
+| Small (<100 lines, planning expected <10 min) | `pm-go implement --repo <repo> --spec <spec.md>` |
+| Larger / unknown / expect >10 min Opus planning | `pm-go run --repo <repo>` (background) + `pm-go drive --plan <id>` once planning lands |
 
-That single command boots Docker (Postgres + Temporal), applies migrations, starts the API + worker, submits the spec, and drives the resulting plan all the way to release. Stay in the foreground; `Ctrl+C` tears it down cleanly.
+`pm-go implement` is the one-shot path: it boots Docker (Postgres + Temporal), applies migrations, starts the API + worker, submits the spec, and drives the resulting plan all the way to release. Stay in the foreground; `Ctrl+C` tears it down cleanly. The catch: it has a 20-minute ceiling on plan persistence, so a slow planner makes it bail (see Common Failure Modes).
+
+For anything bigger, prefer `pm-go run` — the supervisor backgrounds cleanly and never times out. Submit the spec via the API (or wait for the auto-submission), then attach with `pm-go drive --plan <id>` once `pm-go why <spec-id>` shows the plan UUID.
 
 **Do not interrogate the user about env vars before running.** Trust `--runtime auto` (the default). It auto-detects, in priority order:
 
@@ -35,12 +38,13 @@ The installer is idempotent — re-running it upgrades.
 
 ## Visibility
 
-Three commands cover most diagnostic needs without raw `tctl` or DB queries:
+Four commands cover most diagnostic needs without raw `tctl` or DB queries:
 
 ```bash
 pm-go doctor             # env + CLIs + auth + infra (postgres/temporal/migrations/ports)
 pm-go doctor --repair    # also auto-fix what it can (docker up, db:migrate, mkdir)
 pm-go status             # worker config, API /health, open Temporal workflows
+pm-go why <id>           # one-sentence state + next action for any plan/phase/task/spec id
 ```
 
 Use `pm-go status` first when something looks stuck — it tells you the configured task queue + namespace + open workflows. A "scheduled but never picked up" workflow is almost always one of: stale `dist/` from before a code change, mismatched `TEMPORAL_TASK_QUEUE`, or the worker pointing at the wrong Temporal cluster.
@@ -104,6 +108,16 @@ High-risk tasks/phases pause for explicit approval. `pm-go drive --approve all` 
 
 When `pm-go implement` pauses for approval, it leaves the API + worker UP and prints the exact approval URL. Resolve the approval, then re-run `pm-go drive --plan <uuid>`.
 
+## Recovery
+
+If the supervisor died mid-flight, or you don't know what state a plan/phase/task is in, run:
+
+```bash
+pm-go why <id>          # id can be plan, phase, task, or spec-document UUID
+```
+
+It returns one sentence with the current state and the exact next action. This is the single best diagnostic — reach for it before grepping source, opening the TUI, or hitting Postgres directly. If `why` says the plan is mid-phase, follow up with `pm-go drive --plan <uuid>` to resume from where the supervisor left off.
+
 ## Common Failure Modes
 
 - **Worker workflow stuck "scheduled but never picked up"** — almost always stale `dist/`. Run `pnpm -r build` from the pm-go repo, then restart the worker. `pm-go status` confirms task queue + namespace alignment.
@@ -111,6 +125,7 @@ When `pm-go implement` pauses for approval, it leaves the API + worker UP and pr
 - **Content-filter rejection** — `agent_runs.error_reason="ContentFilterError"` and the task is `blocked`. Adjust the spec wording for the affected task and re-run.
 - **Phase won't advance** — every task in the phase must be `ready_to_merge`. Find the laggards: `curl http://localhost:3001/plans/<id>` and look for tasks in `reviewing` / `fixing`.
 - **Workflow-id collision on resume** — `drive` reports `WorkflowExecutionAlreadyStarted` after a supervisor restart. Run `pm-go recover --plan <id>` to attach to the existing audit/integration workflow instead of spawning a duplicate.
+- **`pm-go implement` exits but plan exists in DB** — the supervisor's plan-persistence poll has a 20-minute ceiling. If hit, the api + worker stay up (post-v0.8.7 fail-open). Run `pm-go why <spec-id>` to find the actual plan UUID, then `pm-go drive --plan <real-id>` to pick up where it bailed.
 
 ## API Surface (advanced)
 
@@ -152,6 +167,7 @@ Useful for smoke-testing pm-go itself, not for solving real specs. Stub fixtures
 - **Don't edit `packages/planner/src/*.ts` to swap models.** Use `PM_GO_MODEL` or per-role env vars.
 - **Don't `pkill -f pm-go`** — it kills the operator's monitors too. Use `pm-go ps` to inspect the supervisor-owned process registry, then `pm-go stop` to shut them down cleanly. (Both commands target only pm-go's tracked PIDs, so editor and dev-server processes survive.)
 - **Don't run two supervisors against the same Postgres + Temporal.** Port 3001 collides. `pm-go status` will tell you something is already on that port.
+- **Don't push to `main` of the pm-go repo while running pm-go on its own repo.** Baseline drift causes false phase-audit scope violations on every phase. See `docs/dogfood/v0.8.6-run.md` for the cautionary tale.
 
 ## Reference
 

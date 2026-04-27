@@ -354,7 +354,7 @@ export interface RunDeps {
 const POSTGRES_TIMEOUT_MS = 60_000
 const TEMPORAL_TIMEOUT_MS = 60_000
 const API_HEALTH_TIMEOUT_MS = 30_000
-const PLAN_PERSISTENCE_TIMEOUT_MS = 20 * 60_000
+export const PLAN_PERSISTENCE_TIMEOUT_MS = 20 * 60_000
 const POLL_INTERVAL_MS = 500
 
 /**
@@ -618,7 +618,18 @@ export async function runSupervisor(
     log('[6/6] submitting spec + starting plan...')
     try {
       planId = await submitSpecAndPlan(options, deps)
-      log(`       plan started: ${planId}`)
+      if (planId) {
+        log(`       plan started: ${planId}`)
+      } else {
+        // submitSpecAndPlan returns undefined on plan-persistence
+        // timeout. The plan was likely persisted under a different
+        // UUID (separate planId-mismatch bug); the recovery hint was
+        // already written to errLog. Don't tear the stack down — the
+        // operator can still query the API to find the real planId.
+        log(
+          '       plan submission timed out waiting for persistence — supervisor staying up so you can recover (see error log above).',
+        )
+      }
     } catch (err) {
       errLog(
         `spec submission failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -757,10 +768,35 @@ function pipeToLog(
   proc.stderr?.on('data', onChunk)
 }
 
-async function submitSpecAndPlan(
+/**
+ * Format a wall-clock duration as `Xm Ys` for heartbeat log lines.
+ * Helper kept inline so the test for the heartbeat behaviour can
+ * assert against the same string the operator sees.
+ */
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}m ${seconds}s`
+}
+
+/**
+ * Submit a spec and start a plan. On success returns the planId.
+ *
+ * On plan-persistence timeout (a 20-minute hard ceiling), returns
+ * `undefined` rather than throwing: the plan was almost certainly
+ * persisted under a different UUID (a separate planId-mismatch bug)
+ * and the supervisor must NOT tear the stack down — the operator
+ * still needs the running API to query for the real id. We log a
+ * structured recovery message to errLog instead.
+ *
+ * Other failures (HTTP non-2xx, network errors) still throw and are
+ * handled by `runSupervisor`'s existing catch.
+ */
+export async function submitSpecAndPlan(
   opts: RunOptions,
   deps: RunDeps,
-): Promise<string> {
+): Promise<string | undefined> {
   if (!opts.specPath) throw new Error('specPath required')
   const body = await deps.readFile(opts.specPath)
   const title = opts.title ?? deriveTitle(body, opts.specPath)
@@ -807,6 +843,10 @@ async function submitSpecAndPlan(
   // the plan without racing the workflow. Live Opus planning on large
   // specs can run for several minutes, so keep this comfortably above
   // the startup-scale timeouts.
+  //
+  // The 60s onTick callback turns 20 minutes of dead silence into a
+  // visible heartbeat — operators were previously left wondering if
+  // the supervisor was wedged or if planning was just slow.
   const planQueryable = await waitFor(
     async () => {
       const res = await deps.fetch(`${apiBase}/plans/${planJson.planId}`)
@@ -816,13 +856,23 @@ async function submitSpecAndPlan(
       label: 'plan-persistence',
       timeoutMs: PLAN_PERSISTENCE_TIMEOUT_MS,
       intervalMs: POLL_INTERVAL_MS,
+      onTick: (elapsedMs) => {
+        deps.log(
+          `[plan-persistence] still waiting, elapsed ${formatElapsed(elapsedMs)}`,
+        )
+      },
     },
     deps,
   )
   if (planQueryable.status === 'timeout') {
-    throw new Error(
-      `plan ${planJson.planId} did not appear in the API within ${PLAN_PERSISTENCE_TIMEOUT_MS / 1000}s — the SpecToPlanWorkflow may have failed; check worker logs`,
+    // Don't throw — that would propagate through runSupervisor and
+    // tear the stack down via deps.pm.stop(). The plan was probably
+    // persisted under a different id (separate planId-mismatch bug);
+    // the operator needs the API still running so they can find it.
+    deps.errLog(
+      `[pm-go] plan-persistence wait exceeded ${PLAN_PERSISTENCE_TIMEOUT_MS / 1000}s. The plan may have been persisted under a different UUID; query GET /spec-documents/${specJson.specDocumentId}/plan (or curl /plans and search by spec_document_id) to locate it, then resume with: pm-go drive --plan <id>`,
     )
+    return undefined
   }
   return planJson.planId
 }

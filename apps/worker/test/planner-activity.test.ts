@@ -151,6 +151,37 @@ describe("createPlannerActivities.generatePlan", () => {
     expect(out.plan.repoSnapshotId).toBe(snapshotFixture.id);
     expect(out.agentRun.role).toBe("planner");
   });
+
+  it("overrides plan.id with input.planId so the persisted row matches the API-promised key", async () => {
+    // Mirrors the v0.8.6 dogfood fix: the API generates a UUID up-front
+    // and threads it down here so the eventual `plans.id` row equals
+    // what the API already returned in its 202 response.
+    const db = makeMockDbForLoaders();
+    const runner = makeRunner(planFixture);
+    const activities = createPlannerActivities({
+      db,
+      plannerRunner: runner,
+      artifactDir: path.join(os.tmpdir(), "pm-go-test-artifacts"),
+    });
+
+    const apiPlanId = "deadbeef-1234-4567-89ab-cdef00112233";
+    expect(planFixture.id).not.toBe(apiPlanId);
+
+    const out = await activities.generatePlan({
+      planId: apiPlanId,
+      specDocumentId: specFixture.id,
+      repoSnapshotId: snapshotFixture.id,
+      requestedBy: "tester",
+    });
+
+    expect(out.plan.id).toBe(apiPlanId);
+    for (const phase of out.plan.phases) {
+      expect(phase.planId).toBe(apiPlanId);
+    }
+    for (const task of out.plan.tasks) {
+      expect(task.planId).toBe(apiPlanId);
+    }
+  });
 });
 
 describe("createPlannerActivities.renderPlanMarkdownActivity", () => {

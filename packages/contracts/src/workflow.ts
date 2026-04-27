@@ -21,6 +21,14 @@ export interface SpecToPlanWorkflowInput {
   specDocumentId: UUID;
   repoSnapshotId: UUID;
   requestedBy: string;
+  /**
+   * API-supplied plan UUID. The API generates this id and the planner
+   * activity overrides whatever id the model returned with this value
+   * before persistence. Guarantees that the `planId` returned by
+   * `POST /plans` matches the `plans.id` row eventually inserted, so
+   * callers polling `GET /plans/<id>` never 404 against the wrong key.
+   */
+  planId: UUID;
 }
 
 export interface SpecToPlanWorkflowResult {

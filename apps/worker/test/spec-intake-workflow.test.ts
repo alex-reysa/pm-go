@@ -96,6 +96,7 @@ describe("SpecToPlanWorkflow", () => {
     activityFns.persistArtifact.mockResolvedValue(artifact.id);
 
     const result = await SpecToPlanWorkflow({
+      planId: planFixture.id,
       specDocumentId: planFixture.specDocumentId,
       repoSnapshotId: planFixture.repoSnapshotId,
       requestedBy: "test",
@@ -153,6 +154,7 @@ describe("SpecToPlanWorkflow", () => {
     });
 
     const result = await SpecToPlanWorkflow({
+      planId: planFixture.id,
       specDocumentId: planFixture.specDocumentId,
       repoSnapshotId: planFixture.repoSnapshotId,
       requestedBy: "test",

@@ -20,11 +20,28 @@ export interface WaitForOptions {
   timeoutMs: number
   /** Delay between checks. */
   intervalMs: number
+  /**
+   * Optional progress callback fired roughly every `tickIntervalMs`
+   * (default 60_000ms) of waiting. Receives the elapsed milliseconds
+   * since the wait began. Existing callers ignore it; long-running
+   * polls (e.g. plan persistence) use it to log heartbeat lines so
+   * operators don't sit through silence wondering if anything's
+   * progressing.
+   */
+  onTick?: (elapsedMs: number) => void
+  /**
+   * Wall-clock interval between `onTick` invocations. Independent
+   * from `intervalMs` so a fast-polling check can still emit a slow
+   * heartbeat. Default 60_000ms. Ignored when `onTick` is absent.
+   */
+  tickIntervalMs?: number
 }
 
 export type WaitForOutcome =
   | { status: 'ready'; ticks: number; elapsedMs: number }
   | { status: 'timeout'; ticks: number; elapsedMs: number; lastError?: string }
+
+const DEFAULT_TICK_INTERVAL_MS = 60_000
 
 /**
  * Repeatedly invoke `check` until it returns true, an error is thrown
@@ -40,6 +57,8 @@ export async function waitFor(
   const start = deps.now()
   let ticks = 0
   let lastError: string | undefined
+  const tickIntervalMs = options.tickIntervalMs ?? DEFAULT_TICK_INTERVAL_MS
+  let nextTickAtMs = tickIntervalMs
 
   while (true) {
     ticks += 1
@@ -53,6 +72,20 @@ export async function waitFor(
     }
 
     const elapsed = deps.now() - start
+    // Fire onTick once per tick interval — covers the common case of
+    // a long poll (plan-persistence: 20 minutes) where the operator
+    // needs heartbeat output. We fire after each check rather than
+    // before the sleep so the first tick lands at ~tickIntervalMs of
+    // real elapsed time, not at boot.
+    if (options.onTick && elapsed >= nextTickAtMs) {
+      options.onTick(elapsed)
+      // Catch up across multiple tick boundaries if the check itself
+      // took longer than tickIntervalMs (rare but possible). Always
+      // advance at least one boundary so we don't busy-loop.
+      while (nextTickAtMs <= elapsed) {
+        nextTickAtMs += tickIntervalMs
+      }
+    }
     if (elapsed >= options.timeoutMs) {
       return { status: 'timeout', ticks, elapsedMs: elapsed, ...(lastError !== undefined ? { lastError } : {}) }
     }

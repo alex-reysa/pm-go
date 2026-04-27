@@ -22,6 +22,14 @@ export interface PlannerActivityDeps {
 
 export interface PlannerActivities {
   generatePlan(input: {
+    /**
+     * API-supplied plan UUID. {@link runPlanner} rewrites the id on the
+     * returned `Plan` to this value before validation completes, so the
+     * persisted `plans.id` matches the id the API already returned to
+     * the caller. Optional for backwards compatibility with older
+     * callers — when omitted, the model-supplied id is preserved.
+     */
+    planId?: string;
     specDocumentId: string;
     repoSnapshotId: string;
     requestedBy: string;
@@ -65,6 +73,7 @@ export function createPlannerActivities(
         repoSnapshot,
         requestedBy: input.requestedBy,
         runner: deps.plannerRunner,
+        ...(input.planId !== undefined ? { planId: input.planId } : {}),
         ...(deps.plannerMaxTurns !== undefined ? { maxTurnsCap: deps.plannerMaxTurns } : {}),
         ...(deps.plannerBudgetUsd !== undefined ? { budgetUsdCap: deps.plannerBudgetUsd } : {}),
         ...(deps.plannerModel !== undefined ? { model: deps.plannerModel } : {}),

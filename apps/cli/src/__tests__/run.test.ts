@@ -8,6 +8,8 @@ import {
   buildChildEnv,
   formatPortConflictError,
   runSupervisor,
+  submitSpecAndPlan,
+  PLAN_PERSISTENCE_TIMEOUT_MS,
   type InstanceStateEntry,
   type PortPreflightResult,
   type RunDeps,
@@ -557,5 +559,272 @@ describe('processManager removeInstanceState wiring', () => {
     }
     const pm = createProcessManager(deps, 0)
     await pm.stop('no-state')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// submitSpecAndPlan: plan-persistence timeout no longer throws — it logs a
+// recovery message and returns undefined so the supervisor can stay UP for
+// the operator to find the (mismatched) planId. v0.8.4.2 hardening.
+// ---------------------------------------------------------------------------
+
+describe('submitSpecAndPlan plan-persistence timeout (v0.8.4.2)', () => {
+  /**
+   * Build a deps fixture that simulates spec + plan POSTs succeeding,
+   * but every GET /plans/<id> returning 404 — i.e. the plan-persistence
+   * wait will never see a 200 and will hit the 20-minute timeout.
+   * `now`/`sleep` are virtual so the test runs in microseconds.
+   */
+  function makeTimeoutFixture(): {
+    deps: RunDeps
+    options: RunOptions
+    logs: string[]
+    errs: string[]
+  } {
+    const logs: string[] = []
+    const errs: string[] = []
+    let virtualClock = 0
+    const deps: RunDeps = {
+      exec: async () => ({ code: 0, stdout: '', stderr: '' }),
+      spawn: (() => undefined) as unknown as RunDeps['spawn'],
+      fetch: (async (url: unknown) => {
+        const u =
+          typeof url === 'string'
+            ? url
+            : url instanceof URL
+              ? url.toString()
+              : (url as { url: string }).url
+        if (u.endsWith('/spec-documents')) {
+          return {
+            ok: true,
+            async text() {
+              return ''
+            },
+            async json() {
+              return {
+                specDocumentId: 'spec-aaaa-bbbb',
+                repoSnapshotId: 'repo-cccc',
+              }
+            },
+          } as unknown as Response
+        }
+        if (u.endsWith('/plans')) {
+          return {
+            ok: true,
+            async text() {
+              return ''
+            },
+            async json() {
+              return { planId: 'plan-dddd-eeee' }
+            },
+          } as unknown as Response
+        }
+        // GET /plans/<id> — 404 forever to force the plan-persistence
+        // poll loop to time out.
+        return {
+          ok: false,
+          status: 404,
+          async text() {
+            return 'not found'
+          },
+          async json() {
+            return {}
+          },
+        } as unknown as Response
+      }) as unknown as typeof globalThis.fetch,
+      readFile: async () => '# Spec\n\nbody',
+      fileExists: async () => true,
+      mkdir: async () => undefined,
+      now: () => virtualClock,
+      sleep: async (ms: number) => {
+        virtualClock += ms
+      },
+      log: (l) => logs.push(l),
+      errLog: (l) => errs.push(l),
+      pm: {
+        add: () => undefined,
+        shutdown: (async () => {
+          throw new Error('shutdown should not fire on plan-persistence timeout')
+        }) as unknown as RunDeps['pm']['shutdown'],
+        stop: async () => undefined,
+        get shuttingDown() {
+          return false
+        },
+      } as unknown as RunDeps['pm'],
+      monorepoRoot: '/abs/monorepo',
+      checkPorts: async () => ({ ok: true } as PortPreflightResult),
+      writeInstanceState: async () => undefined,
+      processPid: 9999,
+    }
+    const options: RunOptions = {
+      repoRoot: '/abs/repo',
+      specPath: '/abs/spec.md',
+      title: undefined,
+      runtime: 'stub',
+      apiPort: 3001,
+      databaseUrl: 'postgres://x:y@host/z',
+      skipDocker: true,
+      skipMigrate: true,
+    }
+    return { deps, options, logs, errs }
+  }
+
+  it('returns undefined (does NOT throw) when plan-persistence times out', async () => {
+    const { deps, options, errs } = makeTimeoutFixture()
+    let result: string | undefined
+    let threw: unknown = null
+    try {
+      result = await submitSpecAndPlan(options, deps)
+    } catch (err) {
+      threw = err
+    }
+    assert.strictEqual(
+      threw,
+      null,
+      `submitSpecAndPlan must NOT throw on plan-persistence timeout — threw: ${threw}`,
+    )
+    assert.strictEqual(
+      result,
+      undefined,
+      'expected undefined return so the supervisor stays up',
+    )
+    // The recovery hint must be on errLog with the documented shape so
+    // operators can paste-and-run it. Pin the load-bearing fragments.
+    const joined = errs.join('\n')
+    assert.match(
+      joined,
+      new RegExp(
+        `plan-persistence wait exceeded ${PLAN_PERSISTENCE_TIMEOUT_MS / 1000}s`,
+      ),
+      `expected timeout-seconds fragment in errLog:\n${joined}`,
+    )
+    assert.match(
+      joined,
+      /persisted under a different UUID/,
+      `expected mismatched-UUID hint in errLog:\n${joined}`,
+    )
+    assert.match(
+      joined,
+      /pm-go drive --plan/,
+      `expected pm-go drive recovery command in errLog:\n${joined}`,
+    )
+    assert.match(
+      joined,
+      /\/spec-documents\/spec-aaaa-bbbb\/plan/,
+      `expected spec-doc lookup hint pointing at the actual specDocumentId:\n${joined}`,
+    )
+  })
+
+  it('emits per-minute heartbeat lines on log while waiting', async () => {
+    const { deps, options, logs } = makeTimeoutFixture()
+    await submitSpecAndPlan(options, deps)
+    // Across a 20-minute timeout we expect roughly 20 heartbeat
+    // lines (one per minute). Don't pin the exact count — the loop's
+    // last sleep is clamped to the remaining budget so the trailing
+    // tick may or may not fire — but we MUST see heartbeat output.
+    const heartbeats = logs.filter((l) => l.startsWith('[plan-persistence] still waiting'))
+    assert.ok(
+      heartbeats.length >= 15,
+      `expected ~20 heartbeat lines over the 20-minute wait, got ${heartbeats.length}`,
+    )
+    // The first heartbeat must report a sane "Xm Ys" elapsed.
+    assert.match(
+      heartbeats[0]!,
+      /elapsed \d+m \d+s/,
+      `first heartbeat does not match the expected format: ${heartbeats[0]}`,
+    )
+  })
+
+  it('returns the planId on success without writing the recovery message', async () => {
+    // Sanity: the happy path must still return the planId. Otherwise
+    // we'd accidentally regress the "supervisor passes planId through
+    // to onReady" wiring.
+    const logs: string[] = []
+    const errs: string[] = []
+    let queryCount = 0
+    const deps: RunDeps = {
+      exec: async () => ({ code: 0, stdout: '', stderr: '' }),
+      spawn: (() => undefined) as unknown as RunDeps['spawn'],
+      fetch: (async (url: unknown) => {
+        const u =
+          typeof url === 'string'
+            ? url
+            : (url as { url: string }).url
+        if (u.endsWith('/spec-documents')) {
+          return {
+            ok: true,
+            async text() {
+              return ''
+            },
+            async json() {
+              return {
+                specDocumentId: 'spec-1',
+                repoSnapshotId: 'snap-1',
+              }
+            },
+          } as unknown as Response
+        }
+        if (u.endsWith('/plans')) {
+          return {
+            ok: true,
+            async text() {
+              return ''
+            },
+            async json() {
+              return { planId: 'plan-success' }
+            },
+          } as unknown as Response
+        }
+        // GET /plans/<id> — succeed on the second call so we exercise
+        // the poll-loop path.
+        queryCount++
+        return {
+          ok: queryCount >= 2,
+          status: queryCount >= 2 ? 200 : 404,
+          async text() {
+            return ''
+          },
+          async json() {
+            return {}
+          },
+        } as unknown as Response
+      }) as unknown as typeof globalThis.fetch,
+      readFile: async () => '# Spec\n',
+      fileExists: async () => true,
+      mkdir: async () => undefined,
+      now: () => 0,
+      sleep: async () => undefined,
+      log: (l) => logs.push(l),
+      errLog: (l) => errs.push(l),
+      pm: {
+        add: () => undefined,
+        shutdown: (async () => undefined) as unknown as RunDeps['pm']['shutdown'],
+        stop: async () => undefined,
+        get shuttingDown() {
+          return false
+        },
+      } as unknown as RunDeps['pm'],
+      monorepoRoot: '/abs/monorepo',
+      checkPorts: async () => ({ ok: true } as PortPreflightResult),
+      writeInstanceState: async () => undefined,
+      processPid: 9999,
+    }
+    const options: RunOptions = {
+      repoRoot: '/abs/repo',
+      specPath: '/abs/spec.md',
+      title: undefined,
+      runtime: 'stub',
+      apiPort: 3001,
+      databaseUrl: 'postgres://x:y@host/z',
+      skipDocker: true,
+      skipMigrate: true,
+    }
+    const result = await submitSpecAndPlan(options, deps)
+    assert.strictEqual(result, 'plan-success')
+    assert.strictEqual(
+      errs.length,
+      0,
+      `recovery message must NOT fire on the happy path; got: ${errs.join('|')}`,
+    )
   })
 })

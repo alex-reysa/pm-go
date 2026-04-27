@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { Hono } from "hono";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Client as TemporalClient } from "@temporalio/client";
@@ -38,10 +40,14 @@ import { toIso } from "../lib/timestamps.js";
 /**
  * Dependencies for the /plans route group.
  *
- * V1 convention: `planId === specDocumentId` because there is exactly one
- * plan per spec. The Temporal workflow is started with workflowId
- * `plan-${specDocumentId}` so re-posting for the same spec is a no-op on
- * the Temporal side.
+ * Plan UUID lifecycle: the API generates a fresh `planId` on every
+ * `POST /plans`, threads it into `SpecToPlanWorkflowInput.planId`, and
+ * the planner activity overrides whatever id the model picked with this
+ * value before persistence. The response's `planId` is therefore
+ * guaranteed to equal `plans.id`, so supervisors polling
+ * `GET /plans/<id>` find the row immediately. The Temporal workflow id
+ * remains `plan-${specDocumentId}` (one-per-spec dedup), independent
+ * of the row id.
  */
 export interface PlansRouteDeps {
   temporal: TemporalClient;
@@ -121,7 +127,16 @@ export function createPlansRoute(deps: PlansRouteDeps) {
         ? body.requestedBy
         : "api";
 
+    // Generate the plan UUID API-side and pass it through. The planner
+    // activity overwrites whatever id the model produced with this one
+    // before persistence — the response's `planId` is therefore the
+    // exact key that will appear under `plans.id`. Without this the
+    // model picks an id the API never sees, supervisors poll the wrong
+    // key, and `GET /plans/<spec-id>` 404s for the entire run.
+    const planId = randomUUID();
+
     const input: SpecToPlanWorkflowInput = {
+      planId,
       specDocumentId: body.specDocumentId,
       repoSnapshotId: body.repoSnapshotId,
       requestedBy,
@@ -133,10 +148,9 @@ export function createPlansRoute(deps: PlansRouteDeps) {
       workflowId: `plan-${body.specDocumentId}`,
     });
 
-    // V1 convention: planId === specDocumentId (1:1 per spec).
     return c.json(
       {
-        planId: body.specDocumentId,
+        planId,
         workflowRunId: handle.firstExecutionRunId,
       },
       202,

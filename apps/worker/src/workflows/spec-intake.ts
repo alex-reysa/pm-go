@@ -19,6 +19,7 @@ import {
  */
 interface SpecToPlanActivities {
   generatePlan(input: {
+    planId: string;
     specDocumentId: string;
     repoSnapshotId: string;
     requestedBy: string;
@@ -81,6 +82,7 @@ export async function SpecToPlanWorkflow(
   input: SpecToPlanWorkflowInput,
 ): Promise<SpecToPlanWorkflowResult> {
   const { plan, agentRun } = await generatePlan({
+    planId: input.planId,
     specDocumentId: input.specDocumentId,
     repoSnapshotId: input.repoSnapshotId,
     requestedBy: input.requestedBy,

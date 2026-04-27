@@ -66,6 +66,7 @@ import {
   type RunDeps,
 } from './run.js'
 import { runStatus, STATUS_USAGE } from './status.js'
+import { runWhy, WHY_USAGE } from './why.js'
 
 const execFile = promisify(execFileCb)
 
@@ -76,6 +77,7 @@ Commands:
   run         Start the pm-go control plane (supervisor only).
   drive       Drive a submitted plan to released against a running stack.
   status      Show worker config, API health, and open Temporal workflows.
+  why         Explain in one sentence why a plan/phase/task is in its state.
   doctor      Probe runtimes + diagnose configuration. Use --repair to fix.
   ps          List supervisor / worker / api / drive pids pm-go owns.
   stop        Stop every pm-go-owned process (SIGTERM then SIGKILL).
@@ -353,6 +355,39 @@ async function main(): Promise<number> {
         write: console.log,
         monorepoRoot,
       })
+    }
+
+    case 'why': {
+      if (rest[0] === '--help' || rest[0] === '-h') {
+        console.log(WHY_USAGE)
+        return 0
+      }
+      const monorepoRoot = resolveMonorepoRoot()
+      // Mirror the status case: load .env so why hits the same API_PORT
+      // a fresh boot would, without forcing the operator to remember
+      // which port the supervisor picked.
+      await applyDotenv(path.join(monorepoRoot, '.env'), {
+        readFile: (p) => readFile(p, 'utf8'),
+        fileExists: async (p) => {
+          try {
+            await access(p)
+            return true
+          } catch {
+            return false
+          }
+        },
+        env: process.env,
+        log: (l) => console.warn(l),
+      })
+      return runWhy(
+        {
+          fetch: globalThis.fetch.bind(globalThis),
+          env: process.env,
+          write: (l) => console.log(l),
+          errLog: (l) => console.error(l),
+        },
+        rest,
+      )
     }
 
     case 'implement': {

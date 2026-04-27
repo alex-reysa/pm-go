@@ -49,6 +49,48 @@ describe("runPlanner", () => {
     expect(result.agentRun.promptVersion).toBe("planner@1");
   });
 
+  it("overrides the runner-supplied plan.id when input.planId is provided, rewriting phase + task planId references in lock-step", async () => {
+    // Caller-supplied id must win over whatever the runner (i.e. the
+    // model) chose. This is the contract that POST /plans relies on:
+    // the API generates a UUID up-front, returns it to the caller, and
+    // expects the persisted row to land under that exact key.
+    const apiPlanId = "deadbeef-1234-4567-89ab-cdef00112233";
+    const runnerPlanFixture = JSON.parse(JSON.stringify(planFixture)) as Plan;
+    expect(runnerPlanFixture.id).not.toBe(apiPlanId);
+
+    const runner = createStubPlannerRunner(runnerPlanFixture);
+    const result = await runPlanner({
+      specDocument: specDocumentFixture,
+      repoSnapshot: repoSnapshotFixture,
+      requestedBy: "alex@example.com",
+      runner,
+      planId: apiPlanId,
+    });
+
+    expect(result.plan.id).toBe(apiPlanId);
+    // Phase + task `planId` references must be rewritten too — leaving
+    // them pointing at the runner-supplied id would orphan the
+    // children once plan-persistence writes them.
+    for (const phase of result.plan.phases) {
+      expect(phase.planId).toBe(apiPlanId);
+    }
+    for (const task of result.plan.tasks) {
+      expect(task.planId).toBe(apiPlanId);
+    }
+  });
+
+  it("preserves the runner-supplied plan.id when input.planId is omitted", async () => {
+    const fixture = JSON.parse(JSON.stringify(planFixture)) as Plan;
+    const runner = createStubPlannerRunner(fixture);
+    const result = await runPlanner({
+      specDocument: specDocumentFixture,
+      repoSnapshot: repoSnapshotFixture,
+      requestedBy: "alex@example.com",
+      runner,
+    });
+    expect(result.plan.id).toBe(fixture.id);
+  });
+
   it("throws PlanValidationError when the runner returns an invalid plan", async () => {
     // Build a plan variant that is missing a required top-level field
     // (title). The stub just passes the fixture through, so we smuggle

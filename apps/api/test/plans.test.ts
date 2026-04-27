@@ -183,7 +183,7 @@ describe("GET /plans", () => {
 });
 
 describe("POST /plans", () => {
-  it("starts the workflow and returns 202 with planId === specDocumentId", async () => {
+  it("starts the workflow, returns a fresh UUID as planId, and threads it into workflow args", async () => {
     const { start, client } = makeMockTemporal();
     const app = createApp({
       temporal: client,
@@ -213,9 +213,23 @@ describe("POST /plans", () => {
       planId: string;
       workflowRunId: string;
     };
-    expect(payload.planId).toBe(specId);
+
+    // The planId is generated server-side as a UUID. It is NOT the
+    // specDocumentId — the v0.8.6 dogfood proved that the previous
+    // "planId === specDocumentId" convention masked a fatal mismatch
+    // with the row eventually persisted under the model-supplied id.
+    const UUID_RE =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    expect(payload.planId).toMatch(UUID_RE);
+    expect(payload.planId).not.toBe(specId);
     expect(payload.workflowRunId).toBe("run-xyz");
 
+    // The workflow id format is unchanged (`plan-<spec-id>`) so
+    // re-posting for the same spec dedups on Temporal. Only the
+    // response shape and the workflow input args grow a `planId`
+    // field; the planner activity will overwrite the model-returned
+    // id with this exact value, so the API-side promise to the
+    // caller is honoured by the time the row hits Postgres.
     expect(start).toHaveBeenCalledWith(
       "SpecToPlanWorkflow",
       expect.objectContaining({
@@ -223,6 +237,7 @@ describe("POST /plans", () => {
         workflowId: `plan-${specId}`,
         args: [
           {
+            planId: payload.planId,
             specDocumentId: specId,
             repoSnapshotId: snapshotId,
             requestedBy: "api",
@@ -230,6 +245,78 @@ describe("POST /plans", () => {
         ],
       }),
     );
+  });
+
+  it("returns a unique planId on each POST so re-posting for the same spec doesn't collide on plans.id", async () => {
+    const { client } = makeMockTemporal();
+    const app = createApp({
+      temporal: client,
+      taskQueue: "pm-go-worker",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: {} as any,
+      artifactDir: "./artifacts/plans",
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/repo/.worktrees",
+      maxLifetimeHours: 24,
+    });
+    const specId = "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+    const snapshotId = "f0e1d2c3-b4a5-4768-99aa-bbccddeeff00";
+    const body = JSON.stringify({
+      specDocumentId: specId,
+      repoSnapshotId: snapshotId,
+    });
+    const first = (await (
+      await app.request("/plans", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      })
+    ).json()) as { planId: string };
+    const second = (await (
+      await app.request("/plans", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      })
+    ).json()) as { planId: string };
+    expect(first.planId).not.toBe(second.planId);
+  });
+
+  it("threads response.planId into the workflow args and into the persisted plan.id", async () => {
+    // End-to-end contract: the UUID returned in the POST response is the
+    // exact value the planner activity overrides onto plan.id before
+    // persistence. We simulate the planner activity by capturing the
+    // workflow start arg and asserting it equals the response planId.
+    const { start, client } = makeMockTemporal();
+    const app = createApp({
+      temporal: client,
+      taskQueue: "pm-go-worker",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: {} as any,
+      artifactDir: "./artifacts/plans",
+      repoRoot: "/tmp/repo",
+      worktreeRoot: "/tmp/repo/.worktrees",
+      maxLifetimeHours: 24,
+    });
+    const specId = "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+    const snapshotId = "f0e1d2c3-b4a5-4768-99aa-bbccddeeff00";
+    const res = await app.request("/plans", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        specDocumentId: specId,
+        repoSnapshotId: snapshotId,
+      }),
+    });
+    const { planId } = (await res.json()) as { planId: string };
+
+    // Workflow start arg now must contain the same planId the API just
+    // promised the caller. The planner activity's contract guarantees
+    // this id is stamped onto plan.id before plan-persistence runs, so
+    // the eventual plans.id row equals what we returned.
+    const startCall = start.mock.calls[0]!;
+    const startOpts = startCall[1] as { args: Array<{ planId: string }> };
+    expect(startOpts.args[0]!.planId).toBe(planId);
   });
 
   it("returns 400 when specDocumentId is not a UUID", async () => {
