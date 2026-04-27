@@ -241,20 +241,20 @@ export async function diagnoseRecovery(
     return { branch: 'running-workflow', workflow: wf }
   }
   if (wf.status === 'completed') {
-    // 3. Workflow says done. Check whether the API has a corresponding
-    //    plan row in `released` state. If not, projection didn't run.
+    // 3. Workflow says done. Confirm we can read the plan row at all
+    //    before claiming the completed-unprojected branch — if the API
+    //    can't surface the plan, we have no signal to act on and fall
+    //    through to nothing-salvageable. We don't gate on
+    //    `status === 'released'` here: the rerun-projection activity is
+    //    idempotent, so re-running it on an already-projected plan is
+    //    safe and saves us a special-case branch.
     const planRes = await deps
       .fetch(`${options.apiUrl}/plans/${options.planId}`)
       .catch(() => null)
     if (planRes && planRes.ok) {
-      const body = (await planRes.json().catch(() => null)) as
-        | { plan?: { status?: string } }
-        | null
-      const status = body?.plan?.status
-      if (status === 'released') {
-        // Already projected — nothing to do, but treat as salvaged.
-        return { branch: 'completed-unprojected', workflow: wf }
-      }
+      // Drain the body so the fetch mock's response is fully consumed,
+      // even though we don't branch on its contents anymore.
+      await planRes.json().catch(() => null)
       return { branch: 'completed-unprojected', workflow: wf }
     }
     // Couldn't read the plan row — fall through to nothing-salvageable.
