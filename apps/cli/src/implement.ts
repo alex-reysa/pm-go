@@ -259,6 +259,14 @@ export interface ImplementCliDeps {
    * entries instead of `pid: matchesNumber()`.
    */
   drivePid?: number
+  /**
+   * Test seam: the helper that blocks until the parent receives
+   * SIGINT in any of the three "stay UP for operator recovery"
+   * branches (no-planId, EXIT_PAUSED, drive-failure). Production
+   * uses the real helper that registers a SIGINT listener; tests
+   * inject a resolver that returns immediately so they don't hang.
+   */
+  stayUpUntilSigint?: () => Promise<void>
 }
 
 /**
@@ -330,6 +338,11 @@ export async function implementCli(cliDeps: ImplementCliDeps): Promise<number> {
   // to the real implementation imported above.
   const runSupervisor = cliDeps.runSupervisor ?? runSupervisorImpl
 
+  // Test seam: callers can substitute a no-op resolver for the SIGINT
+  // wait so unit tests don't hang. Production uses the real helper
+  // that registers a SIGINT listener.
+  const stayUp = cliDeps.stayUpUntilSigint ?? stayUpUntilSigint
+
   return runSupervisor(runOptions, supervisorDeps, async (handle) => {
     if (!handle.planId) {
       // Two ways we can land here:
@@ -354,13 +367,7 @@ export async function implementCli(cliDeps: ImplementCliDeps): Promise<number> {
       )
       cliDeps.log('             Press Ctrl+C to stop the supervisor when done.')
       cliDeps.log('')
-      await new Promise<void>((resolve) => {
-        const onSig = () => {
-          process.removeListener('SIGINT', onSig)
-          resolve()
-        }
-        process.once('SIGINT', onSig)
-      })
+      await stayUp()
       cliDeps.log('[implement] received Ctrl+C; releasing supervisor')
       return 1
     }
@@ -415,26 +422,59 @@ export async function implementCli(cliDeps: ImplementCliDeps): Promise<number> {
       )
       cliDeps.log('             Press Ctrl+C to stop the supervisor when done.')
       cliDeps.log('')
-      // Block until the operator sends SIGINT. We register a one-shot
-      // listener that resolves the promise; the supervisor's signal
-      // handler will fire afterwards and tear down children cleanly.
-      await new Promise<void>((resolve) => {
-        const onSig = () => {
-          process.removeListener('SIGINT', onSig)
-          resolve()
-        }
-        process.once('SIGINT', onSig)
-      })
+      // Block until the operator sends SIGINT. The supervisor's
+      // signal handler will fire afterwards and tear down children
+      // cleanly.
+      await stayUp()
       cliDeps.log('[implement] received Ctrl+C; releasing supervisor')
       return EXIT_PAUSED
     }
 
+    // v0.8.7.1: drive-failure fail-open. Any non-zero, non-EXIT_PAUSED
+    // exit means drive hit a real failure mid-loop (e.g. a 409 from
+    // /tasks/:id/run because the phase wasn't yet `executing`, an
+    // audit-blocked plan, a wait timeout). Pre-fix the supervisor
+    // tore down api+worker on its way out, leaving the operator with
+    // no stack to diagnose against. Now the stack stays UP so the
+    // operator can use `pm-go why <plan-id>` to see the root cause
+    // and `pm-go drive --plan <id>` to resume after fixing it.
+    if (code !== 0) {
+      cliDeps.log('')
+      cliDeps.log(
+        `[implement] drive exited code=${code}; the plan is still in the database. Stack staying UP for diagnosis.`,
+      )
+      cliDeps.log(`             Diagnose:    pm-go why ${handle.planId}`)
+      cliDeps.log(
+        `             Resume:      pm-go drive --plan ${handle.planId} --approve ${parsed.options.approve}`,
+      )
+      cliDeps.log('             Press Ctrl+C to stop the supervisor when done.')
+      cliDeps.log('')
+      await stayUp()
+      cliDeps.log('[implement] received Ctrl+C; releasing supervisor')
+      return code
+    }
+
     cliDeps.log('')
-    cliDeps.log(
-      code === 0
-        ? '[implement] drive completed; releasing supervisor'
-        : `[implement] drive exited code=${code}; releasing supervisor`,
-    )
+    cliDeps.log('[implement] drive completed; releasing supervisor')
     return code
+  })
+}
+
+/**
+ * Block until the parent process receives SIGINT. The handler is
+ * one-shot — it removes itself before resolving so the supervisor's
+ * own SIGINT handler still fires afterwards and tears children down
+ * cleanly. Used by every "stay UP for operator recovery" branch in
+ * `implementCli` (no-planId, EXIT_PAUSED, and v0.8.7.1's drive-failure
+ * branch); extracted so the three branches share one source of truth
+ * for the wait pattern.
+ */
+async function stayUpUntilSigint(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const onSig = () => {
+      process.removeListener('SIGINT', onSig)
+      resolve()
+    }
+    process.once('SIGINT', onSig)
   })
 }

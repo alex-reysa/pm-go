@@ -8,7 +8,7 @@ import {
   type ImplementCliDeps,
 } from '../implement.js'
 import type { InstanceStateEntry, RunDeps, RunOptions } from '../run.js'
-import type { DriveDeps } from '../drive.js'
+import { EXIT_PAUSED, type DriveDeps } from '../drive.js'
 
 // ---------------------------------------------------------------------------
 // argv parsing
@@ -269,6 +269,10 @@ describe('implementCli', () => {
       },
       runSupervisor: fakeRunSupervisor as unknown as NonNullable<ImplementCliDeps['runSupervisor']>,
       drivePid: 7777,
+      // v0.8.7.1: drive returns non-zero (404 fetch → EXIT_BLOCKED)
+      // which now hits the drive-failure stay-up branch. Resolve
+      // immediately so the test doesn't hang.
+      stayUpUntilSigint: async () => undefined,
     }
 
     await implementCli(deps)
@@ -344,6 +348,8 @@ describe('implementCli', () => {
       } as DriveDeps),
       runSupervisor: fakeRunSupervisor as unknown as NonNullable<ImplementCliDeps['runSupervisor']>,
       drivePid: 7777,
+      // v0.8.7.1: same fail-open mitigation as the previous test.
+      stayUpUntilSigint: async () => undefined,
     }
 
     await implementCli(deps)
@@ -361,5 +367,134 @@ describe('implementCli', () => {
     assert.ok(labels.includes('drive'))
     // After stop, the ledger is empty.
     assert.strictEqual(stateEntries.length, 0)
+  })
+
+  // -------------------------------------------------------------------------
+  // v0.8.7.1: drive-failure fail-open. When drive returns a non-zero,
+  // non-EXIT_PAUSED exit code, implement must (a) log a recovery hint
+  // pointing at `pm-go why <plan-id>` and `pm-go drive --plan <id>`,
+  // (b) call the injected stayUpUntilSigint to block on operator
+  // intervention, (c) return drive's original exit code so the caller
+  // sees the underlying failure.
+  // -------------------------------------------------------------------------
+  it('logs recovery hints + invokes stayUpUntilSigint when drive returns non-zero', async () => {
+    let stayUpInvoked = 0
+    const planId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+
+    // Fake runSupervisor: invoke onReady with a real planId, capture
+    // its return code, simulate teardown.
+    const fakeRunSupervisor = async (
+      _o: RunOptions,
+      _d: RunDeps,
+      onReady?: (handle: {
+        planId?: string
+        apiUrl: string
+        writeInstanceState: (entry: InstanceStateEntry) => Promise<void>
+      }) => Promise<number>,
+    ): Promise<number> => {
+      return onReady!({
+        planId,
+        apiUrl: 'http://localhost:3001',
+        writeInstanceState: async () => undefined,
+      })
+    }
+
+    const logs: string[] = []
+    const deps: ImplementCliDeps = {
+      argv: ['--spec', '/abs/spec.md'],
+      cwd: '/abs/cwd',
+      monorepoRoot: '/abs/monorepo',
+      log: (l) => logs.push(l),
+      errLog: () => undefined,
+      resolve,
+      buildSupervisorDeps: () => ({} as Omit<RunDeps, 'pm' | 'monorepoRoot'>),
+      // 404 fetch makes runDrive bail with EXIT_BLOCKED (exit code 1) —
+      // a real-world non-zero non-EXIT_PAUSED case.
+      buildDriveDeps: () => ({
+        fetch: (async () =>
+          ({ ok: false, status: 404, async text() { return '' } } as unknown as Response)) as unknown as typeof globalThis.fetch,
+        now: () => 0,
+        sleep: async () => undefined,
+        log: () => undefined,
+        errLog: () => undefined,
+        prompt: async () => false,
+      } as DriveDeps),
+      runSupervisor: fakeRunSupervisor as unknown as NonNullable<ImplementCliDeps['runSupervisor']>,
+      drivePid: 9999,
+      stayUpUntilSigint: async () => {
+        stayUpInvoked++
+      },
+    }
+
+    const code = await implementCli(deps)
+
+    // Drive failed — exit code is non-zero and NOT EXIT_PAUSED.
+    assert.notStrictEqual(code, 0, 'expected non-zero drive exit')
+    assert.notStrictEqual(code, EXIT_PAUSED, 'must not be EXIT_PAUSED')
+
+    // Stay-up was invoked exactly once (the new fail-open branch).
+    assert.strictEqual(
+      stayUpInvoked,
+      1,
+      'stayUpUntilSigint must be called exactly once on drive failure',
+    )
+
+    // Recovery hints surface the diagnosis + resume commands keyed to
+    // the captured planId.
+    const allLogs = logs.join('\n')
+    assert.match(allLogs, /drive exited code=\d+/, 'must log drive exit code')
+    assert.ok(allLogs.includes('staying UP'), 'must announce stack staying up')
+    assert.ok(allLogs.includes(`pm-go why ${planId}`), 'must hint pm-go why <planId>')
+    assert.ok(
+      allLogs.includes(`pm-go drive --plan ${planId}`),
+      'must hint pm-go drive --plan <planId>',
+    )
+    assert.ok(allLogs.includes('Press Ctrl+C'), 'must mention Ctrl+C')
+    assert.ok(
+      allLogs.includes('received Ctrl+C'),
+      'must log Ctrl+C receipt after stayUpUntilSigint resolves',
+    )
+  })
+
+  it('does NOT call stayUpUntilSigint when drive returns 0 (clean path)', async () => {
+    // Inject a runSupervisor whose onReady runs against an injected
+    // drive that "succeeds". We achieve this without a runDrive seam
+    // by pre-empting onReady — the fake runSupervisor short-circuits
+    // and returns 0 directly, modelling "implement completed cleanly".
+    let stayUpInvoked = 0
+
+    const fakeRunSupervisor = async (
+      _o: RunOptions,
+      _d: RunDeps,
+      _onReady?: unknown,
+    ): Promise<number> => {
+      // Skip onReady entirely — model the "drive completed code=0,
+      // supervisor torn down" path. implementCli's onReady never runs
+      // so the new fail-open branch can't fire.
+      return 0
+    }
+
+    const deps: ImplementCliDeps = {
+      argv: ['--spec', '/abs/spec.md'],
+      cwd: '/abs/cwd',
+      monorepoRoot: '/abs/monorepo',
+      log: () => undefined,
+      errLog: () => undefined,
+      resolve,
+      buildSupervisorDeps: () => ({} as Omit<RunDeps, 'pm' | 'monorepoRoot'>),
+      buildDriveDeps: () => ({} as DriveDeps),
+      runSupervisor: fakeRunSupervisor as unknown as NonNullable<ImplementCliDeps['runSupervisor']>,
+      stayUpUntilSigint: async () => {
+        stayUpInvoked++
+      },
+    }
+
+    const code = await implementCli(deps)
+    assert.strictEqual(code, 0)
+    assert.strictEqual(
+      stayUpInvoked,
+      0,
+      'stayUpUntilSigint must NOT be called when drive returns 0',
+    )
   })
 })
