@@ -475,6 +475,11 @@ interface FakeDb {
   transaction: ReturnType<typeof vi.fn>;
   // Tracks every set() payload for later assertions.
   updateCalls: Array<{ table: string; set: Record<string, unknown> }>;
+  // Tracks every insert(...).values(payload) we observe so tests can
+  // assert that the hygiene-guard rejection projects a
+  // `task_status_changed` row onto workflow_events (alongside the
+  // observability span emitted by withSpan).
+  insertCalls: Array<{ values: Record<string, unknown> }>;
 }
 
 /**
@@ -532,10 +537,17 @@ function makeFakeDb(rows: {
       }),
     };
   });
+  const insertCalls: Array<{ values: Record<string, unknown> }> = [];
   const insert = vi.fn().mockReturnValue({
-    values: vi.fn().mockResolvedValue(undefined),
+    values: vi.fn().mockImplementation((payload: Record<string, unknown>) => {
+      insertCalls.push({ values: payload });
+      return Promise.resolve(undefined);
+    }),
     onConflictDoUpdate: vi.fn().mockReturnValue({
-      values: vi.fn().mockResolvedValue(undefined),
+      values: vi.fn().mockImplementation((payload: Record<string, unknown>) => {
+        insertCalls.push({ values: payload });
+        return Promise.resolve(undefined);
+      }),
     }),
   });
   const transaction = vi.fn().mockImplementation(async (cb: (tx: unknown) => unknown) =>
@@ -547,6 +559,7 @@ function makeFakeDb(rows: {
     insert,
     transaction,
     updateCalls,
+    insertCalls,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 }
@@ -594,11 +607,14 @@ describe("commitAgentWork hygiene guard (v0.8.6 P0)", () => {
       commitTitle: "feat(demo): demo",
     });
 
-    // 1. Typed failure surfaces back to the caller.
+    // 1. Typed failure surfaces back to the caller. `taskId` is the
+    //    resolved lease.taskId so callers can distinguish "rejected
+    //    and persisted" from the lease-missing branch covered below.
     expect(result).toEqual({
       ok: false,
       reason: IGNORED_ARTIFACT_COMMITTED,
       paths: ["node_modules/foo", "node_modules/bar/baz.js"],
+      taskId,
     });
 
     // 2. No staging or committing happened — exec was only called once,
@@ -626,6 +642,82 @@ describe("commitAgentWork hygiene guard (v0.8.6 P0)", () => {
       (c) => c.set.status === "blocked",
     );
     expect(blockedUpdate, "expected a plan_tasks update with status=blocked").toBeDefined();
+
+    // 5. The running→blocked transition emits a task_status_changed
+    //    row on workflow_events. Operators rely on this projection
+    //    to see the rejection on the SSE stream — the hygiene-guard
+    //    branch has to stay symmetrical with updateTaskStatus.
+    const statusChange = db.insertCalls.find(
+      (c) => c.values.kind === "task_status_changed",
+    );
+    expect(
+      statusChange,
+      "expected workflow_events.task_status_changed for running→blocked",
+    ).toBeDefined();
+    expect(statusChange?.values.taskId).toBe(taskId);
+    expect(statusChange?.values.payload).toMatchObject({
+      previousStatus: "running",
+      nextStatus: "blocked",
+    });
+  });
+
+  it("logs a warn and returns taskId=null when the worktree lease lookup misses", async () => {
+    const checkIgnore = vi
+      .fn()
+      .mockResolvedValue(["node_modules/torn"]);
+    const exec = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: "?? node_modules/torn\n", stderr: "" });
+    const db = makeFakeDb({
+      // No matching lease row — simulates a torn lease / racing GC.
+      leaseRows: [],
+      agentRunRows: [],
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      const acts = createTaskExecutionActivities({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        db: db as any,
+        implementerRunner: {
+          run: async () => {
+            throw new Error("not used in this test");
+          },
+        },
+        repoRoot: "/tmp/repo",
+        worktreeRoot: "/tmp/worktrees",
+        checkIgnore,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        exec: exec as any,
+      });
+
+      const result = await acts.commitAgentWork({
+        worktreePath,
+        taskSlug: "demo",
+        commitTitle: "feat(demo): demo",
+      });
+
+      // Typed failure still surfaces, but with taskId=null so callers
+      // can detect the partial-failure path. The hygiene rule held —
+      // no commit was attempted — but no DB row was stamped either.
+      expect(result).toEqual({
+        ok: false,
+        reason: IGNORED_ARTIFACT_COMMITTED,
+        paths: ["node_modules/torn"],
+        taskId: null,
+      });
+
+      // No update touched plan_tasks or agent_runs (lease missing).
+      expect(db.updateCalls).toEqual([]);
+
+      // Operator-facing diagnostic so the gap doesn't go silent.
+      expect(warn).toHaveBeenCalled();
+      const warnMsg = (warn.mock.calls[0]?.[0] ?? "") as string;
+      expect(warnMsg).toContain("worktree_leases lookup");
+      expect(warnMsg).toContain("node_modules/torn");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("preserves stub-runtime e2e behavior when check-ignore returns empty", async () => {

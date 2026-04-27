@@ -46,10 +46,29 @@ export type IgnoredArtifactCommitted = typeof IGNORED_ARTIFACT_COMMITTED;
  * widen it here so the hygiene guard can surface a typed rejection
  * without throwing — keeps Temporal retries off the hot path for an
  * authored-content failure.
+ *
+ * `taskId` on the failure variant disambiguates two operationally
+ * distinct outcomes that both return `ok: false`:
+ *   - `taskId: string`  — the activity successfully looked up the
+ *                          worktree lease and wrote `plan_tasks.status
+ *                          = 'blocked'` plus the offending paths on the
+ *                          `agent_runs.errorReason` column.
+ *   - `taskId: null`    — the lease lookup MISSED (torn lease, racing
+ *                          GC). The activity still rejected the commit
+ *                          so the hygiene rule held, but no DB rows
+ *                          were stamped. Callers that care about the
+ *                          DB-write contract from AC-1 should treat
+ *                          this as a partial failure and surface the
+ *                          discrepancy. The activity also logs a warn.
  */
 export type CommitAgentWorkResult =
   | { ok: true; sha?: string }
-  | { ok: false; reason: IgnoredArtifactCommitted; paths: string[] };
+  | {
+      ok: false;
+      reason: IgnoredArtifactCommitted;
+      paths: string[];
+      taskId: string | null;
+    };
 
 /**
  * Injectable signature used by the hygiene guard. Default
@@ -209,52 +228,16 @@ export function createTaskExecutionActivities(
       // sets `blocked` directly on the row; the workflow's later
       // happy-path or catch-arm transitions must not silently override
       // it. `blocked → blocked` stays a no-op via the prev===next
-      // event check below.
+      // event check inside `writeStatusTransitionWithEvent`.
       if (prev.status === "blocked" && dbStatus !== "blocked") {
         return;
       }
-      const sink = createSpanWriter({
-        db: deps.db,
-        planId: prev.planId,
-      }).writeSpan;
-      await withSpan(
+      await writeStatusTransitionWithEvent(
+        deps.db,
+        input.taskId,
+        prev,
+        dbStatus,
         "worker.activities.task-execution.updateTaskStatus",
-        {
-          planId: prev.planId,
-          phaseId: prev.phaseId,
-          taskId: input.taskId,
-          previousStatus: prev.status,
-          nextStatus: dbStatus,
-        },
-        async () => {
-          await deps.db
-            .update(planTasks)
-            .set({ status: dbStatus })
-            .where(eq(planTasks.id, input.taskId));
-          if (prev.status !== dbStatus) {
-            try {
-              await deps.db.insert(workflowEvents).values({
-                id: randomUUID(),
-                planId: prev.planId,
-                phaseId: prev.phaseId,
-                taskId: input.taskId,
-                kind: "task_status_changed",
-                payload: {
-                  previousStatus: prev.status,
-                  nextStatus: dbStatus,
-                },
-                createdAt: new Date().toISOString(),
-              });
-            } catch (err) {
-              console.warn(
-                `[events] task_status_changed emit failed (taskId=${input.taskId}): ${
-                  err instanceof Error ? err.message : String(err)
-                }`,
-              );
-            }
-          }
-        },
-        { sink },
       );
     },
 
@@ -299,12 +282,31 @@ export function createTaskExecutionActivities(
      *
      *   1. Persists the offending repo-relative paths on the agent
      *      run record (`agent_runs.errorReason`).
-     *   2. Stamps the task `blocked` directly. The workflow's
-     *      `updateTaskStatus` honors the sticky-blocked guard, so the
-     *      catch-arm `failed` transition becomes a no-op.
+     *   2. Stamps the task `blocked` directly via the same
+     *      status-transition helper that `updateTaskStatus` uses, so
+     *      the running→blocked move emits a `task_status_changed`
+     *      row on `workflow_events` and records an observability
+     *      span. Operators see the rejection on the SSE stream and
+     *      in trace tools, just like every other status transition.
      *   3. Returns `{ ok: false, reason: IGNORED_ARTIFACT_COMMITTED,
-     *      paths }` so callers (and tests) can distinguish "nothing
-     *      to commit" from "rejected on hygiene".
+     *      paths, taskId }` so callers (and tests) can distinguish
+     *      "nothing to commit" from "rejected on hygiene", and within
+     *      the rejection branch can distinguish "rejected and
+     *      persisted" (taskId !== null) from "rejected but lease was
+     *      missing, no DB write" (taskId === null).
+     *
+     * Workflow-side consumption (FOLLOW-UP, out of fileScope here):
+     * the `TaskExecutionWorkflow` proxy still types this activity as
+     * `Promise<string | undefined>` (legacy shape) and discards the
+     * return value at the call site. The durable DB state is correct
+     * regardless — `plan_tasks.status='blocked'` is written before
+     * this activity returns, and the sticky-blocked guard in
+     * `updateTaskStatus` prevents the catch-arm `failed` transition
+     * from clobbering it. The follow-up should bring the workflow
+     * file into scope and branch on `result.ok === false` to
+     * short-circuit `diffWorktreeAgainstScope` and the small-task
+     * fast path so the workflow's *return value* and the
+     * `policy_decisions` audit trail line up with the persisted row.
      *
      * On the happy path the legacy behavior is preserved: stage, try
      * to commit, treat "nothing to commit" as `{ ok: true }` (no
@@ -331,7 +333,7 @@ export function createTaskExecutionActivities(
         stagedPaths,
       );
       if (ignoredPaths.length > 0) {
-        await persistIgnoredArtifactBlock(
+        const taskId = await persistIgnoredArtifactBlock(
           deps.db,
           input.worktreePath,
           ignoredPaths,
@@ -340,6 +342,7 @@ export function createTaskExecutionActivities(
           ok: false,
           reason: IGNORED_ARTIFACT_COMMITTED,
           paths: ignoredPaths,
+          taskId,
         };
       }
 
@@ -523,36 +526,148 @@ function parseCheckIgnoreOutput(stdout: string): string[] {
  * lease, task, or agent run have been GC'd between the implementer
  * commit and this guard, we still return cleanly so the activity
  * surfaces the typed failure to the workflow.
+ *
+ * Returns the resolved `taskId` (or `null` when the lease lookup
+ * misses — see the warn() below). Callers surface this through the
+ * typed failure result so consumers can distinguish "rejected and
+ * persisted" from "rejected but no DB write happened".
+ *
+ * The `running → blocked` transition flows through the same
+ * `writeStatusTransitionWithEvent` helper that `updateTaskStatus`
+ * uses, so the hygiene-guard rejection emits a `task_status_changed`
+ * workflow_events row + an observability span — both channels
+ * operators rely on for status-change visibility stay in lockstep.
  */
 async function persistIgnoredArtifactBlock(
   db: PmGoDb,
   worktreePath: string,
   ignoredPaths: string[],
-): Promise<void> {
+): Promise<string | null> {
   const [lease] = await db
     .select({ taskId: worktreeLeases.taskId })
     .from(worktreeLeases)
     .where(eq(worktreeLeases.worktreePath, worktreePath))
     .limit(1);
   const taskId = lease?.taskId ?? null;
-  if (taskId !== null) {
-    const [run] = await db
-      .select({ id: agentRuns.id })
-      .from(agentRuns)
-      .where(eq(agentRuns.taskId, taskId))
-      .orderBy(desc(agentRuns.startedAt))
-      .limit(1);
-    if (run) {
-      await db
-        .update(agentRuns)
-        .set({
-          errorReason: `${IGNORED_ARTIFACT_COMMITTED}: ${ignoredPaths.join(",")}`,
-        })
-        .where(eq(agentRuns.id, run.id));
-    }
+  if (taskId === null) {
+    // Lease missing or torn — emit a warn so the operator can
+    // correlate the rejection with the DB-write gap. The activity
+    // still returns the typed failure so the hygiene rule held.
+    console.warn(
+      `[commitAgentWork] hygiene rejection but worktree_leases lookup ` +
+        `missed (worktreePath=${worktreePath}); ` +
+        `plan_tasks.status and agent_runs.errorReason were NOT stamped. ` +
+        `ignoredPaths=${ignoredPaths.join(",")}`,
+    );
+    return null;
+  }
+  const [run] = await db
+    .select({ id: agentRuns.id })
+    .from(agentRuns)
+    .where(eq(agentRuns.taskId, taskId))
+    .orderBy(desc(agentRuns.startedAt))
+    .limit(1);
+  if (run) {
+    await db
+      .update(agentRuns)
+      .set({
+        errorReason: `${IGNORED_ARTIFACT_COMMITTED}: ${ignoredPaths.join(",")}`,
+      })
+      .where(eq(agentRuns.id, run.id));
+  }
+  // Read prev status + scope (planId, phaseId) for the event payload
+  // and span attributes. Mirror updateTaskStatus's missing-row
+  // handling: if the row vanished between the lease lookup and now
+  // (very unlikely, but cheap to handle) just stamp the status and
+  // skip the event.
+  const [prev] = await db
+    .select({
+      status: planTasks.status,
+      planId: planTasks.planId,
+      phaseId: planTasks.phaseId,
+    })
+    .from(planTasks)
+    .where(eq(planTasks.id, taskId))
+    .limit(1);
+  if (!prev) {
     await db
       .update(planTasks)
       .set({ status: "blocked" })
       .where(eq(planTasks.id, taskId));
+    return taskId;
   }
+  await writeStatusTransitionWithEvent(
+    db,
+    taskId,
+    prev,
+    "blocked",
+    "worker.activities.task-execution.commitAgentWork.block",
+  );
+  return taskId;
+}
+
+/**
+ * Shared helper for status transitions that need both the durable
+ * `plan_tasks.status` write and the read-model side effects
+ * (`workflow_events.task_status_changed` + observability span).
+ *
+ * Two callers share this: `updateTaskStatus` (the normal transition
+ * path that the workflow drives) and `persistIgnoredArtifactBlock`
+ * (the hygiene-guard rejection branch in `commitAgentWork`). Keeping
+ * a single helper means every status transition projects onto the
+ * same SSE stream and the same span surface — operators don't have
+ * to remember which transitions are visible and which aren't.
+ *
+ * The event-emit is best-effort: a failed insert is logged as a warn
+ * so the underlying status write still wins. Callers are responsible
+ * for any pre-checks (like `updateTaskStatus`'s sticky-blocked guard)
+ * before invoking this helper.
+ */
+async function writeStatusTransitionWithEvent(
+  db: PmGoDb,
+  taskId: string,
+  prev: { status: TaskStatus; planId: string; phaseId: string },
+  nextStatus: TaskStatus,
+  spanName: string,
+): Promise<void> {
+  const sink = createSpanWriter({ db, planId: prev.planId }).writeSpan;
+  await withSpan(
+    spanName,
+    {
+      planId: prev.planId,
+      phaseId: prev.phaseId,
+      taskId,
+      previousStatus: prev.status,
+      nextStatus,
+    },
+    async () => {
+      await db
+        .update(planTasks)
+        .set({ status: nextStatus })
+        .where(eq(planTasks.id, taskId));
+      if (prev.status !== nextStatus) {
+        try {
+          await db.insert(workflowEvents).values({
+            id: randomUUID(),
+            planId: prev.planId,
+            phaseId: prev.phaseId,
+            taskId,
+            kind: "task_status_changed",
+            payload: {
+              previousStatus: prev.status,
+              nextStatus,
+            },
+            createdAt: new Date().toISOString(),
+          });
+        } catch (err) {
+          console.warn(
+            `[events] task_status_changed emit failed (taskId=${taskId}): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+    },
+    { sink },
+  );
 }
