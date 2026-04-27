@@ -372,16 +372,19 @@ async function probePostgresContainer(deps: InfraProbeDeps): Promise<InfraProbe>
 
 async function probeTemporalContainer(deps: InfraProbeDeps): Promise<InfraProbe> {
   try {
+    // `$(hostname -i):7233` resolves at runtime to the temporal
+    // container's bridge IP (e.g. 172.21.0.3) — that's where the
+    // server actually binds; `localhost` / `127.0.0.1` inside the
+    // container are refused. Same fix in apps/cli/src/status.ts.
+    // `sh -c` is required for shell substitution.
     const r = await deps.exec('docker', [
       'compose',
       'exec',
       '-T',
       'temporal',
-      'tctl',
-      '--ad',
-      'localhost:7233',
-      'cluster',
-      'health',
+      'sh',
+      '-c',
+      'tctl --ad "$(hostname -i):7233" cluster health',
     ])
     if (r.code === 0) {
       return { name: INFRA_PROBE_NAMES.temporalContainer, status: 'ok' }
