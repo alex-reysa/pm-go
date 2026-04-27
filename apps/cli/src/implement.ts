@@ -25,7 +25,11 @@
  * the index.ts dispatcher wires up.
  */
 
-import { runSupervisor, type RunOptions, type RunDeps } from './run.js'
+import {
+  runSupervisor as runSupervisorImpl,
+  type RunOptions,
+  type RunDeps,
+} from './run.js'
 import {
   runDrive,
   EXIT_PAUSED,
@@ -236,6 +240,25 @@ export interface ImplementCliDeps {
   buildDriveDeps: () => DriveDeps
   /** Optional dotenv loader, mirrors run.ts. */
   applyDotenv?: (path: string) => Promise<{ loaded: boolean; applied: string[]; skipped: string[]; warnings: string[] }>
+  /**
+   * Atomic remover for the per-instance state file (mirrors run.ts).
+   * Threaded into the process-manager so the supervisor's teardown
+   * also clears the `drive` entry implement appended.
+   */
+  removeInstanceState?: () => Promise<void>
+  /**
+   * Test seam: replace the production runSupervisor with a fake.
+   * Defaults to the real implementation when omitted. Lets unit tests
+   * drive implementCli's onReady path without spinning up Docker /
+   * the API / the worker.
+   */
+  runSupervisor?: typeof runSupervisorImpl
+  /**
+   * Test seam: pid recorded in the `drive` state entry. Defaults to
+   * `process.pid` when omitted. Pinning it lets tests assert exact
+   * entries instead of `pid: matchesNumber()`.
+   */
+  drivePid?: number
 }
 
 /**
@@ -274,6 +297,13 @@ export async function implementCli(cliDeps: ImplementCliDeps): Promise<number> {
   const pm = createProcessManager({
     process,
     log: (l) => cliDeps.errLog(l),
+    // Mirror run.ts: the same removeInstanceState the buildSupervisorDeps
+    // half uses for write is wired into the PM so SIGINT / a clean
+    // drive-completion stop deletes the state file along with the
+    // children.
+    ...(cliDeps.removeInstanceState
+      ? { removeInstanceState: cliDeps.removeInstanceState }
+      : {}),
   })
   const supervisorDeps: RunDeps = {
     ...cliDeps.buildSupervisorDeps(pm),
@@ -296,6 +326,10 @@ export async function implementCli(cliDeps: ImplementCliDeps): Promise<number> {
 
   const driveDeps = cliDeps.buildDriveDeps()
 
+  // Test seam: callers can substitute a fake runSupervisor. Defaults
+  // to the real implementation imported above.
+  const runSupervisor = cliDeps.runSupervisor ?? runSupervisorImpl
+
   return runSupervisor(runOptions, supervisorDeps, async (handle) => {
     if (!handle.planId) {
       cliDeps.errLog(
@@ -304,6 +338,15 @@ export async function implementCli(cliDeps: ImplementCliDeps): Promise<number> {
       )
       return 1
     }
+
+    // Extend the supervisor's per-instance state file with a `drive`
+    // entry now that we're about to start running the drive loop.
+    // `pm-go ps` will then report drive alongside supervisor / worker
+    // / api; the process-manager removes the whole file atomically on
+    // teardown, so the entry never outlives this process.
+    const drivePid = cliDeps.drivePid ?? process.pid
+    await handle.writeInstanceState({ label: 'drive', pid: drivePid })
+
     cliDeps.log('')
     cliDeps.log(
       `[implement] driving plan ${handle.planId} (--approve ${parsed.options.approve})`,

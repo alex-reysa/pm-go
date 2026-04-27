@@ -24,6 +24,17 @@ export interface ProcessManagerDeps {
   process: Pick<NodeJS.Process, 'on' | 'off' | 'kill' | 'pid'>
   /** Output sink — defaults to console.error in production. */
   log: (line: string) => void
+  /**
+   * Optional teardown hook that removes the per-instance state file
+   * the supervisor wrote on boot (the registry of supervisor + worker
+   * + api + drive pids). Called exactly once during stop/shutdown,
+   * AFTER children have been signalled, so a crash mid-teardown still
+   * leaves a state file pointing at the actual children rather than
+   * a half-removed entry. Errors are swallowed: leaving a stale file
+   * is preferable to escalating a benign IO failure into a teardown
+   * abort.
+   */
+  removeInstanceState?: () => Promise<void>
 }
 
 /**
@@ -95,6 +106,21 @@ export function createProcessManager(
         } catch {
           // already gone
         }
+      }
+    }
+    // Remove the per-instance state file once children are gone (or
+    // signalled). The implementation is expected to be atomic — write
+    // to a tmp file then rename, or `rm` the single canonical path.
+    // We swallow errors so a flaky FS doesn't block the supervisor's
+    // exit path; a stale state file is recoverable, a stuck shutdown
+    // is not.
+    if (deps.removeInstanceState) {
+      try {
+        await deps.removeInstanceState()
+      } catch (err) {
+        deps.log(
+          `[pm-go] removeInstanceState failed (continuing teardown): ${err instanceof Error ? err.message : String(err)}`,
+        )
       }
     }
   }

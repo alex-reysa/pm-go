@@ -65,6 +65,68 @@ export interface SupervisorReadyHandle {
   planId?: string
   /** API base URL (e.g. http://localhost:3001). */
   apiUrl: string
+  /**
+   * Append a child entry to the per-instance state file. Reused by
+   * `pm-go implement` to record the in-process drive worker (label
+   * `'drive'`) under the same registry the supervisor populated for
+   * worker + api + the supervisor itself. Pruning happens inside
+   * `process-manager`'s shutdown path so the file vanishes atomically
+   * with the children.
+   */
+  writeInstanceState: (entry: InstanceStateEntry) => Promise<void>
+}
+
+/**
+ * Roles tracked by the per-instance state file. The supervisor writes
+ * `supervisor`/`worker`/`api`; `pm-go implement` extends with `drive`.
+ * Anything else is a programming bug — keep this enum tight so a typo
+ * shows up at the type level rather than landing as garbage on disk.
+ */
+export type InstanceStateLabel = 'supervisor' | 'worker' | 'api' | 'drive'
+
+export interface InstanceStateEntry {
+  /** Role of the process this entry represents. */
+  label: InstanceStateLabel
+  /** OS PID of the process. */
+  pid: number
+}
+
+/**
+ * Per-port conflict report produced by `RunDeps.checkPorts`. `owner`
+ * distinguishes "this is OUR worker/api still hanging around from a
+ * crashed prior run" (in which case `pm-go recover` is the answer)
+ * from "another process owns this" (in which case we MUST refuse to
+ * start, because we'd otherwise stomp on a user's local stack).
+ */
+export interface PortConflict {
+  port: number
+  pid: number | null
+  owner: 'pm-go' | 'unknown'
+}
+
+export type PortPreflightResult =
+  | { ok: true }
+  | { ok: false; conflicts: PortConflict[] }
+
+/**
+ * Multiline remediation string emitted when port pre-flight detects a
+ * non-pm-go process holding one of the ports we need. Exported so the
+ * tests can assert exact equality against it — keeps the wording
+ * pinned to the same string operators will paste into a bug report.
+ */
+export function formatPortConflictError(conflicts: readonly PortConflict[]): string {
+  const lines = conflicts
+    .filter((c) => c.owner !== 'pm-go')
+    .map(
+      (c) =>
+        `  - port ${c.port} is held by pid ${c.pid ?? 'unknown'} (not owned by pm-go)`,
+    )
+  return [
+    '[pm-go] port preflight failed: cannot start because the following ports are in use:',
+    ...lines,
+    '[pm-go] Stop the conflicting process(es) or rerun with --port <n> for the API,',
+    '[pm-go] then retry. (Run `pm-go ps` to inspect any pm-go-owned processes.)',
+  ].join('\n')
 }
 
 export interface ParsedArgv {
@@ -265,6 +327,24 @@ export interface RunDeps {
   pm: ProcessManager
   /** Repo root the supervisor itself was launched from (where pnpm runs). */
   monorepoRoot: string
+  /**
+   * Pre-flight: check whether the supervisor's required host ports
+   * (postgres 5432, temporal 7233, temporal-ui 8233, api `apiPort`)
+   * are free. Called BEFORE `docker compose up` so a colliding local
+   * stack (the canonical x402all-on-5432 footgun) is rejected loudly
+   * instead of silently destabilizing Docker.
+   */
+  checkPorts: (ports: readonly number[]) => Promise<PortPreflightResult>
+  /**
+   * Append an entry to the per-instance state file written under
+   * `~/.pm-go/instances/<name>/state.json`. The supervisor records its
+   * own pid and the worker + api child pids; `pm-go implement` adds a
+   * `drive` entry. Removed atomically by the process-manager during
+   * shutdown / stop so a stale file never points at a dead pid.
+   */
+  writeInstanceState: (entry: InstanceStateEntry) => Promise<void>
+  /** Supervisor's own pid — injected so tests can pin it deterministically. */
+  processPid: number
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +410,36 @@ export async function runSupervisor(
 
   // 1. Docker stack.
   if (!options.skipDocker) {
+    // Pre-flight host ports BEFORE we run any docker command. The
+    // canonical regression we're guarding: a target repo's local
+    // stack (e.g. x402all start.sh) already binds host postgres
+    // 5432, then `docker compose up` here destabilizes Docker. We'd
+    // rather refuse to start with an actionable message than chase a
+    // hung Docker daemon afterwards.
+    const requiredPorts: readonly number[] = [
+      5432,
+      7233,
+      8233,
+      options.apiPort,
+    ]
+    const preflight = await deps.checkPorts(requiredPorts)
+    if (!preflight.ok) {
+      const foreign = preflight.conflicts.filter((c) => c.owner !== 'pm-go')
+      if (foreign.length > 0) {
+        // Print the documented remediation and bail BEFORE touching
+        // docker — colliding starts are exactly what we promised the
+        // operator we'd avoid.
+        errLog(formatPortConflictError(foreign))
+        return 1
+      }
+      // Every conflicting port was held by a pm-go-owned process.
+      // That's recoverable territory (`pm-go recover`); log it but
+      // continue so the supervisor can adopt the existing stack.
+      log(
+        `[pm-go] port preflight: ${preflight.conflicts.length} pm-go-owned port(s) already bound — continuing.`,
+      )
+    }
+
     log('[1/6] starting Docker stack (postgres + temporal)...')
     const dockerCheck = await deps.exec('docker', ['ps', '--format', '{{.Names}}'], {
       cwd: deps.monorepoRoot,
@@ -488,6 +598,20 @@ export async function runSupervisor(
     return 1
   }
 
+  // Persist the per-instance process registry now that the API is
+  // confirmed live. We deliberately wait until AFTER httpReady so
+  // partial-startup crashes don't leave a half-populated state file
+  // around for `pm-go ps` to misreport. Order: supervisor first
+  // (guaranteed pid), then worker, then api. The process-manager will
+  // remove the file atomically during stop/shutdown.
+  await deps.writeInstanceState({ label: 'supervisor', pid: deps.processPid })
+  if (typeof worker.proc.pid === 'number') {
+    await deps.writeInstanceState({ label: 'worker', pid: worker.proc.pid })
+  }
+  if (typeof api.proc.pid === 'number') {
+    await deps.writeInstanceState({ label: 'api', pid: api.proc.pid })
+  }
+
   // 6. Optional: submit spec + start plan.
   let planId: string | undefined
   if (options.specPath) {
@@ -517,7 +641,14 @@ export async function runSupervisor(
     const apiUrl = `http://localhost:${options.apiPort}`
     let exitCode = 0
     try {
-      exitCode = await onReady({ ...(planId !== undefined ? { planId } : {}), apiUrl })
+      exitCode = await onReady({
+        ...(planId !== undefined ? { planId } : {}),
+        apiUrl,
+        // Forward writeInstanceState so callers (`pm-go implement`)
+        // can extend the same registry the supervisor populated above
+        // — e.g. with a `drive` entry for the in-process drive worker.
+        writeInstanceState: deps.writeInstanceState,
+      })
     } catch (err) {
       errLog(
         `[pm-go] onReady callback threw: ${err instanceof Error ? err.message : String(err)}`,
@@ -780,6 +911,14 @@ export interface RunCliDeps {
    * orchestration deterministic.
    */
   applyDotenv?: (path: string) => Promise<ApplyDotenvResult>
+  /**
+   * Atomic remover for the per-instance state file. Threaded into the
+   * process-manager so SIGINT / SIGTERM (or a successful `pm.stop`)
+   * deletes the state file in the same step that kills the children.
+   * Pairs with `RunDeps.writeInstanceState`; both come from the same
+   * filesystem-backed implementation in `index.ts`.
+   */
+  removeInstanceState?: () => Promise<void>
 }
 
 /**
@@ -833,6 +972,12 @@ export async function runCli(cliDeps: RunCliDeps): Promise<number> {
   const pm = createProcessManager({
     process,
     log: (l) => cliDeps.errLog(l),
+    // Wire the same removeInstanceState the buildSupervisorDeps half
+    // of the cliDeps uses for write — keeps the create/remove pair
+    // pointing at the same canonical state file.
+    ...(cliDeps.removeInstanceState
+      ? { removeInstanceState: cliDeps.removeInstanceState }
+      : {}),
   })
   const supervisorDeps: RunDeps = {
     ...cliDeps.buildSupervisorDeps(pm),
