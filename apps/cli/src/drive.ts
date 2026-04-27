@@ -242,12 +242,16 @@ export interface DriveTimings {
 
 export const DEFAULT_TIMINGS: DriveTimings = {
   pollIntervalMs: 1_000,
-  taskRunTimeoutMs: 15 * 60_000, // 15 min — agent might take a while
-  taskReviewTimeoutMs: 10 * 60_000,
-  taskFixTimeoutMs: 15 * 60_000,
-  phaseIntegrateTimeoutMs: 10 * 60_000,
-  phaseAuditTimeoutMs: 10 * 60_000,
-  planCompleteTimeoutMs: 10 * 60_000,
+  // Bumped to align with the worker's 60m runImplementer / 30m
+  // runReviewer activity StartToClose budgets. With the new $15
+  // implementer / $5 reviewer caps, large tasks routinely take 30-50
+  // minutes; the prior 15m drive timeout abandoned a still-running task.
+  taskRunTimeoutMs: 75 * 60_000,
+  taskReviewTimeoutMs: 35 * 60_000,
+  taskFixTimeoutMs: 75 * 60_000,
+  phaseIntegrateTimeoutMs: 20 * 60_000,
+  phaseAuditTimeoutMs: 35 * 60_000,
+  planCompleteTimeoutMs: 35 * 60_000,
 }
 
 // ---------------------------------------------------------------------------

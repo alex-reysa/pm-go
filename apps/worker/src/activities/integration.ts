@@ -317,6 +317,15 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
     }): Promise<{ passed: boolean; logs: string[] }> {
       const logs: string[] = [];
 
+      // Operator escape hatch for polyglot repos where the integration
+      // step's pnpm-centric install + repo-discovered testCommands cannot
+      // reasonably run inside the integration worktree (e.g. tests need
+      // pip-installed Python deps that pm-go doesn't manage). Real
+      // validation runs in CI; pm-go's per-merge gate becomes a no-op.
+      if (process.env.PM_GO_INTEGRATION_SKIP_VALIDATE === "1") {
+        return { passed: true, logs: [] };
+      }
+
       // Integration worktrees are fresh git checkouts — node_modules and
       // workspace-package dist/ folders are never populated by the
       // worktree create step. If the project uses pnpm and any test
@@ -341,8 +350,17 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
           // the next per-task merge, so this lenience does not pollute
           // the integration branch.
           "pnpm install --no-frozen-lockfile --prefer-offline",
-          "pnpm -r --if-present build",
         ];
+        // Repos with heavy production builds (e.g. Next.js apps that
+        // prerender thousands of pages) blow disk and time during
+        // integration. The recursive build is only useful if downstream
+        // testCommands consume `dist/` from sibling workspace packages.
+        // Operators set PM_GO_INTEGRATION_SKIP_RECURSIVE_BUILD=1 to skip
+        // it; install still runs so typecheck/test commands that need
+        // node_modules keep working.
+        if (process.env.PM_GO_INTEGRATION_SKIP_RECURSIVE_BUILD !== "1") {
+          preSteps.push("pnpm -r --if-present build");
+        }
         for (const step of preSteps) {
           try {
             const { stdout, stderr } = await execFileAsync(

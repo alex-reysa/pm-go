@@ -162,7 +162,9 @@ const {
   evaluateBudgetGateActivity,
   persistPolicyDecision,
 } = proxyActivities<TaskExecutionActivityInterface>({
-  startToCloseTimeout: "15 minutes",
+  // Bumped from 15m: at the raised $15 implementer budget, large tasks
+  // (API + ranking pipeline + logging) run 20-40+ min before settling.
+  startToCloseTimeout: "60 minutes",
   retry: temporalRetryFromConfig(retryPolicyFor("TaskExecutionWorkflow")),
 });
 

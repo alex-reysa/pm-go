@@ -63,7 +63,7 @@ const {
   commitAgentWork,
   diffWorktreeAgainstScope,
 } = proxyActivities<TaskFixActivityInterface>({
-  startToCloseTimeout: "15 minutes",
+  startToCloseTimeout: "60 minutes",
   retry: temporalRetryFromConfig(retryPolicyFor("TaskFixWorkflow")),
 });
 

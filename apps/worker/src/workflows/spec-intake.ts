@@ -48,8 +48,16 @@ interface SpecToPlanActivities {
 // retry until the workflow times out 5+ minutes later. Three attempts
 // with bounded backoff fails fast enough to surface real problems while
 // still tolerating brief connection blips.
+// `generatePlan` is the Opus planning call. Real specs (>10 KB) regularly
+// take 8-15 minutes; with retries the previous 5-minute proxy budget hit
+// the workflow ceiling. Give it a 30-minute window of its own. Cheap I/O
+// activities keep the tight 5-minute budget so a stuck DB write fails fast.
+const { generatePlan } = proxyActivities<SpecToPlanActivities>({
+  startToCloseTimeout: "30 minutes",
+  retry: temporalRetryFromConfig(retryPolicyFor("SpecToPlanWorkflow")),
+});
+
 const {
-  generatePlan,
   auditPlanActivity,
   persistAgentRun,
   persistPlan,

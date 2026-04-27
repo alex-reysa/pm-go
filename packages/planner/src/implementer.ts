@@ -56,8 +56,14 @@ export async function runImplementer(
   const systemPrompt = loadPrompt("implementer", 1);
 
   const model = input.model ?? "claude-opus-4-7";
-  const budgetUsdCap = input.budgetUsdCap ?? 2.0;
-  const maxTurnsCap = input.maxTurnsCap ?? 60;
+  // Default raised from 2.0 to 15.0 — large multi-file tasks (e.g. an
+  // API + ranking pipeline + logging) routinely need more than $2 of
+  // Opus work. Operators tighten via `IMPLEMENTER_BUDGET_USD` env.
+  const budgetUsdCap = input.budgetUsdCap ?? 15.0;
+  // Raised from 60 — multi-surface tasks (e.g. CLI + MCP + 5 tools + tests)
+  // exceed 60 turns even with the bumped $15 budget. 120 keeps a hard
+  // ceiling but covers every Plan B / Plan A task seen so far.
+  const maxTurnsCap = input.maxTurnsCap ?? 120;
 
   const result = await input.runner.run({
     task: input.task,

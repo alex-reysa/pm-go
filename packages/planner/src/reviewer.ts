@@ -60,7 +60,9 @@ export async function runReviewer(
   const systemPrompt = loadPrompt("reviewer", 1);
 
   const model = input.model ?? "claude-opus-4-7";
-  const budgetUsdCap = input.budgetUsdCap ?? 1.0;
+  // Raised from 1.0 — Opus reviews of large diffs (e.g. ranking
+  // pipelines or migration sets) regularly exceed $1 of work.
+  const budgetUsdCap = input.budgetUsdCap ?? 5.0;
   const maxTurnsCap = input.maxTurnsCap ?? 40;
 
   return input.runner.run({

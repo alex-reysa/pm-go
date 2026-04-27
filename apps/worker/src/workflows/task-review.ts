@@ -66,7 +66,7 @@ const {
   persistReviewReport,
   persistPolicyDecision,
 } = proxyActivities<TaskReviewActivityInterface>({
-  startToCloseTimeout: "15 minutes",
+  startToCloseTimeout: "30 minutes",
   retry: temporalRetryFromConfig(retryPolicyFor("TaskReviewWorkflow")),
 });
 

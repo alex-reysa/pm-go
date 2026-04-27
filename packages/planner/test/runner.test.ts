@@ -45,7 +45,7 @@ describe("runPlanner", () => {
     expect(result.plan).toBe(planFixture);
     expect(result.agentRun.role).toBe("planner");
     expect(result.agentRun.status).toBe("completed");
-    expect(result.agentRun.model).toBe("claude-sonnet-4-6");
+    expect(result.agentRun.model).toBe("claude-opus-4-7");
     expect(result.agentRun.promptVersion).toBe("planner@1");
   });
 

@@ -85,7 +85,7 @@ describe("runImplementer", () => {
 
     expect(result.agentRun.role).toBe("implementer");
     expect(result.agentRun.status).toBe("completed");
-    expect(result.agentRun.model).toBe("claude-sonnet-4-6");
+    expect(result.agentRun.model).toBe("claude-opus-4-7");
     expect(result.agentRun.promptVersion).toBe("implementer@1");
     expect(result.finalCommitSha).toMatch(/^[0-9a-f]{40}$/);
   });
@@ -126,9 +126,9 @@ describe("runImplementer", () => {
     });
 
     expect(captured.input).toBeDefined();
-    expect(captured.input!.model).toBe("claude-sonnet-4-6");
-    expect(captured.input!.budgetUsdCap).toBe(2.0);
-    expect(captured.input!.maxTurnsCap).toBe(60);
+    expect(captured.input!.model).toBe("claude-opus-4-7");
+    expect(captured.input!.budgetUsdCap).toBe(15.0);
+    expect(captured.input!.maxTurnsCap).toBe(120);
     expect(captured.input!.worktreePath).toBe(worktree);
     expect(captured.input!.baseSha).toBe("deadbeef");
   });
