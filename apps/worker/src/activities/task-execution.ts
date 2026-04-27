@@ -1,15 +1,21 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 
 import type {
   AgentRun,
   Task,
   TaskStatus,
 } from "@pm-go/contracts";
-import { planTasks, workflowEvents, type PmGoDb } from "@pm-go/db";
+import {
+  agentRuns,
+  planTasks,
+  workflowEvents,
+  worktreeLeases,
+  type PmGoDb,
+} from "@pm-go/db";
 import type {
   ImplementerReviewFeedback,
   ImplementerRunner,
@@ -19,6 +25,43 @@ import { createSpanWriter, withSpan } from "@pm-go/observability";
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * v0.8.6 P0 hygiene-guard symbol. The `commitAgentWork` activity
+ * surfaces this string both as the discriminated `reason` on a typed
+ * failure and as the prefix of the `agent_runs.errorReason` text it
+ * persists. Reviewers, the TUI, and the failure-mode runbook all key
+ * off the same literal so a single grep finds every site.
+ *
+ * Phase 0 of the v0.8.6 plan owns the canonical declaration; activity
+ * code re-exports it as the source of truth until the symbol moves to
+ * `@pm-go/contracts` in a follow-up that touches that package's
+ * public surface (out of scope here).
+ */
+export const IGNORED_ARTIFACT_COMMITTED = "IGNORED_ARTIFACT_COMMITTED" as const;
+export type IgnoredArtifactCommitted = typeof IGNORED_ARTIFACT_COMMITTED;
+
+/**
+ * Discriminated result of `commitAgentWork`. The legacy shape returned
+ * a bare `string | undefined` (commit sha or "nothing to commit"); we
+ * widen it here so the hygiene guard can surface a typed rejection
+ * without throwing — keeps Temporal retries off the hot path for an
+ * authored-content failure.
+ */
+export type CommitAgentWorkResult =
+  | { ok: true; sha?: string }
+  | { ok: false; reason: IgnoredArtifactCommitted; paths: string[] };
+
+/**
+ * Injectable signature used by the hygiene guard. Default
+ * implementation shells out to `git -C <worktree> check-ignore -v
+ * --stdin`. Tests stub this to assert the guard's branching without
+ * spawning a real git process.
+ */
+export type CheckIgnoreFn = (
+  worktreePath: string,
+  paths: string[],
+) => Promise<string[]>;
+
 export interface TaskExecutionActivityDeps {
   db: PmGoDb;
   implementerRunner: ImplementerRunner;
@@ -26,6 +69,18 @@ export interface TaskExecutionActivityDeps {
   worktreeRoot: string;
   /** Claude model id. When unset, the implementer package default applies. */
   implementerModel?: string;
+  /**
+   * Override for tests. Defaults to `defaultCheckIgnore` (spawn-based
+   * `git check-ignore`). Production wiring leaves this undefined so
+   * the activity uses the real git binary inside the worktree.
+   */
+  checkIgnore?: CheckIgnoreFn;
+  /**
+   * Override for tests that want to short-circuit `git status`,
+   * `git add`, `git commit`, and `git rev-parse` without running a
+   * real git binary. Defaults to `promisify(execFile)`.
+   */
+  exec?: typeof execFileAsync;
 }
 
 /**
@@ -55,6 +110,8 @@ function toDbStatus(status: TaskStatusTransition): TaskStatus {
 export function createTaskExecutionActivities(
   deps: TaskExecutionActivityDeps,
 ) {
+  const exec = deps.exec ?? execFileAsync;
+  const checkIgnore = deps.checkIgnore ?? defaultCheckIgnore;
   return {
     /**
      * Hydrate the durable Task row into the in-memory `Task` contract
@@ -112,6 +169,14 @@ export function createTaskExecutionActivities(
      * `task_status_changed` event. Best-effort — mirrors the
      * phase-status pattern in `createIntegrationActivities`. A failed
      * read-model emit must never block the underlying task transition.
+     *
+     * v0.8.6 P0 hygiene guard — sticky-blocked: once a task has been
+     * durably parked at `"blocked"` (e.g. by `commitAgentWork`'s
+     * ignored-artifact rejection), subsequent transitions to a
+     * non-blocked status are silently dropped. Without this, the
+     * outer workflow's catch clause would happily clobber a freshly
+     * blocked row with `"failed"` and the operator would lose the
+     * authored-content failure reason.
      */
     async updateTaskStatus(input: {
       taskId: string;
@@ -138,6 +203,14 @@ export function createTaskExecutionActivities(
           .update(planTasks)
           .set({ status: dbStatus })
           .where(eq(planTasks.id, input.taskId));
+        return;
+      }
+      // Sticky-blocked guard. The hygiene guard in `commitAgentWork`
+      // sets `blocked` directly on the row; the workflow's later
+      // happy-path or catch-arm transitions must not silently override
+      // it. `blocked → blocked` stays a no-op via the prev===next
+      // event check below.
+      if (prev.status === "blocked" && dbStatus !== "blocked") {
         return;
       }
       const sink = createSpanWriter({
@@ -216,20 +289,61 @@ export function createTaskExecutionActivities(
 
     /**
      * Stage + commit any pending changes in the worktree on behalf of
-     * the implementer when the runner did not commit itself. Returns
-     * `undefined` when nothing was staged (no changes) so the workflow
-     * can distinguish an empty run from a real commit.
+     * the implementer when the runner did not commit itself.
+     *
+     * v0.8.6 P0: before staging, the activity collects the set of
+     * paths that `git add -A` *would* stage and runs them through
+     * `assertNoIgnoredPaths`. If any path is matched by a gitignore
+     * rule (think `node_modules/`, `dist/`, `.venv/` — the implementer
+     * accidentally committed an artifact), the activity:
+     *
+     *   1. Persists the offending repo-relative paths on the agent
+     *      run record (`agent_runs.errorReason`).
+     *   2. Stamps the task `blocked` directly. The workflow's
+     *      `updateTaskStatus` honors the sticky-blocked guard, so the
+     *      catch-arm `failed` transition becomes a no-op.
+     *   3. Returns `{ ok: false, reason: IGNORED_ARTIFACT_COMMITTED,
+     *      paths }` so callers (and tests) can distinguish "nothing
+     *      to commit" from "rejected on hygiene".
+     *
+     * On the happy path the legacy behavior is preserved: stage, try
+     * to commit, treat "nothing to commit" as `{ ok: true }` (no
+     * `sha`), otherwise return `{ ok: true, sha }`.
      *
      * All git invocations go through `execFile` with an explicit argv
      * (never a shell) so arbitrary `taskSlug` or `commitTitle` values
-     * can't inject.
+     * can't inject. `check-ignore` is the one exception — it needs
+     * stdin — and uses a tightly-scoped `spawn`.
      */
     async commitAgentWork(input: {
       worktreePath: string;
       taskSlug: string;
       commitTitle: string;
-    }): Promise<string | undefined> {
-      await execFileAsync("git", ["add", "-A"], {
+    }): Promise<CommitAgentWorkResult> {
+      // Hygiene guard (Phase 0). Look at the working-tree changes that
+      // `git add -A` is about to stage, before we actually stage them,
+      // so we can refuse the commit without leaving an index in a
+      // half-staged state.
+      const stagedPaths = await listPendingPaths(exec, input.worktreePath);
+      const ignoredPaths = await assertNoIgnoredPaths(
+        checkIgnore,
+        input.worktreePath,
+        stagedPaths,
+      );
+      if (ignoredPaths.length > 0) {
+        await persistIgnoredArtifactBlock(
+          deps.db,
+          input.worktreePath,
+          ignoredPaths,
+        );
+        return {
+          ok: false,
+          reason: IGNORED_ARTIFACT_COMMITTED,
+          paths: ignoredPaths,
+        };
+      }
+
+      await exec("git", ["add", "-A"], {
         cwd: input.worktreePath,
       });
 
@@ -239,22 +353,22 @@ export function createTaskExecutionActivities(
       // exit code alone — some environments localize the message, so
       // fall back to the stdout marker too.
       try {
-        await execFileAsync(
+        await exec(
           "git",
           ["commit", "-m", input.commitTitle],
           { cwd: input.worktreePath },
         );
       } catch (err) {
         const message = extractExecMessage(err);
-        if (isNothingToCommit(message)) return undefined;
+        if (isNothingToCommit(message)) return { ok: true };
         throw err;
       }
 
-      const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], {
+      const { stdout } = await exec("git", ["rev-parse", "HEAD"], {
         cwd: input.worktreePath,
       });
       const sha = stdout.trim();
-      return sha.length > 0 ? sha : undefined;
+      return sha.length > 0 ? { ok: true, sha } : { ok: true };
     },
 
     /**
@@ -266,7 +380,7 @@ export function createTaskExecutionActivities(
     async readWorktreeHeadSha(input: {
       worktreePath: string;
     }): Promise<string> {
-      const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], {
+      const { stdout } = await exec("git", ["rev-parse", "HEAD"], {
         cwd: input.worktreePath,
       });
       const sha = stdout.trim();
@@ -298,4 +412,147 @@ const NOTHING_TO_COMMIT_PATTERNS = [
 
 function isNothingToCommit(message: string): boolean {
   return NOTHING_TO_COMMIT_PATTERNS.some((re) => re.test(message));
+}
+
+/**
+ * Run `git status --porcelain` in `worktreePath` and return the set
+ * of paths that `git add -A` is about to stage. Handles renames
+ * (`R  old -> new`) by returning the new path — that's the path
+ * `check-ignore` cares about.
+ */
+async function listPendingPaths(
+  exec: typeof execFileAsync,
+  worktreePath: string,
+): Promise<string[]> {
+  const { stdout } = await exec("git", ["status", "--porcelain"], {
+    cwd: worktreePath,
+  });
+  if (typeof stdout !== "string" || stdout.length === 0) return [];
+  const paths: string[] = [];
+  for (const line of stdout.split("\n")) {
+    if (line.length === 0) continue;
+    // Porcelain v1: "XY <path>" where X/Y are status chars and the
+    // path starts at column 3. Renames carry " -> " between the old
+    // and new paths.
+    const tail = line.length > 3 ? line.slice(3) : "";
+    if (tail.length === 0) continue;
+    const arrow = tail.indexOf(" -> ");
+    paths.push(arrow >= 0 ? tail.slice(arrow + 4) : tail);
+  }
+  return paths;
+}
+
+/**
+ * Hygiene guard. Runs `stagedPaths` through `git check-ignore` (via
+ * the injected `checkIgnore` dep) and returns the subset that match
+ * a gitignore rule. Empty input → empty output (no spawn).
+ */
+async function assertNoIgnoredPaths(
+  checkIgnore: CheckIgnoreFn,
+  worktreePath: string,
+  stagedPaths: string[],
+): Promise<string[]> {
+  if (stagedPaths.length === 0) return [];
+  return checkIgnore(worktreePath, stagedPaths);
+}
+
+/**
+ * Default `git check-ignore` runner. Uses `spawn` (not `execFile`)
+ * because we pipe the candidate paths through stdin to avoid argv
+ * length limits and shell-quoting hazards.
+ *
+ * `git check-ignore -v --stdin` exits:
+ *   - 0 when at least one path matched a rule (we want this output);
+ *   - 1 when none matched (empty output, no error);
+ *   - 128 on a real error (corrupted repo, missing worktree, etc.).
+ */
+function defaultCheckIgnore(
+  worktreePath: string,
+  paths: string[],
+): Promise<string[]> {
+  if (paths.length === 0) return Promise.resolve([]);
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "git",
+      ["-C", worktreePath, "check-ignore", "-v", "--stdin"],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0 || code === 1) {
+        resolve(parseCheckIgnoreOutput(stdout));
+        return;
+      }
+      reject(
+        new Error(
+          `git check-ignore exited ${code} in ${worktreePath}: ${stderr.trim()}`,
+        ),
+      );
+    });
+    child.stdin.write(paths.join("\n") + "\n");
+    child.stdin.end();
+  });
+}
+
+/**
+ * `git check-ignore -v --stdin` output line:
+ *   `<source>:<lineno>:<pattern>\t<path>`
+ * Strip the verbose prefix and return repo-relative paths.
+ */
+function parseCheckIgnoreOutput(stdout: string): string[] {
+  const out: string[] = [];
+  for (const line of stdout.split("\n")) {
+    if (line.length === 0) continue;
+    const tab = line.lastIndexOf("\t");
+    out.push(tab >= 0 ? line.slice(tab + 1) : line);
+  }
+  return out;
+}
+
+/**
+ * Persist the ignored-artifact failure on the agent run record and
+ * stamp the task `blocked`. Best-effort lookups: if the worktree
+ * lease, task, or agent run have been GC'd between the implementer
+ * commit and this guard, we still return cleanly so the activity
+ * surfaces the typed failure to the workflow.
+ */
+async function persistIgnoredArtifactBlock(
+  db: PmGoDb,
+  worktreePath: string,
+  ignoredPaths: string[],
+): Promise<void> {
+  const [lease] = await db
+    .select({ taskId: worktreeLeases.taskId })
+    .from(worktreeLeases)
+    .where(eq(worktreeLeases.worktreePath, worktreePath))
+    .limit(1);
+  const taskId = lease?.taskId ?? null;
+  if (taskId !== null) {
+    const [run] = await db
+      .select({ id: agentRuns.id })
+      .from(agentRuns)
+      .where(eq(agentRuns.taskId, taskId))
+      .orderBy(desc(agentRuns.startedAt))
+      .limit(1);
+    if (run) {
+      await db
+        .update(agentRuns)
+        .set({
+          errorReason: `${IGNORED_ARTIFACT_COMMITTED}: ${ignoredPaths.join(",")}`,
+        })
+        .where(eq(agentRuns.id, run.id));
+    }
+    await db
+      .update(planTasks)
+      .set({ status: "blocked" })
+      .where(eq(planTasks.id, taskId));
+  }
 }
