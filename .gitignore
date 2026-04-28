@@ -21,6 +21,18 @@ artifacts
 .mcp.json
 .cursor/
 .aider*/
+.vscode/
+.idea/
+.zed/
+*.swp
+*.swo
+*~
+
+# OS junk
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
 
 # Session-scoped pm-go orchestration state. Not a project artifact.
 pm-state.json

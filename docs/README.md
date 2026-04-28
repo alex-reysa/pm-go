@@ -44,3 +44,23 @@ This directory is organized by what you are trying to do.
 - [Action plan](roadmap/action-plan.md)
 - [Dogfood observations](reports/2026-04-24-dogfood-observations.md)
 - [v0.8.2 dogfood dev plan](roadmap/2026-04-25-dogfood-dev-plan.md)
+- [v0.8.6 dogfood run log](dogfood/v0.8.6-run.md): live-Opus run on pm-go's
+  own repo, with operator interventions and follow-ups recorded.
+- [v0.8.6 lifecycle-ownership spec](specs/v0.8.6-lifecycle-ownership.md)
+- [v0.8.7 lifecycle-completeness spec](specs/v0.8.7-lifecycle-completeness.md)
+- [Session: Plan B recovery and local runtime conflicts](sessions/2026-04-27-plan-b-recovery-and-local-runtime-conflicts.md):
+  postmortem of a multi-repo run that exposed lifecycle gaps.
+
+## Subdirectories
+
+| Path | Purpose |
+|---|---|
+| [`adrs/`](adrs/) | Architecture decision records. |
+| [`architecture/`](architecture/) | High-level system overview. |
+| [`dogfood/`](dogfood/) | Real-run logs from driving pm-go on its own repo. |
+| [`phases/`](phases/) | Phase-by-phase build notes (phase6, phase7, harness). |
+| [`reports/`](reports/) | Postmortems and observation reports. |
+| [`roadmap/`](roadmap/) | Milestones, action plans, and forward-looking specs. |
+| [`runbooks/`](runbooks/) | Recovery procedures for blocked tasks, stale worktrees, failed audits. |
+| [`sessions/`](sessions/) | Session-level analyses (operator transcripts distilled into findings). |
+| [`specs/`](specs/) | Domain, workflow, API, and version-scoped lifecycle specs. |

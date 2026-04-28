@@ -20,7 +20,7 @@ After infra recovered, the run progressed to **open PRs** in two repositories (x
 | Temporal | Phase audit workflow survived but `drive` retried into a workflow-id collision. | Agent had to wait for the existing audit, then re-drive. |
 | Runtime limits | MCP+CLI implementer hit the 60-turn cap. | Agent patched planner defaults to 120 turns mid-run and rebuilt. |
 | Artifact hygiene | Implementer committed `node_modules` as symlinks. | Task became blocked and required manual branch/worktree cleanup. |
-| Shell robustness | Paths with spaces broke manual recovery commands. | First cleanup attempt failed on `/Users/alejandro/Desktop/999.` path split. |
+| Shell robustness | Paths with spaces broke manual recovery commands. | First cleanup attempt failed when an unquoted path containing a space (e.g. `<workspace>/999. PROJECTS/...`) was word-split. |
 | Status visibility | User repeatedly had to ask whether things were "on track." | pm-go did not provide a clear single source of truth. |
 
 ## Timeline
@@ -161,7 +161,7 @@ Suggested changes:
 
 ### F9. Shell commands were fragile around paths with spaces
 
-Manual recovery failed when a worktree path under `/Users/alejandro/Desktop/999. PROJECTS/...` was split at the space. This has happened in multiple sessions.
+Manual recovery failed when a worktree path under a directory whose name contains a space (e.g. `<workspace>/999. PROJECTS/...`) was word-split by the shell. This has happened in multiple sessions.
 
 Suggested changes:
 
@@ -240,7 +240,7 @@ pm-go task retry 7a8b9c0d-1e2f-4345-8678-6e7f8091a2b3 \
 pm-go task repair 7a8b9c0d-1e2f-4345-8678-6e7f8091a2b3 \
   --remove-ignored-artifacts
 
-pm-go conflicts --repo "/Users/alejandro/Desktop/999. PROJECTS/x402all"
+pm-go conflicts --repo "<path-to-other-repo>"
 pm-go logs --plan 7f3a1d2c-5b8e-4c91-a8f4-2e6d9b0c1f3a
 ```
 

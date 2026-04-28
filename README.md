@@ -120,15 +120,21 @@ in [docs/getting-started.md](docs/getting-started.md).
 
 ### Sub-Commands
 
-`pm-go` has five subcommands; pick the one that matches your stage:
+`pm-go` exposes the following subcommands; pick the one that matches your stage:
 
 ```bash
 pm-go implement --repo . --spec ./feature.md     # boot stack + drive to release
 pm-go run       --repo . --spec ./feature.md     # boot stack only; drive yourself
 pm-go drive     --plan <uuid>                    # drive a plan against an already-up stack
 pm-go status                                     # show worker config, API health, open workflows
+pm-go why       <uuid>                           # explain why a plan/phase/task is in its state
 pm-go doctor    [--repair]                       # diagnose + auto-fix infra
+pm-go ps                                         # list supervisor / worker / api / drive PIDs
+pm-go stop      [--instance <port>]              # SIGTERM (then SIGKILL) every pm-go-owned process
+pm-go recover                                    # drop dead entries from the state file
 ```
+
+Run `pm-go <command> --help` for command-specific options.
 
 `pnpm dev` is a thin wrapper around `pm-go run`. If you prefer to drive the
 worker, API, and TUI as separate processes — for debugging, attaching a
