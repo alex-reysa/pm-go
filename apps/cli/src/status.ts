@@ -10,7 +10,23 @@
  *
  * All I/O is injected via StatusDeps so unit tests can run without
  * spawning processes or hitting localhost.
+ *
+ * As of v0.8.6+ the API section is gated by `probePmGoApi` from
+ * `./lib/api-client.js`. The prior 2xx-only check would happily
+ * print `✓ ok` against any service that returned a 200 on /health
+ * (nginx, an unrelated dev server, another pm-go instance). The
+ * identity probe parses the JSON envelope and rejects anything whose
+ * service field isn't the literal `"pm-go-api"`. On mismatch the
+ * structured error is printed verbatim — its first line begins with
+ * the stable, greppable `[pm-go] port <port> is held by another
+ * service` prefix — and runStatus returns 1 without continuing on
+ * to the (possibly misleading) workflow listing.
  */
+
+import {
+  PmGoIdentityMismatchError,
+  probePmGoApi,
+} from './lib/api-client.js'
 
 export interface StatusDeps {
   /** Run a child process and capture stdout/stderr. */
@@ -50,20 +66,44 @@ export async function runStatus(deps: StatusDeps): Promise<number> {
   write(`  ${'PM_GO_MODEL'.padEnd(COL)} ${env.PM_GO_MODEL ?? '(unset; package defaults apply)'}`)
   write('')
 
-  // API health.
+  // API health + identity. Replaces the prior 2xx-only probe: a port
+  // held by another service (e.g. nginx returning {"status":"ok"})
+  // would have printed `✓ ok` even though running drive against it
+  // would have produced confusing 404s. probePmGoApi parses the JSON
+  // identity envelope and throws PmGoIdentityMismatchError with the
+  // `[pm-go] port <port> is held by another service` prefix on any
+  // mismatch (including network errors and HTTP non-2xx); we surface
+  // the message verbatim and return 1 without printing the rest of
+  // the status output.
   write('API')
-  try {
-    const res = await deps.fetch(`http://localhost:${apiPort}/health`, {
+  const probeUrl = `http://localhost:${apiPort}/health`
+  // Wrap deps.fetch to apply the same 3s timeout the prior 2xx check
+  // used. probePmGoApi calls fetchImpl(url) with no init, so the
+  // wrapper is the only place to inject the signal in production
+  // without breaking the unit-test mock signature.
+  const probeFetch: typeof globalThis.fetch = ((
+    input: Parameters<typeof globalThis.fetch>[0],
+    init?: Parameters<typeof globalThis.fetch>[1],
+  ) =>
+    deps.fetch(input, {
+      ...init,
       signal: AbortSignal.timeout(3000),
-    })
-    if (res.ok) {
-      write(`  ${`http://localhost:${apiPort}/health`.padEnd(COL)} ✓ ok`)
-    } else {
-      write(`  ${`http://localhost:${apiPort}/health`.padEnd(COL)} ✗ status ${res.status}`)
-    }
+    })) as typeof globalThis.fetch
+  try {
+    await probePmGoApi(probeFetch, probeUrl)
+    write(`  ${probeUrl.padEnd(COL)} ✓ ok`)
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    write(`  ${`http://localhost:${apiPort}/health`.padEnd(COL)} ✗ ${msg}`)
+    if (err instanceof PmGoIdentityMismatchError) {
+      // Each line of the structured error becomes its own `write`
+      // call so the sink can render them as separate log lines (the
+      // production sink is `console.log`, which expects one line per
+      // call to keep the output tidy).
+      for (const line of err.message.split('\n')) {
+        write(line)
+      }
+      return 1
+    }
+    throw err
   }
   write('')
 

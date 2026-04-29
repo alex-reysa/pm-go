@@ -19,8 +19,15 @@ import {
 const VALID_UUID = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'
 
 interface FakeRecoverOpts {
-  /** Response shape for `${apiUrl}/health`. */
-  health?: 'ok' | 'fail-status' | 'throw'
+  /**
+   * Response shape for `${apiUrl}/health`.
+   *   - `ok` (default): pm-go identity envelope, probePmGoApi succeeds.
+   *   - `foreign`: 200 with a body that lacks the `service` field —
+   *     simulates another service (e.g. nginx) holding our port.
+   *   - `fail-status`: 503; recover treats this as the api-down branch.
+   *   - `throw`: network error; same api-down branch.
+   */
+  health?: 'ok' | 'foreign' | 'fail-status' | 'throw'
   /** Response shape for `${apiUrl}/plans/${planId}`. */
   plan?: { ok: boolean; status?: string } | null
   workflow?: WorkflowDescription
@@ -60,8 +67,30 @@ function makeFakeRecover(opts: FakeRecoverOpts = {}): {
       calls.fetchUrls.push(url)
       if (url.endsWith('/health')) {
         if (opts.health === 'throw') throw new Error('connect ECONNREFUSED')
-        const ok = opts.health !== 'fail-status'
-        return new Response(ok ? 'ok' : 'no', { status: ok ? 200 : 503 })
+        if (opts.health === 'fail-status') {
+          return new Response('no', { status: 503 })
+        }
+        if (opts.health === 'foreign') {
+          // Mirrors the AC fixture verbatim: a 2xx body without the
+          // `service` field, which probePmGoApi rejects via
+          // assertPmGoApi → PmGoIdentityMismatchError.
+          return new Response(JSON.stringify({ status: 'ok' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        // Default: a valid pm-go identity envelope so probePmGoApi
+        // (now wired into diagnoseRecovery) succeeds and the rest of
+        // the recovery decision tree runs as before.
+        return new Response(
+          JSON.stringify({
+            service: 'pm-go-api',
+            version: '0.8.6',
+            instance: 'default',
+            port: 3001,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )
       }
       if (url.includes('/plans/')) {
         if (opts.plan === null) {
@@ -294,6 +323,50 @@ describe('runRecover', () => {
     const code = await runRecover(baseOptions({ dryRun: true }), deps)
     assert.strictEqual(code, 0)
     assert.strictEqual(calls.rerunCalls.length, 0)
+  })
+
+  // --------------------------------------------------------------------
+  // ac-health-identity-3: foreign service holding our port → exit 1,
+  // no side-effect deps invoked, error message starts with the
+  // canonical `[pm-go] port <port> is held by another service` prefix.
+  // --------------------------------------------------------------------
+
+  it('foreign service on /health: exits 1, prints prefix, never invokes recovery deps', async () => {
+    const { deps, calls, lines } = makeFakeRecover({
+      health: 'foreign',
+      // A workflow that would otherwise route to running-workflow —
+      // present here to prove the gate fires BEFORE describeWorkflow.
+      workflow: { status: 'running', workflowId: 'wf-1', runId: 'run-1' },
+    })
+    const code = await runRecover(baseOptions(), deps)
+    assert.strictEqual(code, 1)
+    assert.strictEqual(calls.describeCalls.length, 0)
+    assert.strictEqual(calls.attachCalls.length, 0)
+    assert.strictEqual(calls.startCalls.length, 0)
+    assert.strictEqual(calls.rerunCalls.length, 0)
+    assert.match(
+      lines.join('\n'),
+      /^\[pm-go\] port 3001 is held by another service/m,
+    )
+  })
+
+  it('matching pm-go on --port 3011: succeeds as before, probe URL targets 3011', async () => {
+    const { deps, calls } = makeFakeRecover({
+      health: 'ok',
+      workflow: { status: 'running', workflowId: 'wf-1', runId: 'run-1' },
+      attachOutcome: 'pass',
+    })
+    const code = await runRecover(
+      baseOptions({ apiUrl: 'http://localhost:3011' }),
+      deps,
+    )
+    assert.strictEqual(code, 0)
+    assert.deepStrictEqual(calls.attachCalls, [
+      { workflowId: 'wf-1', runId: 'run-1' },
+    ])
+    const healthCalls = calls.fetchUrls.filter((u) => u.endsWith('/health'))
+    assert.strictEqual(healthCalls.length, 1)
+    assert.strictEqual(healthCalls[0], 'http://localhost:3011/health')
   })
 })
 

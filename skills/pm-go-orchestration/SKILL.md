@@ -127,6 +127,23 @@ It returns one sentence with the current state and the exact next action. This i
 - **Workflow-id collision on resume** — `drive` reports `WorkflowExecutionAlreadyStarted` after a supervisor restart. Run `pm-go recover --plan <id>` to attach to the existing audit/integration workflow instead of spawning a duplicate.
 - **`pm-go implement` exits but plan exists in DB** — the supervisor's plan-persistence poll has a 20-minute ceiling. If hit, the api + worker stay up (post-v0.8.7 fail-open). Run `pm-go why <spec-id>` to find the actual plan UUID, then `pm-go drive --plan <real-id>` to pick up where it bailed.
 
+### `[pm-go] port <port> is held by another service`
+
+Phase-1 commands (`status`, `drive`, `why`, `recover`, `run`, `implement`) probe the API's identity endpoint before driving against it. When the probe gets HTTP back but the response isn't a pm-go identity envelope (`{"service":"pm-go-api",...}`), the CLI bails with a `PmGoIdentityMismatchError` whose first line is the stable, greppable prefix:
+
+```
+[pm-go] port 3001 is held by another service
+```
+
+**Cause.** Something other than the pm-go API is bound to the configured port — most often another `tsx`-loaded server squatting on `3001` (a stale `apps/api` process from a prior dev session, an unrelated local service, or a second pm-go instance that claimed the port first).
+
+**Remediation (two options).**
+
+1. Re-run the command with `--port <other>` to point pm-go at a free port.
+2. Stop the conflicting process (`pm-go ps` then `pm-go stop` if it's a tracked pm-go supervisor; otherwise `lsof -i :3001` and shut down the offending service yourself).
+
+**Scope note.** This slice intentionally only ships the identity probe and the typed error. First-class multi-instance support (`--instance` flag and dynamic port allocation) lands in a later v0.8.8 slice — until then, `--port <other>` is the supported escape hatch.
+
 ## API Surface (advanced)
 
 `pm-go drive` orchestrates these for you. Use the raw API only when you need to override the default flow:

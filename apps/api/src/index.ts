@@ -24,6 +24,7 @@ async function main() {
   const maxLifetimeHours = Number(
     process.env.MAX_WORKTREE_LIFETIME_HOURS ?? 24,
   );
+  const instanceName = process.env.API_INSTANCE_NAME ?? "default";
 
   if (!databaseUrl) {
     throw new Error("DATABASE_URL is required");
@@ -35,6 +36,14 @@ async function main() {
     namespace,
   });
 
+  // The `/health` route reports the *live* bound port — the value
+  // `serve(...)` reports back, not a re-read of `process.env.API_PORT`.
+  // The route closure runs after registration but before `serve`
+  // resolves the bind, so we hand `createApp` a getter that closes
+  // over a mutable holder. The `serve(...)` callback fills the holder
+  // once binding completes; until then the getter returns 0.
+  let boundPort = 0;
+
   const app = createApp({
     temporal,
     taskQueue,
@@ -43,9 +52,12 @@ async function main() {
     repoRoot,
     worktreeRoot,
     maxLifetimeHours,
+    instanceName,
+    getBoundPort: () => boundPort,
   });
 
   serve({ fetch: app.fetch, port }, (info) => {
+    boundPort = info.port;
     console.log(`api listening on :${info.port}`);
   });
 }

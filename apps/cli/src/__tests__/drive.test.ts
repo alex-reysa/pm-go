@@ -59,6 +59,13 @@ interface MockServerState {
   phaseDefs: DrivenPhase[]
   /** Task definitions used to build GET /plans/:id responses. */
   taskDefs: DrivenTask[]
+  /**
+   * What the mock /health returns. `pm-go` (default) returns the
+   * identity envelope so probePmGoApi succeeds; `foreign` returns a
+   * 2xx body without the `service` field so probePmGoApi throws a
+   * PmGoIdentityMismatchError (the ac-health-identity-3 path).
+   */
+  healthIdentity: 'pm-go' | 'foreign'
 }
 
 function makeState(overrides: Partial<MockServerState> = {}): MockServerState {
@@ -90,6 +97,7 @@ function makeState(overrides: Partial<MockServerState> = {}): MockServerState {
     onPost: overrides.onPost ?? new Map(),
     phaseDefs,
     taskDefs,
+    healthIdentity: overrides.healthIdentity ?? 'pm-go',
   }
 }
 
@@ -149,6 +157,22 @@ function handle(
   url: string,
   body: unknown,
 ): Response {
+  // GET /health — identity probe gate. Default returns the pm-go
+  // envelope so probePmGoApi (called at the top of runDrive) succeeds;
+  // tests that want to exercise a foreign service set
+  // `healthIdentity: 'foreign'` and we return a 2xx body that lacks
+  // the required `service` field.
+  if (url.endsWith('/health') && method === 'GET') {
+    if (state.healthIdentity === 'foreign') {
+      return jsonResponse({ status: 'ok' })
+    }
+    return jsonResponse({
+      service: 'pm-go-api',
+      version: '0.8.6',
+      instance: 'default',
+      port: 3001,
+    })
+  }
   // GET /plans/:id
   let m = url.match(/\/plans\/([^/?]+)$/)
   if (m && method === 'GET') {
@@ -1017,15 +1041,23 @@ describe('v0.8.4.1 P1.2: runDrive maps phase exceptions to EXIT_BLOCKED', () => 
       phases: new Map([[PHASE_1, 'executing']]),
     })
     const deps = makeDeps(state)
-    // Force the very first plan fetch to throw — simulating a 5xx
+    // Force the per-phase refresh fetch to throw — simulating a 5xx
     // mid-drive that would otherwise escape past runDrive.
+    //
+    // As of the v0.8.6+ identity probe (`probePmGoApi`) the call
+    // sequence is:
+    //   1. GET /health   — the probe (succeeds with the default
+    //                       identity envelope from makeState/handle).
+    //   2. GET /plans/.. — the initial plan load (succeeds).
+    //   3. GET /plans/.. — the per-phase refresh inside the loop.
+    // We want #3 to throw so the failure is caught inside the
+    // per-phase try/catch (which is where the "drive failed: …" +
+    // "inspect via GET …" log pattern lives).
     let calls = 0
     const origFetch = deps.fetch
     deps.fetch = (async (...args: Parameters<typeof globalThis.fetch>) => {
       calls += 1
-      if (calls === 2) {
-        // First fetch is the initial plan load (succeeds); second is
-        // the per-phase refresh inside the loop — make THAT throw.
+      if (calls === 3) {
         throw new Error('synthetic 5xx from API')
       }
       return origFetch(...args)
@@ -1188,6 +1220,90 @@ describe('v0.8.4.1 P2.2: runDrive returns EXIT_PAUSED (4) for paused phases', ()
     const opts = { ...baseOptsForRegression, approve: 'none' as const }
     const code = await runDrive(opts, deps, FAST_TIMINGS)
     assert.strictEqual(code, 4) // EXIT_PAUSED
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ac-health-identity-3: identity probe gate at the top of runDrive.
+// ---------------------------------------------------------------------------
+
+describe('ac-health-identity-3: runDrive identity probe', () => {
+  it('foreign service on /health → exit 1, [pm-go] port prefix, no plan/approval requests', async () => {
+    const taskDefs: DrivenTask[] = [
+      { id: TASK_A, phaseId: PHASE_1, status: 'pending', title: 'A' },
+    ]
+    const phaseDefs: DrivenPhase[] = [
+      { id: PHASE_1, index: 0, title: 'P1', status: 'executing', mergeOrder: [TASK_A] },
+    ]
+    const state = makeState({
+      taskDefs,
+      phaseDefs,
+      tasks: new Map([[TASK_A, 'pending']]),
+      phases: new Map([[PHASE_1, 'executing']]),
+      // Foreign service: 200 with body that lacks a `service` field.
+      healthIdentity: 'foreign',
+    })
+    const deps = makeDeps(state)
+    const exitCode = await runDrive(baseOpts, deps, FAST_TIMINGS)
+    assert.strictEqual(exitCode, 1)
+    // First-line greppable prefix is on stderr (errLog).
+    const firstErr = deps.errs[0] ?? ''
+    assert.match(
+      firstErr,
+      /^\[pm-go\] port 3001 is held by another service/,
+      `expected greppable prefix on the first stderr line, got: ${JSON.stringify(firstErr)}`,
+    )
+    // No plan / approval / run / review / fix / integrate / audit /
+    // complete / release request was issued — only /health and nothing
+    // else. The probe MUST short-circuit the rest of runDrive.
+    const nonHealthCalls = state.calls.filter((c) => !c.url.endsWith('/health'))
+    assert.deepStrictEqual(
+      nonHealthCalls,
+      [],
+      `runDrive must not issue any plan/approval request against a foreign API; got: ${JSON.stringify(nonHealthCalls)}`,
+    )
+  })
+
+  it('matching pm-go on --port 3011 → succeeds exactly as before', async () => {
+    // Plan with a single ready_to_merge task, a pre-completed phase, and
+    // a passing completion audit — the shortest happy path through
+    // runDrive. The point of this test is that a probePmGoApi success
+    // does not change any subsequent behaviour.
+    const taskDefs: DrivenTask[] = [
+      { id: TASK_A, phaseId: PHASE_1, status: 'ready_to_merge', title: 'A' },
+    ]
+    const phaseDefs: DrivenPhase[] = [
+      { id: PHASE_1, index: 0, title: 'P1', status: 'completed', mergeOrder: [TASK_A] },
+    ]
+    const state = makeState({
+      taskDefs,
+      phaseDefs,
+      tasks: new Map([[TASK_A, 'ready_to_merge']]),
+      phases: new Map([[PHASE_1, 'completed']]),
+      onPost: new Map<string, (s: MockServerState) => void>([
+        [
+          `POST /plans/${PLAN_ID}/complete`,
+          (s) => {
+            s.completionAudit = 'pass'
+          },
+        ],
+      ]),
+      // Default healthIdentity = 'pm-go' — the matching identity.
+    })
+    const deps = makeDeps(state)
+    // `pm-go drive --port 3011` resolves to apiUrl http://localhost:3011.
+    const optsFor3011 = { ...baseOpts, apiUrl: 'http://localhost:3011' }
+    const exitCode = await runDrive(optsFor3011, deps, FAST_TIMINGS)
+    assert.strictEqual(exitCode, 0)
+    // Probe URL reflects the chosen port — not the default 3001.
+    const probeCall = state.calls.find((c) => c.url.endsWith('/health'))
+    assert.ok(probeCall, 'expected at least one /health call')
+    assert.strictEqual(probeCall.url, 'http://localhost:3011/health')
+    // Release MUST be the final POST issued.
+    const posts = state.calls.filter((c) => c.method === 'POST').map((c) => c.url)
+    const releaseIdx = posts.findIndex((u) => u.endsWith(`/plans/${PLAN_ID}/release`))
+    assert.ok(releaseIdx >= 0, 'release should have been posted')
+    assert.strictEqual(releaseIdx, posts.length - 1, 'release should be the final POST')
   })
 })
 

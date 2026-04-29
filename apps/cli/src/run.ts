@@ -27,7 +27,7 @@ import {
   track,
   type ProcessManager,
 } from './lib/process-manager.js'
-import { httpReady, waitFor } from './lib/wait-for.js'
+import { waitFor, waitForPmGoApi } from './lib/wait-for.js'
 
 // ---------------------------------------------------------------------------
 // Argv parsing
@@ -586,22 +586,46 @@ export async function runSupervisor(
   deps.pm.add(api)
 
   // 5. Wait for API health.
+  //
+  // Single readiness probe combining 2xx + identity (`assertPmGoApi`).
+  // A bare 2xx is NOT enough: another service that happens to bind
+  // the same port and answer `/health` (an nginx welcome page, a
+  // stale dev server, an unrelated fastify) would otherwise be
+  // greenlit and `pm-go drive` would silently start hammering it.
+  // The identity-aware probe distinguishes three terminal states:
+  //   - ready:    boot proceeds.
+  //   - timeout:  API never came up — same teardown path as before.
+  //   - mismatch: foreign 2xx — fail-fast with the structured
+  //               `[pm-go] port <port> is held by another service`
+  //               error and tear children down so they don't leak.
   log(`[5/6] waiting for api on http://localhost:${options.apiPort}/health...`)
-  const apiReady = await waitFor(
-    httpReady(deps.fetch, `http://localhost:${options.apiPort}/health`),
-    { label: 'api', timeoutMs: API_HEALTH_TIMEOUT_MS, intervalMs: POLL_INTERVAL_MS },
+  const apiReady = await waitForPmGoApi(
+    deps.fetch,
+    `http://localhost:${options.apiPort}/health`,
+    { timeoutMs: API_HEALTH_TIMEOUT_MS, intervalMs: POLL_INTERVAL_MS },
     deps,
   )
+  if (apiReady.status === 'mismatch') {
+    // Print the structured identity-mismatch error verbatim — its
+    // first line is the stable greppable prefix operators paste into
+    // bug reports. Then tear children down via `pm.shutdown` so the
+    // worker we just spawned doesn't leak past the supervisor's exit.
+    errLog(apiReady.error.message)
+    await deps.pm.shutdown('api identity mismatch', 1).catch(() => undefined)
+    return 1
+  }
   if (apiReady.status === 'timeout') {
-    errLog(`api /health did not respond after ${API_HEALTH_TIMEOUT_MS}ms`)
+    const detail = apiReady.lastError ? ` (${apiReady.lastError})` : ''
+    errLog(`api /health did not respond after ${API_HEALTH_TIMEOUT_MS}ms${detail}`)
     await deps.pm.shutdown('startup failure', 1).catch(() => undefined)
     return 1
   }
 
   // Persist the per-instance process registry now that the API is
-  // confirmed live. We deliberately wait until AFTER httpReady so
-  // partial-startup crashes don't leave a half-populated state file
-  // around for `pm-go ps` to misreport. Order: supervisor first
+  // confirmed live AND owned by us. We deliberately wait until AFTER
+  // the identity probe resolves so partial-startup crashes (or a
+  // foreign service answering on the port) don't leave a half-populated
+  // state file around for `pm-go ps` to misreport. Order: supervisor first
   // (guaranteed pid), then worker, then api. The process-manager will
   // remove the file atomically during stop/shutdown.
   await deps.writeInstanceState({ label: 'supervisor', pid: deps.processPid })

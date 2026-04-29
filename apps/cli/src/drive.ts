@@ -27,6 +27,10 @@
  * microseconds with mocked HTTP responses.
  */
 
+import {
+  PmGoIdentityMismatchError,
+  probePmGoApi,
+} from './lib/api-client.js'
 import { waitFor } from './lib/wait-for.js'
 
 // ---------------------------------------------------------------------------
@@ -839,6 +843,25 @@ export async function runDrive(
   deps.log(`  api:     ${options.apiUrl}`)
   deps.log(`  approve: ${options.approve}`)
   deps.log('')
+
+  // Identity probe — refuse to drive against a port held by another
+  // service. Without this, drive would issue /plans, /tasks/*/run, and
+  // /approve-all-pending requests against whatever happened to be
+  // listening on apiPort, surfacing confusing downstream errors
+  // instead of the real diagnosis. probePmGoApi throws
+  // PmGoIdentityMismatchError on any failure (network, non-2xx, or
+  // identity mismatch); we surface the structured message and exit
+  // EXIT_BLOCKED before the first plan request so /plans, /tasks/*/run
+  // and /approve-all-pending never reach a foreign target.
+  try {
+    await probePmGoApi(deps.fetch, `${options.apiUrl}/health`)
+  } catch (err) {
+    if (err instanceof PmGoIdentityMismatchError) {
+      deps.errLog(err.message)
+      return EXIT_BLOCKED
+    }
+    throw err
+  }
 
   let planRes: PlanResponse
   try {

@@ -21,9 +21,27 @@ interface RouteSpec {
 }
 
 /**
+ * Default identity envelope returned by the mock /health route.
+ * runWhy now gates on probePmGoApi at startup, so every existing test
+ * needs /health to answer with a valid pm-go envelope. Tests that
+ * exercise the foreign-service path override this by passing a custom
+ * /health route in their `routes` map.
+ */
+const DEFAULT_HEALTH_BODY = {
+  service: 'pm-go-api',
+  version: '0.8.6',
+  instance: 'default',
+  port: 3001,
+}
+
+/**
  * Build a mock fetch that consults `routes` keyed by the URL path. Any
  * URL not in the map returns 404 — that's how the dispatcher knows to
  * try the next route. Tests only declare the routes they care about.
+ *
+ * `/health` defaults to a valid pm-go identity envelope so the new
+ * runWhy probe passes; tests that want to exercise an identity
+ * mismatch supply their own `/health` route to override the default.
  */
 function makeDeps(routes: Record<string, RouteSpec>): {
   deps: WhyDeps
@@ -34,6 +52,10 @@ function makeDeps(routes: Record<string, RouteSpec>): {
   const out: string[] = []
   const errs: string[] = []
   const calls: string[] = []
+  const fullRoutes: Record<string, RouteSpec> = {
+    '/health': { status: 200, body: DEFAULT_HEALTH_BODY },
+    ...routes,
+  }
   const fetchFn: typeof globalThis.fetch = (async (
     input: Parameters<typeof globalThis.fetch>[0],
   ) => {
@@ -41,7 +63,7 @@ function makeDeps(routes: Record<string, RouteSpec>): {
     calls.push(url)
     // Strip the localhost prefix so the keys in `routes` can be path-only.
     const path = url.replace(/^https?:\/\/[^/]+/, '')
-    const route = routes[path]
+    const route = fullRoutes[path]
     if (!route || route.status === 404) {
       return new Response('not found', { status: 404 })
     }
@@ -373,6 +395,88 @@ describe('runWhy not-found', () => {
     assert.strictEqual(out.length, 0)
     assert.ok(errs.some((l) => /id .* not found/.test(l)))
     assert.ok(errs.some((l) => /pm-go doctor/.test(l)))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ac-health-identity-3: identity probe gate at startup
+// ---------------------------------------------------------------------------
+
+describe('runWhy identity probe (ac-health-identity-3)', () => {
+  it('foreign service on /health → exit 1, [pm-go] port prefix, no plan/phase/task lookup', async () => {
+    const { deps, out, errs, calls } = makeDeps({
+      // Override the default /health so it returns a 2xx body that
+      // lacks the required `service` field — i.e. a non-pm-go service
+      // squatting on the port.
+      '/health': { status: 200, body: { status: 'ok' } },
+      // Routes that would otherwise match a plan / phase / task id —
+      // included so a regression in the gate (probe doesn't fire)
+      // would render a phantom plan sentence here and the assertion
+      // for `out.length === 0` would fail loudly.
+      [`/plans/${PLAN_ID}`]: {
+        status: 200,
+        body: { plan: { id: PLAN_ID, status: 'executing', phases: [] }, latestCompletionAudit: null },
+      },
+    })
+    const code = await runWhy(deps, [PLAN_ID])
+    assert.strictEqual(code, 1)
+    assert.strictEqual(out.length, 0, 'no plan sentence may be rendered')
+    // errLog received the structured prefix on its first call.
+    assert.match(
+      errs[0] ?? '',
+      /^\[pm-go\] port 3001 is held by another service/,
+    )
+    // No /plans/* or /phases/* or /tasks/* request was issued — the
+    // only fetch was /health (the probe itself).
+    const nonHealth = calls.filter((u) => !u.endsWith('/health'))
+    assert.deepStrictEqual(nonHealth, [], `unexpected non-health calls: ${JSON.stringify(nonHealth)}`)
+  })
+
+  it('matching pm-go on --port 3011 → succeeds exactly as before', async () => {
+    // Override /health so it advertises port 3011 (a stand-in for the
+    // operator passing --port 3011); the probe uses the URL we built
+    // from API_PORT, so the recursive port-in-body just confirms the
+    // identity envelope passes assertPmGoApi.
+    const { deps, out, errs, calls } = makeDeps({
+      '/health': {
+        status: 200,
+        body: {
+          service: 'pm-go-api',
+          version: '0.8.6',
+          instance: 'default',
+          port: 3011,
+        },
+      },
+      [`/plans/${PLAN_ID}`]: {
+        status: 200,
+        body: {
+          plan: {
+            id: PLAN_ID,
+            status: 'executing',
+            phases: [
+              { id: PHASE_1, index: 0, title: 'A', status: 'completed' },
+              { id: PHASE_2, index: 1, title: 'B', status: 'executing' },
+            ],
+          },
+          latestCompletionAudit: null,
+        },
+      },
+    })
+    // Drive the API_PORT env to 3011 so the probe URL matches.
+    const portDeps: WhyDeps = { ...deps, env: { API_PORT: '3011' } }
+    const code = await runWhy(portDeps, [PLAN_ID])
+    assert.strictEqual(code, 0)
+    assert.strictEqual(errs.length, 0)
+    // Every call used port 3011.
+    for (const url of calls) {
+      assert.ok(
+        url.startsWith('http://localhost:3011/'),
+        `expected ${url} to use port 3011`,
+      )
+    }
+    // The plan sentence was rendered — same behaviour as before.
+    assert.strictEqual(out.length, 1)
+    assert.match(out[0] ?? '', /is executing/)
   })
 })
 

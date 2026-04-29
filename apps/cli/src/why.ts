@@ -11,7 +11,21 @@
  * All I/O is injected via WhyDeps so unit tests can substitute a fake
  * fetch per URL. Mirrors the dependency-injection pattern in
  * `status.ts` / `drive.ts`.
+ *
+ * Before any /plans, /phases, or /tasks request, runWhy gates on
+ * `probePmGoApi` from `./lib/api-client.js`. A port held by a non-pm-go
+ * service would otherwise parade past tryPlan/tryPhase/tryTask and
+ * produce confusing 404s; the identity probe converts that into a
+ * single structured error whose first line begins with
+ * `[pm-go] port <port> is held by another service`, and the command
+ * exits 1 without issuing any plan/phase/task lookup.
  */
+import {
+  PmGoIdentityMismatchError,
+  probePmGoApi,
+} from './lib/api-client.js'
+
+
 export interface WhyDeps {
   /** Network fetch — the only I/O the command performs. */
   fetch: typeof globalThis.fetch
@@ -60,6 +74,24 @@ export async function runWhy(
 
   const apiPort = deps.env.API_PORT ?? String(DEFAULT_API_PORT)
   const baseUrl = `http://localhost:${apiPort}`
+
+  // Identity gate — refuse to query /plans, /phases, or /tasks against
+  // a port held by another service. probePmGoApi wraps every failure
+  // (network, HTTP non-2xx, malformed JSON, identity mismatch) into a
+  // single PmGoIdentityMismatchError whose first line begins with the
+  // greppable `[pm-go] port <port> is held by another service` prefix.
+  // We surface that message verbatim and return 1 before tryPlan /
+  // tryPhase / tryTask issue their first GET — that way a foreign
+  // service never produces the misleading "id ... not found" line.
+  try {
+    await probePmGoApi(deps.fetch, `${baseUrl}/health`)
+  } catch (err) {
+    if (err instanceof PmGoIdentityMismatchError) {
+      deps.errLog(err.message)
+      return 1
+    }
+    throw err
+  }
 
   // Try /plans first, then /phases, then /tasks. Each helper returns:
   //   - 'rendered' if the body matched and a sentence was written

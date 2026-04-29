@@ -176,18 +176,57 @@ describe('buildChildEnv', () => {
   })
 
   it('sets every *_RUNTIME for sdk/claude/auto', () => {
-    for (const mode of ['sdk', 'claude', 'auto'] as const) {
-      const env = buildChildEnv({ ...baseOptions, runtime: mode })
-      assert.strictEqual(env.PLANNER_RUNTIME, mode)
-      assert.strictEqual(env.IMPLEMENTER_RUNTIME, mode)
-      assert.strictEqual(env.REVIEWER_RUNTIME, mode)
-      assert.strictEqual(env.PHASE_AUDITOR_RUNTIME, mode)
-      assert.strictEqual(env.COMPLETION_AUDITOR_RUNTIME, mode)
+    // Test isolation: clear any pre-exported *_RUNTIME from the
+    // shell/.env so the precedence rule (`base[key] ?? role`) actually
+    // exercises the `role` fallback. Without this guard, a developer
+    // box that exports e.g. PLANNER_RUNTIME=auto would silently make
+    // every iteration assert against 'auto' regardless of `mode`.
+    const RUNTIME_KEYS = [
+      'PLANNER_RUNTIME',
+      'IMPLEMENTER_RUNTIME',
+      'REVIEWER_RUNTIME',
+      'PHASE_AUDITOR_RUNTIME',
+      'COMPLETION_AUDITOR_RUNTIME',
+    ] as const
+    const originals: Record<string, string | undefined> = {}
+    for (const k of RUNTIME_KEYS) {
+      originals[k] = process.env[k]
+      delete process.env[k]
+    }
+    try {
+      for (const mode of ['sdk', 'claude', 'auto'] as const) {
+        const env = buildChildEnv({ ...baseOptions, runtime: mode })
+        assert.strictEqual(env.PLANNER_RUNTIME, mode)
+        assert.strictEqual(env.IMPLEMENTER_RUNTIME, mode)
+        assert.strictEqual(env.REVIEWER_RUNTIME, mode)
+        assert.strictEqual(env.PHASE_AUDITOR_RUNTIME, mode)
+        assert.strictEqual(env.COMPLETION_AUDITOR_RUNTIME, mode)
+      }
+    } finally {
+      for (const k of RUNTIME_KEYS) {
+        if (originals[k] === undefined) delete process.env[k]
+        else process.env[k] = originals[k]
+      }
     }
   })
 
   it('preserves pre-exported per-role *_RUNTIME values for sdk/claude/auto (mixed roles)', () => {
-    const original = process.env.PLANNER_RUNTIME
+    // Same isolation as the test above: snapshot every *_RUNTIME we
+    // care about so the assertions on IMPLEMENTER_RUNTIME and
+    // REVIEWER_RUNTIME exercise the `role` fallback rather than an
+    // inherited 'auto' from the developer's shell.
+    const RUNTIME_KEYS = [
+      'PLANNER_RUNTIME',
+      'IMPLEMENTER_RUNTIME',
+      'REVIEWER_RUNTIME',
+      'PHASE_AUDITOR_RUNTIME',
+      'COMPLETION_AUDITOR_RUNTIME',
+    ] as const
+    const originals: Record<string, string | undefined> = {}
+    for (const k of RUNTIME_KEYS) {
+      originals[k] = process.env[k]
+      delete process.env[k]
+    }
     try {
       process.env.PLANNER_RUNTIME = 'claude'
       const env = buildChildEnv({ ...baseOptions, runtime: 'sdk' })
@@ -196,8 +235,10 @@ describe('buildChildEnv', () => {
       assert.strictEqual(env.IMPLEMENTER_RUNTIME, 'sdk')
       assert.strictEqual(env.REVIEWER_RUNTIME, 'sdk')
     } finally {
-      if (original === undefined) delete process.env.PLANNER_RUNTIME
-      else process.env.PLANNER_RUNTIME = original
+      for (const k of RUNTIME_KEYS) {
+        if (originals[k] === undefined) delete process.env[k]
+        else process.env[k] = originals[k]
+      }
     }
   })
 
@@ -325,22 +366,42 @@ function makeSupervisorFixture(overrides: {
     },
   }
 
+  /**
+   * Default fetch: returns a valid pm-go identity envelope for any
+   * `/health` call so the new identity-aware readiness probe in
+   * `runSupervisor` greenlights the boot. Other URLs (used only by
+   * tests that exercise spec/plan submission) get an empty 2xx body
+   * — those tests are kept off the default fixture path. Per-test
+   * overrides can still wrap or replace this entirely.
+   */
+  const fetch: typeof globalThis.fetch = (async (input: unknown) => {
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : (input as { url: string }).url
+    if (url.endsWith('/health')) {
+      return new Response(
+        JSON.stringify({
+          service: 'pm-go-api',
+          version: '0.0.0-test',
+          instance: 'default',
+          port: 3001,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }
+    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as unknown as typeof globalThis.fetch
+
   const deps: RunDeps = {
     exec: async (cmd, args) => {
       execCalls.push({ cmd, args: [...args] })
       return { code: 0, stdout: '', stderr: '' }
     },
     spawn,
-    fetch: (async () =>
-      ({
-        ok: true,
-        async text() {
-          return ''
-        },
-        async json() {
-          return {}
-        },
-      } as unknown as Response)) as unknown as typeof globalThis.fetch,
+    fetch,
     readFile: async () => '',
     fileExists: async () => true,
     mkdir: async () => undefined,
@@ -404,7 +465,7 @@ describe('runSupervisor port pre-flight + state file', () => {
     )
   })
 
-  it('writeInstanceState fires for supervisor + worker + api ONLY after httpReady resolves', async () => {
+  it('writeInstanceState fires for supervisor + worker + api ONLY after the api identity probe resolves', async () => {
     const observedOrder: string[] = []
     const fixture = makeSupervisorFixture()
     const origFetch = fixture.deps.fetch
@@ -418,7 +479,7 @@ describe('runSupervisor port pre-flight + state file', () => {
             : (url as { url: string }).url
       if (u.endsWith('/health')) {
         healthSeen = true
-        observedOrder.push('httpReady')
+        observedOrder.push('apiReady')
       }
       return (origFetch as unknown as (a: unknown, b: unknown) => Promise<unknown>)(
         u,
@@ -430,7 +491,7 @@ describe('runSupervisor port pre-flight + state file', () => {
       // the order below.
       assert.ok(
         healthSeen,
-        `writeInstanceState ran for ${entry.label} BEFORE httpReady — premature persistence`,
+        `writeInstanceState ran for ${entry.label} BEFORE apiReady — premature persistence`,
       )
       observedOrder.push(`write:${entry.label}`)
       fixture.writeStateCalls.push(entry)
@@ -440,12 +501,85 @@ describe('runSupervisor port pre-flight + state file', () => {
     assert.deepEqual(labels, ['supervisor', 'worker', 'api'])
     // supervisor pid is the injected one
     assert.strictEqual(fixture.writeStateCalls[0]?.pid, 9999)
-    // ordering sanity: every write happened after the health probe
+    // ordering sanity: every write happened after the api probe.
     const firstWriteIdx = observedOrder.findIndex((s) => s.startsWith('write:'))
-    const httpReadyIdx = observedOrder.indexOf('httpReady')
+    const apiReadyIdx = observedOrder.indexOf('apiReady')
     assert.ok(
-      httpReadyIdx >= 0 && firstWriteIdx > httpReadyIdx,
-      `httpReady (${httpReadyIdx}) must precede first writeInstanceState (${firstWriteIdx})`,
+      apiReadyIdx >= 0 && firstWriteIdx > apiReadyIdx,
+      `apiReady (${apiReadyIdx}) must precede first writeInstanceState (${firstWriteIdx})`,
+    )
+  })
+
+  // -------------------------------------------------------------------------
+  // ac-health-identity-2: when /health returns 2xx from a non-pm-go service
+  // (mock returns {"status":"ok"} only), runSupervisor must fail startup
+  // with the `[pm-go] port` prefix, exit non-zero, and tear children down
+  // via deps.pm.shutdown so worker/api children don't leak past exit.
+  // -------------------------------------------------------------------------
+  it('fails startup with `[pm-go] port` prefix when /health returns 2xx from a non-pm-go service (ac-health-identity-2)', async () => {
+    const fixture = makeSupervisorFixture({ options: { apiPort: 3001 } })
+    let shutdownCalls: Array<{ reason: string; code?: number }> = []
+    fixture.deps.pm = {
+      add: () => undefined,
+      shutdown: async (reason: string, code?: number) => {
+        shutdownCalls.push({ reason, ...(code !== undefined ? { code } : {}) })
+      },
+      stop: async () => undefined,
+      get shuttingDown() {
+        return false
+      },
+    } as unknown as RunDeps['pm']
+    // Replace fetch so /health answers 2xx with the canonical foreign
+    // body the AC mocks: `{"status":"ok"}`. Every other URL keeps the
+    // default empty-2xx behaviour.
+    fixture.deps.fetch = (async (input: unknown) => {
+      const u =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as { url: string }).url
+      if (u.endsWith('/health')) {
+        return new Response('{"status":"ok"}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof globalThis.fetch
+
+    const code = await runSupervisor(fixture.options, fixture.deps)
+
+    assert.strictEqual(code, 1, 'expected non-zero exit on identity mismatch')
+    // Children were NOT persisted — writeInstanceState must not fire on
+    // a foreign-2xx response (no half-populated state file).
+    assert.deepEqual(
+      fixture.writeStateCalls,
+      [],
+      'writeInstanceState must not fire when the api identity probe fails',
+    )
+    // Shutdown was called so worker + api children get torn down and
+    // don't leak past the supervisor's exit.
+    assert.strictEqual(
+      shutdownCalls.length,
+      1,
+      `pm.shutdown must be called exactly once on identity mismatch; got ${shutdownCalls.length}`,
+    )
+    assert.strictEqual(shutdownCalls[0]?.code, 1)
+    // The structured error must be on errLog and start with the
+    // documented prefix so operators can grep for it in logs / CI.
+    const printed = fixture.errs.find((l) =>
+      l.startsWith('[pm-go] port 3001 is held by another service'),
+    )
+    assert.ok(
+      printed,
+      `errLog must include the structured identity-mismatch message; got:\n${fixture.errs.join('\n')}`,
+    )
+    // The body the foreign service returned must round-trip into the
+    // message so the operator can identify the offender from the logs.
+    assert.ok(
+      printed!.includes('"status":"ok"'),
+      `error message should surface the foreign body; got:\n${printed}`,
     )
   })
 

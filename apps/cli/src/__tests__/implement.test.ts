@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 
 import {
   parseImplementArgv,
@@ -7,7 +8,12 @@ import {
   implementCli,
   type ImplementCliDeps,
 } from '../implement.js'
-import type { InstanceStateEntry, RunDeps, RunOptions } from '../run.js'
+import {
+  runSupervisor as runSupervisorImpl,
+  type InstanceStateEntry,
+  type RunDeps,
+  type RunOptions,
+} from '../run.js'
 import { EXIT_PAUSED, type DriveDeps } from '../drive.js'
 
 // ---------------------------------------------------------------------------
@@ -453,6 +459,145 @@ describe('implementCli', () => {
     assert.ok(
       allLogs.includes('received Ctrl+C'),
       'must log Ctrl+C receipt after stayUpUntilSigint resolves',
+    )
+  })
+
+  // -------------------------------------------------------------------------
+  // ac-health-identity-2: `pm-go implement` must inherit the run-side
+  // identity probe — when /health returns 2xx from a non-pm-go service,
+  // implement must fail startup with the same `[pm-go] port` prefix and
+  // exit non-zero (no duplicate health logic in implement.ts).
+  //
+  // We exercise the REAL runSupervisor (not the fake test seam) so the
+  // probe wired into [5/6] is the one actually hit on the production path.
+  // The supervisor's pm is swapped to a fake one inside our runSupervisor
+  // wrapper to avoid `process.exit` from the real ProcessManager.
+  // -------------------------------------------------------------------------
+  it('fails startup with `[pm-go] port` prefix when /health returns 2xx from a non-pm-go service (ac-health-identity-2)', async () => {
+    const errs: string[] = []
+    const logs: string[] = []
+    let shutdownCalls = 0
+
+    /** Make a minimal fake child the supervisor's track()/pipeToLog can hook into. */
+    function makeFakeChild(pid: number) {
+      const proc = new EventEmitter() as EventEmitter & {
+        pid: number
+        stdout: EventEmitter
+        stderr: EventEmitter
+        kill: (signal?: NodeJS.Signals) => boolean
+        exitCode: number | null
+        signalCode: NodeJS.Signals | null
+      }
+      proc.pid = pid
+      proc.stdout = new EventEmitter()
+      proc.stderr = new EventEmitter()
+      proc.exitCode = null
+      proc.signalCode = null
+      proc.kill = () => true
+      return proc
+    }
+    let nextPid = 8000
+
+    /** A pm replacement whose shutdown does NOT process.exit, so the test runner survives. */
+    const fakePm: RunDeps['pm'] = {
+      add: () => undefined,
+      shutdown: (async () => {
+        shutdownCalls++
+      }) as unknown as RunDeps['pm']['shutdown'],
+      stop: async () => undefined,
+      get shuttingDown() {
+        return false
+      },
+    } as unknown as RunDeps['pm']
+
+    /** Production-ish RunDeps minus pm + monorepoRoot (filled by implementCli). */
+    const buildSupervisorDeps = (): Omit<RunDeps, 'pm' | 'monorepoRoot'> => ({
+      exec: async () => ({ code: 0, stdout: '', stderr: '' }),
+      spawn: ((_cmd: string, _args: readonly string[]) =>
+        makeFakeChild(nextPid++)) as RunDeps['spawn'],
+      // /health answers 2xx with the canonical foreign body the AC
+      // mocks: `{"status":"ok"}`. Anything else gets an empty 2xx.
+      fetch: (async (input: unknown) => {
+        const u =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : (input as { url: string }).url
+        if (u.endsWith('/health')) {
+          return new Response('{"status":"ok"}', {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        return new Response('{}', { status: 200 })
+      }) as unknown as typeof globalThis.fetch,
+      readFile: async () => '',
+      fileExists: async () => true,
+      mkdir: async () => undefined,
+      now: () => 0,
+      sleep: async () => undefined,
+      log: (l) => logs.push(l),
+      errLog: (l) => errs.push(l),
+      checkPorts: async () => ({ ok: true }),
+      writeInstanceState: async () => undefined,
+      processPid: 9999,
+    })
+
+    const deps: ImplementCliDeps = {
+      // --skip-docker + --skip-migrate so the supervisor reaches step
+      // [5/6] (the identity probe) without needing a real docker/pnpm.
+      argv: [
+        '--spec',
+        '/abs/spec.md',
+        '--skip-docker',
+        '--skip-migrate',
+        '--port',
+        '3001',
+      ],
+      cwd: '/abs/cwd',
+      monorepoRoot: '/abs/monorepo',
+      log: (l) => logs.push(l),
+      errLog: (l) => errs.push(l),
+      resolve,
+      buildSupervisorDeps,
+      buildDriveDeps: () => ({} as DriveDeps),
+      // Wrap the real runSupervisor to swap in the fake pm. Without
+      // this swap, the real ProcessManager's shutdown would call
+      // process.exit and kill the test runner.
+      runSupervisor: async (options, supervisorDeps, onReady) =>
+        runSupervisorImpl(options, { ...supervisorDeps, pm: fakePm }, onReady),
+      // Should never fire on this path (supervisor returns 1 before
+      // onReady runs); injected so the test never hangs if something
+      // regresses.
+      stayUpUntilSigint: async () => undefined,
+    }
+
+    const code = await implementCli(deps)
+    assert.strictEqual(code, 1, 'expected non-zero exit on identity mismatch')
+
+    // Structured error landed on errLog with the documented prefix.
+    const printed = errs.find((l) =>
+      l.startsWith('[pm-go] port 3001 is held by another service'),
+    )
+    assert.ok(
+      printed,
+      `errLog must include the structured identity-mismatch message; got:\n${errs.join('\n')}`,
+    )
+    // The foreign body must round-trip into the message so the
+    // operator can identify the offender from the logs.
+    assert.ok(
+      printed!.includes('"status":"ok"'),
+      `error message should surface the foreign body; got:\n${printed}`,
+    )
+
+    // Children were torn down — `pm.shutdown` MUST be called on the
+    // identity-mismatch path so the worker we spawned at step [3/6]
+    // doesn't leak past implement's exit.
+    assert.strictEqual(
+      shutdownCalls,
+      1,
+      `pm.shutdown must be called exactly once on identity mismatch; got ${shutdownCalls}`,
     )
   })
 

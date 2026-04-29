@@ -20,6 +20,7 @@ import {
 import { createTasksRoute } from "./routes/tasks.js";
 import { createApprovalsRoute } from "./routes/approvals.js";
 import { createBudgetReportsRoute } from "./routes/budget-reports.js";
+import { apiVersion } from "./lib/version.js";
 
 export interface AppDeps {
   temporal: TemporalClient;
@@ -29,13 +30,63 @@ export interface AppDeps {
   repoRoot: string;
   worktreeRoot: string;
   maxLifetimeHours: number;
+  /**
+   * Logical instance label surfaced by `GET /health` (e.g. `"default"`
+   * for the single-tenant deployment). Stable per-process; the route
+   * captures it by closure.
+   *
+   * Optional — together with {@link getBoundPort} it gates the
+   * identity body. When BOTH are supplied, `/health` returns the full
+   * `{ status, service, version, instance, port }` shape. When either
+   * is omitted, `/health` collapses to the legacy `{ status: "ok" }`
+   * shape so older `createApp({...})` call sites (e.g. pre-existing
+   * tests) keep working without breakage.
+   */
+  instanceName?: string;
+  /**
+   * Getter for the live bound port surfaced by `GET /health`. Modeled
+   * as a getter rather than a `number` because the route closure is
+   * registered before `serve(...)` resolves the bind: `index.ts`
+   * stores the live port in a holder inside the `serve(...)` callback,
+   * and the route reads it through this getter at request time.
+   *
+   * Optional — see {@link instanceName} for the gating rule. When
+   * either field is missing, `/health` returns `{ status: "ok" }`
+   * (legacy shape) and this getter is never invoked, so legacy
+   * callers cannot trip a `undefined()` 500.
+   */
+  getBoundPort?: () => number;
   /** Optional override for unit tests that want to stub the repo-intel call. */
   collectRepoSnapshot?: SpecDocumentsRouteDeps["collectRepoSnapshot"];
 }
 
 export function createApp(deps: AppDeps) {
   const app = new Hono();
-  app.get("/health", (c) => c.json({ status: "ok" }));
+  // `/health` returns the identity body when the caller wires the
+  // identity deps (`instanceName` + `getBoundPort`). When the caller
+  // doesn't — e.g. older `createApp({...})` call sites in
+  // `apps/api/test/*.ts` that pre-date this route — the response
+  // collapses to the legacy `{ status: "ok" }` shape, so those callers
+  // remain non-throwing and their existing assertions keep passing.
+  // `status: "ok"` is preserved verbatim across both modes (ac-health-
+  // identity-1 / bb2, asserted in `test/health.test.ts`).
+  const identityWired =
+    deps.instanceName !== undefined && deps.getBoundPort !== undefined;
+  app.get("/health", (c) => {
+    if (!identityWired) {
+      return c.json({ status: "ok" });
+    }
+    return c.json({
+      status: "ok",
+      service: "pm-go-api",
+      version: apiVersion,
+      // Non-null assertions are safe here: `identityWired` proves both
+      // are defined, and `getBoundPort` is the getter pattern (called
+      // per request so the live `serve(...)` port is observed).
+      instance: deps.instanceName!,
+      port: deps.getBoundPort!(),
+    });
+  });
   app.route(
     "/spec-documents",
     createSpecDocumentsRoute({

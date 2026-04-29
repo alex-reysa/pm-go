@@ -34,7 +34,27 @@
  * All side-effecting calls (HTTP fetch, Temporal client, supervisor
  * restart, projection rerun) live behind RecoverDeps so the four-branch
  * unit test can drive them with synchronous mocks.
+ *
+ * The first GET against the API base URL goes through
+ * `probePmGoApi` from `./lib/api-client.js`. probePmGoApi wraps every
+ * failure (transport, HTTP non-2xx, identity mismatch) into a single
+ * PmGoIdentityMismatchError; for recover's purposes we then split
+ * those failures: a transport-class failure (network, HTTP non-2xx,
+ * unreadable body) keeps the legacy "API down → restart supervisor"
+ * branch, while a 2xx whose body is not the pm-go identity envelope
+ * is reclassified as "foreign service holds our port" — runRecover
+ * surfaces the structured error (whose first line begins with
+ * `[pm-go] port <port> is held by another service`) and exits 1
+ * without invoking any side-effect dep. The classifier consults
+ * the error's `message` substring (`network error:` / `HTTP <num>` /
+ * `failed to read response body:`) — those substrings are part of
+ * probePmGoApi's documented message format.
  */
+
+import {
+  PmGoIdentityMismatchError,
+  probePmGoApi,
+} from './lib/api-client.js'
 
 // ---------------------------------------------------------------------------
 // Argv parsing
@@ -213,26 +233,66 @@ export type RecoverBranch =
   | 'nothing-salvageable'
 
 /**
+ * Discriminate a `PmGoIdentityMismatchError` into the two cases recover
+ * cares about: a *transport* failure (network error, HTTP non-2xx,
+ * unreadable body) means the supervisor isn't actually answering and
+ * we should fall through to the api-down branch; anything else means
+ * the API answered 2xx with a body that isn't the pm-go identity
+ * envelope, i.e. another service is squatting on our port. The
+ * substrings we match (`network error:`, `HTTP \d+`,
+ * `failed to read response body:`) are produced verbatim by
+ * `probePmGoApi`'s `fail(...)` calls; they're stable enough to
+ * dispatch on, and `apps/cli/src/__tests__/api-client.test.ts` keeps
+ * them honest.
+ */
+function isApiTransportFailure(err: PmGoIdentityMismatchError): boolean {
+  return (
+    err.message.includes('network error:') ||
+    /HTTP \d+/.test(err.message) ||
+    err.message.includes('failed to read response body:')
+  )
+}
+
+/**
  * Probe the API and Temporal to decide which recovery branch applies.
  * Pure on inputs (no mutation), so the unit test can call it directly
  * for each scenario.
+ *
+ * Throws `PmGoIdentityMismatchError` (untouched, prefix-bearing) when
+ * the API answers 2xx with a body that isn't pm-go's identity
+ * envelope. `runRecover` catches it and exits 1 without invoking
+ * `startSupervisor` / `attachAndWait` / `rerunProjection`.
  */
 export async function diagnoseRecovery(
   options: RecoverOptions,
   deps: RecoverDeps,
 ): Promise<{ branch: RecoverBranch; workflow: WorkflowDescription | null }> {
-  // 1. Is the API up? A network error or non-2xx → API-down branch.
-  let apiUp = false
-  try {
-    const res = await deps.fetch(`${options.apiUrl}/health`, {
+  // 1. API reachability + identity. probePmGoApi covers both: a
+  //    network/HTTP/body-read failure means the API isn't really up
+  //    (api-down branch); a 2xx body that fails identity validation
+  //    means a foreign service holds our port (re-thrown for
+  //    runRecover to surface and exit 1). We wrap deps.fetch in a
+  //    timeout-injecting shim so the prior 3s timeout behaviour is
+  //    preserved — probePmGoApi calls fetchImpl(url) without an init,
+  //    so this is the only seam where the signal can be plumbed.
+  const probeFetch: typeof globalThis.fetch = ((
+    input: Parameters<typeof globalThis.fetch>[0],
+    init?: Parameters<typeof globalThis.fetch>[1],
+  ) =>
+    deps.fetch(input, {
+      ...init,
       signal: AbortSignal.timeout(3000),
-    })
-    apiUp = res.ok
-  } catch {
-    apiUp = false
-  }
-  if (!apiUp) {
-    return { branch: 'api-down', workflow: null }
+    })) as typeof globalThis.fetch
+  try {
+    await probePmGoApi(probeFetch, `${options.apiUrl}/health`)
+  } catch (err) {
+    if (err instanceof PmGoIdentityMismatchError) {
+      if (isApiTransportFailure(err)) {
+        return { branch: 'api-down', workflow: null }
+      }
+      throw err
+    }
+    throw err
   }
 
   // 2. API is up — ask Temporal what the workflow looks like.
@@ -296,7 +356,26 @@ export async function runRecover(
   deps.write(`pm-go recover plan=${options.planId}${options.dryRun ? ' (dry-run)' : ''}`)
   deps.write('─'.repeat(42))
 
-  const { branch, workflow } = await diagnoseRecovery(options, deps)
+  // diagnoseRecovery throws PmGoIdentityMismatchError when the /health
+  // response is 2xx but the body isn't pm-go's identity envelope —
+  // i.e. another service holds our port. Surface the structured
+  // message verbatim and exit 1 BEFORE invoking any side-effect dep:
+  // the AC explicitly requires no startSupervisor / attachAndWait /
+  // rerunProjection / describeWorkflow request against a foreign
+  // target.
+  let branchOutcome: { branch: RecoverBranch; workflow: WorkflowDescription | null }
+  try {
+    branchOutcome = await diagnoseRecovery(options, deps)
+  } catch (err) {
+    if (err instanceof PmGoIdentityMismatchError) {
+      for (const line of err.message.split('\n')) {
+        deps.write(line)
+      }
+      return 1
+    }
+    throw err
+  }
+  const { branch, workflow } = branchOutcome
 
   // The apiPort is encoded in apiUrl; pull it out for startSupervisor.
   // A malformed URL falls back to the default port — better than
