@@ -127,6 +127,13 @@
       "when": 1777400000000,
       "tag": "0017_runner_diagnostic_artifact_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1777500000000,
+      "tag": "0018_spec_decompositions",
+      "breakpoints": true
     }
   ]
 }

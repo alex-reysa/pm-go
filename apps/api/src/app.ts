@@ -5,6 +5,7 @@ import {
   createSpecDocumentsRoute,
   type SpecDocumentsRouteDeps,
 } from "./routes/spec-documents.js";
+import { createSpecDecompositionsRoute } from "./routes/spec-decompositions.js";
 import {
   createCompletionAuditReportsRoute,
   createPlansRoute,
@@ -94,6 +95,18 @@ export function createApp(deps: AppDeps) {
       ...(deps.collectRepoSnapshot !== undefined
         ? { collectRepoSnapshot: deps.collectRepoSnapshot }
         : {}),
+    }),
+  );
+  // Layer-A milestone-decomposition routes share the same
+  // `/spec-documents` prefix so all four endpoints have the canonical
+  // `/:specDocumentId/...` shape. Hono fans dispatch out across both
+  // routers; the route paths are disjoint by construction.
+  app.route(
+    "/spec-documents",
+    createSpecDecompositionsRoute({
+      temporal: deps.temporal,
+      taskQueue: deps.taskQueue,
+      db: deps.db,
     }),
   );
   app.route(

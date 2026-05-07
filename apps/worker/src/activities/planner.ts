@@ -3,7 +3,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import type { AgentRun, Artifact, Plan } from "@pm-go/contracts";
+import type {
+  AgentRun,
+  Artifact,
+  MilestoneContext,
+  Plan,
+} from "@pm-go/contracts";
 import type { PmGoDb } from "@pm-go/db";
 import type { PlannerRunner } from "@pm-go/executor-claude";
 import { auditPlan, renderPlanMarkdown, runPlanner } from "@pm-go/planner";
@@ -33,6 +38,13 @@ export interface PlannerActivities {
     specDocumentId: string;
     repoSnapshotId: string;
     requestedBy: string;
+    /**
+     * Layer-A milestone scoping. Forwarded verbatim to `runPlanner`,
+     * which both narrows the planner-runner's user prompt to the
+     * milestone scope and stamps `decompositionId` / `milestoneId` on
+     * the returned plan so the persistence step writes them through.
+     */
+    milestoneContext?: MilestoneContext;
   }): Promise<{ plan: Plan; agentRun: AgentRun }>;
   auditPlanActivity(plan: Plan): Promise<ReturnType<typeof auditPlan>>;
   renderPlanMarkdownActivity(input: {
@@ -74,6 +86,9 @@ export function createPlannerActivities(
         requestedBy: input.requestedBy,
         runner: deps.plannerRunner,
         ...(input.planId !== undefined ? { planId: input.planId } : {}),
+        ...(input.milestoneContext !== undefined
+          ? { milestoneContext: input.milestoneContext }
+          : {}),
         ...(deps.plannerMaxTurns !== undefined ? { maxTurnsCap: deps.plannerMaxTurns } : {}),
         ...(deps.plannerBudgetUsd !== undefined ? { budgetUsdCap: deps.plannerBudgetUsd } : {}),
         ...(deps.plannerModel !== undefined ? { model: deps.plannerModel } : {}),

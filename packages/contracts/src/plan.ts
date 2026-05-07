@@ -120,6 +120,26 @@ export interface Plan {
   tasks: Task[];
   risks: Risk[];
   autoApproveLowRisk?: boolean;
+  /**
+   * Layer-A provenance: the `spec_decompositions` row this plan was
+   * scoped from, if any. Populated only for plans created via the
+   * milestone-decomposition path; absent for plans created from a
+   * full-spec `POST /plans`.
+   */
+  decompositionId?: UUID;
+  /**
+   * Id of the milestone (within the manifest referenced by
+   * `decompositionId`) that this plan implements. Always co-occurs with
+   * `decompositionId`.
+   */
+  milestoneId?: string;
+  /**
+   * Id of the plan that delivered the previous milestone in the chain,
+   * if any. Reserved for future auto-chaining; the v0.9 spike does not
+   * populate this field but the column exists so plans persisted
+   * during the spike are forward-compatible.
+   */
+  predecessorPlanId?: UUID;
   createdAt: string;
   updatedAt: string;
 }

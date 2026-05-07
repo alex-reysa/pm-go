@@ -45,6 +45,12 @@ import {
   type RepairDeps,
 } from './doctor.js'
 import {
+  decomposeCli,
+  DECOMPOSE_USAGE,
+  type DecomposeCliDeps,
+  type DecomposeDeps,
+} from './decompose.js'
+import {
   driveCli,
   DRIVE_USAGE,
   type DriveCliDeps,
@@ -76,6 +82,7 @@ Commands:
   implement   Boot stack + submit spec + drive to release in one command.
   run         Start the pm-go control plane (supervisor only).
   drive       Drive a submitted plan to released against a running stack.
+  decompose   Layer-A: split a spec into milestones, edit, plan-first.
   status      Show worker config, API health, and open Temporal workflows.
   why         Explain in one sentence why a plan/phase/task is in its state.
   doctor      Probe runtimes + diagnose configuration. Use --repair to fix.
@@ -301,6 +308,26 @@ async function main(): Promise<number> {
         buildDriveDeps: () => buildProductionDriveDeps(),
       }
       return driveCli(driveCliDeps)
+    }
+
+    case 'decompose': {
+      if (rest[0] === '--help' || rest[0] === '-h') {
+        console.log(DECOMPOSE_USAGE)
+        return 0
+      }
+      // Same INIT_CWD-aware resolution as `run` / `implement` so
+      // `--repo .` / `--spec ./feature.md` work under the
+      // `pnpm --filter @pm-go/cli exec` invocation mode.
+      const userCwd = process.env.INIT_CWD ?? process.cwd()
+      const decomposeCliDeps: DecomposeCliDeps = {
+        argv: rest,
+        cwd: userCwd,
+        resolve: (base, p) => (path.isAbsolute(p) ? p : path.resolve(base, p)),
+        log: (l) => console.log(l),
+        errLog: (l) => console.error(l),
+        buildDecomposeDeps: () => buildProductionDecomposeDeps(),
+      }
+      return decomposeCli(decomposeCliDeps)
     }
 
     case 'status': {
@@ -793,6 +820,49 @@ function buildProductionDriveDeps(): DriveDeps {
         rl.close()
       }
     },
+  }
+}
+
+function buildProductionDecomposeDeps(): DecomposeDeps {
+  return {
+    fetch: globalThis.fetch.bind(globalThis),
+    now: () => Date.now(),
+    sleep: (ms) => delay(ms),
+    log: (l) => console.log(l),
+    errLog: (l) => console.error(l),
+    readFile: (p) => readFile(p, 'utf8'),
+    writeFile: async (p, contents) => {
+      await writeFile(p, contents, 'utf8')
+    },
+    makeTempfile: async (suggestedName) => {
+      // Land the manifest in `${TMPDIR}/pm-go/<suggestedName>` so the
+      // editor opens a stable path the operator can reopen with their
+      // history. We don't strictly need uniqueness — the suggested
+      // name carries the `decompositionId`, which is itself a UUID —
+      // but mkdir-recursive is harmless if the dir already exists.
+      const dir = path.join(os.tmpdir(), 'pm-go')
+      await mkdir(dir, { recursive: true })
+      return path.join(dir, suggestedName)
+    },
+    openEditor: async (filePath) => {
+      const editor =
+        process.env.VISUAL || process.env.EDITOR || 'vi'
+      // The editor inherits stdio so the operator gets a real TTY
+      // experience. `shell: false` prevents argv injection if the env
+      // var carries spaces — a path like "/usr/bin/code --wait" needs
+      // explicit support, but `vi` and friends have no flags here.
+      await new Promise<void>((resolve, reject) => {
+        const child = nodeSpawn(editor, [filePath], {
+          stdio: 'inherit',
+        })
+        child.on('error', reject)
+        child.on('exit', (code) => {
+          if (code === 0) resolve()
+          else reject(new Error(`${editor} exited with code ${code}`))
+        })
+      })
+    },
+    basename: (p, ext) => path.basename(p, ext),
   }
 }
 

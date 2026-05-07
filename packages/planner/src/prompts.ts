@@ -6,7 +6,8 @@ export type PromptName =
   | "implementer"
   | "reviewer"
   | "phase-auditor"
-  | "completion-auditor";
+  | "completion-auditor"
+  | "decomposer";
 
 /**
  * Canonical prompt-version registry. Every .md file under
@@ -19,6 +20,7 @@ export const PROMPT_VERSIONS: Record<PromptName, number> = {
   reviewer: 1,
   "phase-auditor": 1,
   "completion-auditor": 1,
+  decomposer: 1,
 };
 
 /**

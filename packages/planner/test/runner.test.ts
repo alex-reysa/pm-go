@@ -4,6 +4,8 @@ import { describe, it, expect } from "vitest";
 
 import type {
   AgentRun,
+  MilestoneContext,
+  MilestoneManifest,
   Plan,
   RepoSnapshot,
   SpecDocument,
@@ -131,5 +133,55 @@ describe("runPlanner", () => {
         runner: spy,
       }),
     ).rejects.toBeInstanceOf(PlanValidationError);
+  });
+
+  it("stamps decompositionId + milestoneId on the returned plan when milestoneContext is provided, and forwards the context to the runner", async () => {
+    const manifestFixture: MilestoneManifest = JSON.parse(
+      readFixture("orchestration-review/milestone-manifest.json"),
+    );
+    const manifest: MilestoneManifest = {
+      ...manifestFixture,
+      specDocumentId: specDocumentFixture.id,
+      repoSnapshotId: repoSnapshotFixture.id,
+    };
+    const milestoneContext: MilestoneContext = {
+      decompositionId: "11111111-2222-4333-8444-555555555555",
+      milestoneId: manifest.milestones[0]!.id,
+      manifest,
+    };
+
+    let receivedMilestoneContext: MilestoneContext | undefined;
+    const spy: PlannerRunner = {
+      run: async (input: PlannerRunnerInput): Promise<PlannerRunnerResult> => {
+        receivedMilestoneContext = input.milestoneContext;
+        const fakeRun: AgentRun = {
+          id: "00000000-0000-4000-8000-000000000002",
+          workflowRunId: "stub-workflow-run",
+          role: "planner",
+          depth: 0,
+          status: "completed",
+          riskLevel: "low",
+          executor: "claude",
+          model: input.model,
+          promptVersion: input.promptVersion,
+          permissionMode: "default",
+          startedAt: "2026-05-07T00:00:00.000Z",
+          completedAt: "2026-05-07T00:00:01.000Z",
+        };
+        return { plan: planFixture, agentRun: fakeRun };
+      },
+    };
+
+    const result = await runPlanner({
+      specDocument: specDocumentFixture,
+      repoSnapshot: repoSnapshotFixture,
+      requestedBy: "alex@example.com",
+      runner: spy,
+      milestoneContext,
+    });
+
+    expect(receivedMilestoneContext).toEqual(milestoneContext);
+    expect(result.plan.decompositionId).toBe(milestoneContext.decompositionId);
+    expect(result.plan.milestoneId).toBe(milestoneContext.milestoneId);
   });
 });

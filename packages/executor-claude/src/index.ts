@@ -6,6 +6,8 @@ import { promisify } from "node:util";
 
 import type {
   AgentRun,
+  MilestoneContext,
+  MilestoneManifest,
   Plan,
   RepoSnapshot,
   ReviewFinding,
@@ -27,6 +29,15 @@ export interface PlannerRunnerInput {
   budgetUsdCap?: number;
   maxTurnsCap?: number;
   cwd: string;
+  /**
+   * Layer-A milestone scoping. When present, the planner-runner narrows
+   * its user-turn prompt to the milestone's scope (`sourceSections` and
+   * `exitCriteria`) so the planner produces a `Plan` for that milestone
+   * alone instead of the full spec. The downstream `Plan` row is stamped
+   * with `decompositionId` / `milestoneId` separately by the persistence
+   * activity — the runner itself does not mutate the plan id.
+   */
+  milestoneContext?: MilestoneContext;
 }
 
 export interface PlannerRunnerResult {
@@ -38,6 +49,77 @@ export interface PlannerRunner {
   /** Discriminant that identifies whether this runner is backed by the SDK or the CLI process. */
   readonly _runtimeKind?: string;
   run(input: PlannerRunnerInput): Promise<PlannerRunnerResult>;
+}
+
+/**
+ * Input to a `DecomposerRunner` — the executor-side seam that turns a
+ * spec + repo snapshot into a `MilestoneManifest`. Mirrors
+ * `PlannerRunnerInput` so the same prompt-loading and Claude-SDK
+ * scaffolding can be reused; the only structural difference is the
+ * structured-output target.
+ */
+export interface DecomposerRunnerInput {
+  specDocument: SpecDocument;
+  repoSnapshot: RepoSnapshot;
+  systemPrompt: string;
+  promptVersion: string;
+  model: string;
+  budgetUsdCap?: number;
+  maxTurnsCap?: number;
+  cwd: string;
+}
+
+export interface DecomposerRunnerResult {
+  manifest: MilestoneManifest;
+  agentRun: AgentRun;
+}
+
+export interface DecomposerRunner {
+  /** Discriminant that identifies whether this runner is backed by the SDK or the CLI process. */
+  readonly _runtimeKind?: string;
+  run(input: DecomposerRunnerInput): Promise<DecomposerRunnerResult>;
+}
+
+/**
+ * Stub decomposer runner: ignores the SDK and returns the supplied
+ * fixture manifest paired with a synthesized AgentRun. Used by unit
+ * tests + the foundation-lane smoke flow so downstream code can be
+ * exercised without an Anthropic API key.
+ */
+export function createStubDecomposerRunner(
+  fixture: MilestoneManifest,
+): DecomposerRunner {
+  return {
+    async run(
+      input: DecomposerRunnerInput,
+    ): Promise<DecomposerRunnerResult> {
+      const now = new Date().toISOString();
+      const agentRun: AgentRun = {
+        id: randomUUID(),
+        workflowRunId: "stub-workflow-run",
+        role: "planner",
+        depth: 0,
+        status: "completed",
+        riskLevel: "low",
+        executor: "claude",
+        model: input.model,
+        promptVersion: input.promptVersion,
+        sessionId: "stub-session",
+        permissionMode: "default",
+        turns: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        costUsd: 0,
+        stopReason: "completed",
+        outputFormatSchemaRef: "MilestoneManifest@1",
+        startedAt: now,
+        completedAt: now,
+      };
+      return { manifest: fixture, agentRun };
+    },
+  };
 }
 
 /**
@@ -79,6 +161,8 @@ export function createStubPlannerRunner(fixture: Plan): PlannerRunner {
 }
 
 export { createClaudePlannerRunner, isInsideCwd } from "./planner-runner.js";
+export { createClaudeDecomposerRunner } from "./decomposer-runner.js";
+export type { ClaudeDecomposerRunnerConfig } from "./decomposer-runner.js";
 
 export {
   ExecutorError,

@@ -37,6 +37,10 @@ export const PlanSchema = Type.Object({
   phases: Type.Array(PhaseSchema),
   tasks: Type.Array(TaskSchema),
   risks: Type.Array(RiskSchema),
+  autoApproveLowRisk: Type.Optional(Type.Boolean()),
+  decompositionId: Type.Optional(UuidSchema),
+  milestoneId: Type.Optional(Type.String()),
+  predecessorPlanId: Type.Optional(UuidSchema),
   createdAt: Iso8601Schema,
   updatedAt: Iso8601Schema
 }, { $id: "Plan", additionalProperties: false });
