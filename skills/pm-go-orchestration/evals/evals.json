@@ -1,0 +1,29 @@
+{
+  "skill_name": "pm-go-orchestration",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Use pm-go on this repo for ./specs/cache-layer.md. I want it to run the plan all the way through review, integration, audit, and release if possible. What should you do first, and what commands should you run?",
+      "expected_output": "Should choose the v0.9 default agent path (`pm-go --repo . --spec ./specs/cache-layer.md` or equivalent), avoid pre-checking ANTHROPIC_API_KEY, mention the default interactive approval behavior and `--yes` / `--approve all` for autonomous runs, and avoid using legacy `pm-go implement` unless `--legacy-drive` is explicitly needed.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "This spec is large and clearly has three milestones. I want to use pm-go Layer-A so we do not flatten everything into one giant plan. Show me the operator flow and be precise about the CLI flags.",
+      "expected_output": "Should start a running stack with `pm-go run --repo .` in one terminal, then run `pm-go decompose --repo . --spec <spec> --edit` from another shell, then drive the printed plan id. It should mention `--manifest-only` for review-only mode, state that the current CLI plans the first milestone only, and explicitly avoid unsupported `--plan-first` or `--milestone-id` CLI flags.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "My pm-go plan is stuck after a laptop restart. I have a plan UUID, but I do not know whether the worker, API, or Temporal workflow is the problem. What should I inspect before trying fixes?",
+      "expected_output": "Should inspect with `pm-go status` and `pm-go why <id>` before DB or Temporal spelunking, use `pm-go recover` only for stale process-state cleanup, then resume with `pm-go drive --plan <uuid>`. It should mention stale dist/task-queue mismatch for scheduled-but-never-picked-up workflows and preserve existing worktree/process state.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "I am writing an API-level smoke test for pm-go. I need the raw HTTP calls to submit a spec and start a plan. Give me the current request bodies.",
+      "expected_output": "Should say raw API is advanced and prefer CLI for normal operation, then use `POST /spec-documents` with `title`, `body`, `repoRoot`, and optional `source`; capture both `specDocumentId` and `repoSnapshotId`; then call `POST /plans` with both ids. It should not use a stale `content` field or omit `repoSnapshotId`.",
+      "files": []
+    }
+  ]
+}
