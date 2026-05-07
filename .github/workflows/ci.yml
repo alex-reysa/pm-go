@@ -28,6 +28,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build workspace
+        # `temporal-workflows` and `temporal-activities` point their
+        # `types` field at `dist/`. Without this step, downstream
+        # typecheck fails on a fresh CI checkout because `dist/` is
+        # gitignored. Cheap on a warm pnpm cache.
+        run: pnpm -r --if-present build
+
       - name: Typecheck
         run: pnpm typecheck
 
@@ -62,6 +69,9 @@ jobs:
         run: |
           git config --global user.email "ci@pm-go.test"
           git config --global user.name "pm-go ci"
+
+      - name: Build workspace
+        run: pnpm -r --if-present build
 
       - name: phase7-matrix smoke
         run: pnpm smoke:phase7-matrix
