@@ -30,12 +30,22 @@ const DIST_ROOT = join(REPO_ROOT, "apps/worker/dist/workflows");
 interface SourceTimeout {
   workflowFile: string;
   symbolicName: string;
+  /**
+   * 0-based ordinal of this `proxyActivities<IFACE>(...)` call within
+   * the source file, used to pair against the same-positioned
+   * `proxyActivities(...)` call in the compiled dist file. Required
+   * because TypeScript erases the type-arg in dist, so two
+   * `proxyActivities<SameInterface>(...)` calls in one file are
+   * otherwise indistinguishable.
+   */
+  occurrenceIndex: number;
   startToCloseTimeout: string;
 }
 
 interface Mismatch {
   workflowFile: string;
   symbolicName: string;
+  occurrenceIndex: number;
   source: string;
   dist: string | null;
 }
@@ -68,52 +78,98 @@ function extractSourceTimeouts(file: string): SourceTimeout[] {
   const proxyRegex =
     /proxyActivities<([^>]+)>\s*\(\s*\{([\s\S]*?)\}\s*\)/g;
   let match: RegExpExecArray | null;
+  let occurrenceIndex = 0;
   while ((match = proxyRegex.exec(body)) !== null) {
     const ifaceName = match[1]!.trim();
     const optionsBlock = match[2]!;
     const timeoutMatch = optionsBlock.match(
       /startToCloseTimeout\s*:\s*["']([^"']+)["']/,
     );
-    if (!timeoutMatch) continue;
+    if (!timeoutMatch) {
+      occurrenceIndex += 1;
+      continue;
+    }
     out.push({
       workflowFile: file,
       symbolicName: ifaceName,
+      occurrenceIndex,
       startToCloseTimeout: timeoutMatch[1]!,
     });
+    occurrenceIndex += 1;
   }
   return out;
 }
 
 /**
- * Look for the same timeout literal inside the compiled JS file. The
- * tsc output preserves quoted string literals verbatim, so a substring
- * search on the dist file is a valid (and very fast) freshness check.
+ * Pull the timeout literal from each `proxyActivities({...})` call in a
+ * compiled dist file, indexed by 0-based occurrence order. TypeScript
+ * erases the `<IFACE>` type-arg in dist, so we cannot match by interface
+ * name; we have to match by call position instead. Returns one entry
+ * per `proxyActivities(...)` call (including ones that don't declare a
+ * timeout — those map to `null` so the caller can still report the
+ * pairing as a mismatch rather than silently skipping).
  */
-function checkDistFor(source: SourceTimeout): Mismatch | null {
+function extractDistTimeouts(distBody: string): Array<string | null> {
+  const proxyRegex = /proxyActivities\s*\(\s*\{([\s\S]*?)\}\s*\)/g;
+  const out: Array<string | null> = [];
+  let match: RegExpExecArray | null;
+  while ((match = proxyRegex.exec(distBody)) !== null) {
+    const optionsBlock = match[1]!;
+    const timeoutMatch = optionsBlock.match(
+      /startToCloseTimeout\s*:\s*["']([^"']+)["']/,
+    );
+    out.push(timeoutMatch ? timeoutMatch[1]! : null);
+  }
+  return out;
+}
+
+/**
+ * Look for the same timeout literal inside the compiled JS file at the
+ * matching `proxyActivities(...)` call position. The tsc output
+ * preserves quoted string literals verbatim, so a position-paired
+ * lookup against the dist file is a valid (and very fast) freshness
+ * check. The pairing-by-occurrence is required because two
+ * `proxyActivities<SameInterface>(...)` calls in one file (e.g.
+ * spec-decomposition.ts) collapse to two indistinguishable
+ * `proxyActivities({...})` calls in dist after type-arg erasure.
+ */
+function checkDistFor(
+  source: SourceTimeout,
+  distTimeoutsByPath: Map<string, Array<string | null> | null>,
+): Mismatch | null {
   const rel = relative(SOURCE_ROOT, source.workflowFile);
   const distRel = rel.replace(/\.ts$/, ".js");
   const distPath = join(DIST_ROOT, distRel);
 
-  if (!existsSync(distPath)) {
+  let distTimeouts = distTimeoutsByPath.get(distPath);
+  if (distTimeouts === undefined) {
+    if (!existsSync(distPath)) {
+      distTimeouts = null;
+    } else {
+      const distBody = readFileSync(distPath, "utf8");
+      distTimeouts = extractDistTimeouts(distBody);
+    }
+    distTimeoutsByPath.set(distPath, distTimeouts);
+  }
+
+  if (distTimeouts === null) {
     return {
       workflowFile: source.workflowFile,
       symbolicName: source.symbolicName,
+      occurrenceIndex: source.occurrenceIndex,
       source: source.startToCloseTimeout,
       dist: null,
     };
   }
 
-  const dist = readFileSync(distPath, "utf8");
-  const distTimeoutMatch = dist.match(
-    /startToCloseTimeout\s*:\s*["']([^"']+)["']/,
-  );
-  const observedDist = distTimeoutMatch ? distTimeoutMatch[1]! : null;
+  const observedDist = distTimeouts[source.occurrenceIndex] ?? null;
 
   if (observedDist === source.startToCloseTimeout) return null;
 
   return {
     workflowFile: source.workflowFile,
     symbolicName: source.symbolicName,
+    occurrenceIndex: source.occurrenceIndex,
     source: source.startToCloseTimeout,
     dist: observedDist,
   };
@@ -143,9 +199,10 @@ function main(): number {
     return 2;
   }
 
+  const distTimeoutsByPath = new Map<string, Array<string | null> | null>();
   const mismatches: Mismatch[] = [];
   for (const t of allTimeouts) {
-    const m = checkDistFor(t);
+    const m = checkDistFor(t, distTimeoutsByPath);
     if (m) mismatches.push(m);
   }
 
@@ -158,7 +215,10 @@ function main(): number {
     );
     for (const t of allTimeouts) {
       const rel = relative(REPO_ROOT, t.workflowFile);
-      console.log(`  - ${rel} (${t.symbolicName}): ${t.startToCloseTimeout}`);
+      console.log(
+        `  - ${rel} (${t.symbolicName}#${t.occurrenceIndex}): ` +
+          `${t.startToCloseTimeout}`,
+      );
     }
     return 0;
   }
@@ -170,7 +230,7 @@ function main(): number {
   for (const m of mismatches) {
     const rel = relative(REPO_ROOT, m.workflowFile);
     console.error(
-      `  - ${rel} (${m.symbolicName}):\n` +
+      `  - ${rel} (${m.symbolicName}#${m.occurrenceIndex}):\n` +
         `      source expected: ${m.source}\n` +
         `      dist observed:   ${m.dist ?? "<missing dist file>"}`,
     );
