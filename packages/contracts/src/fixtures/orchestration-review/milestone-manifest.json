@@ -1,0 +1,49 @@
+{
+  "specDocumentId": "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+  "repoSnapshotId": "f0e1d2c3-b4a5-4768-99aa-bbccddeeff00",
+  "milestones": [
+    {
+      "id": "m01-acceptance-probe-loop",
+      "title": "Acceptance probe loop foundations",
+      "summary": "Add the planner-generated acceptance probe contract, executor adapter, and the worker activity that runs probes against an integration branch.",
+      "sourceSections": ["§2 Goals", "§4.1 Probe contract", "§4.2 Executor wiring"],
+      "exitCriteria": [
+        "AcceptanceProbe contract added to @pm-go/contracts with passing fixture and validator tests.",
+        "Executor adapter wires probe runs through the existing Claude runner with a budget cap.",
+        "spec-to-plan workflow can call the probe-runner activity end-to-end against the smoke fixture."
+      ],
+      "expectedPhaseCount": 2,
+      "dependsOn": []
+    },
+    {
+      "id": "m02-probe-driven-fix-loop",
+      "title": "Probe-driven fix loop",
+      "summary": "Wire probe failures into the task fix workflow so an implementer agent can pick up a probe-flagged task without operator intervention.",
+      "sourceSections": ["§4.3 Fix loop", "§5 Failure paths"],
+      "exitCriteria": [
+        "Failed probe persists a TaskFixRequest and re-routes the task to the fix workflow.",
+        "Probe-driven fix completes a single retry cycle in the smoke test.",
+        "Per-task review gate still rejects fixes that drift the contract."
+      ],
+      "expectedPhaseCount": 3,
+      "dependsOn": ["m01-acceptance-probe-loop"]
+    },
+    {
+      "id": "m03-operator-surface",
+      "title": "Operator surface for probe runs",
+      "summary": "Surface probe runs in the API + CLI so operators can list, inspect, and rerun probes attached to a plan or phase.",
+      "sourceSections": ["§6 Operator UX", "§7 CLI extensions"],
+      "exitCriteria": [
+        "GET /plans/:id/probes returns the canonical probe-run history.",
+        "pm-go probes list / inspect / rerun commands are documented and tested.",
+        "Probe rerun honors the plan's existing budget envelope."
+      ],
+      "expectedPhaseCount": 2,
+      "dependsOn": ["m02-probe-driven-fix-loop"]
+    }
+  ],
+  "deferredScope": [
+    "§8 Multi-repo probe routing — covered in a follow-up spec.",
+    "§9 Probe sharding for large plans — out of scope for v0.9."
+  ]
+}

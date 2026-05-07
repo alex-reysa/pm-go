@@ -13,6 +13,8 @@ import {
   type PlanAuditWorkflowInput,
   type PlanAuditWorkflowResult,
   type RetryPolicyConfig,
+  type SpecDecompositionWorkflowInput,
+  type SpecDecompositionWorkflowResult,
   type SpecToPlanWorkflowInput,
   type SpecToPlanWorkflowResult,
   type TaskExecutionWorkflowInput,
@@ -36,6 +38,15 @@ export const SPEC_TO_PLAN_WORKFLOW: WorkflowDefinition<
 > = {
   name: "SpecToPlanWorkflow",
   description: "Create a structured plan from a spec document plus repo context."
+};
+
+export const SPEC_DECOMPOSITION_WORKFLOW: WorkflowDefinition<
+  SpecDecompositionWorkflowInput,
+  SpecDecompositionWorkflowResult
+> = {
+  name: "SpecDecompositionWorkflow",
+  description:
+    "Layer-A: split a spec document into an ordered MilestoneManifest before any plan is generated."
 };
 
 export const PLAN_AUDIT_WORKFLOW: WorkflowDefinition<
@@ -154,6 +165,18 @@ export const PHASE7_RETRY_POLICIES: readonly RetryPolicyConfig[] = [
     backoffMultiplier: 2,
     maxAttempts: 3,
     nonRetryableErrorNames: ["PlanValidationError", CONTENT_FILTER_ERROR_NAME]
+  },
+  {
+    workflowName: "SpecDecompositionWorkflow",
+    initialDelayMs: 1_000,
+    maxDelayMs: 30_000,
+    backoffMultiplier: 2,
+    maxAttempts: 3,
+    nonRetryableErrorNames: [
+      "MilestoneManifestValidationError",
+      "SpecDecompositionFailure",
+      CONTENT_FILTER_ERROR_NAME
+    ]
   },
   {
     workflowName: "PlanAuditWorkflow",

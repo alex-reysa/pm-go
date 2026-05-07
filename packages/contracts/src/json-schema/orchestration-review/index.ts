@@ -4,7 +4,9 @@
 
 export * from "./completion-audit-report.js";
 export * from "./merge-run.js";
+export * from "./milestone-manifest.js";
 export * from "./phase-audit-report.js";
 export * from "./plan.js";
 export * from "./review-report.js";
+export * from "./spec-decomposition.js";
 export * from "./task.js";

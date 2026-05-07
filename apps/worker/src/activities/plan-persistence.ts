@@ -151,6 +151,9 @@ async function persistPlanImpl(
             status: plan.status,
             risks: plan.risks,
             autoApproveLowRisk: plan.autoApproveLowRisk ?? null,
+            decompositionId: plan.decompositionId ?? null,
+            milestoneId: plan.milestoneId ?? null,
+            predecessorPlanId: plan.predecessorPlanId ?? null,
             createdAt: plan.createdAt,
             updatedAt: plan.updatedAt,
           })
@@ -162,6 +165,9 @@ async function persistPlanImpl(
               status: plan.status,
               risks: plan.risks,
               autoApproveLowRisk: plan.autoApproveLowRisk ?? null,
+              decompositionId: plan.decompositionId ?? null,
+              milestoneId: plan.milestoneId ?? null,
+              predecessorPlanId: plan.predecessorPlanId ?? null,
               updatedAt: plan.updatedAt,
             },
           });

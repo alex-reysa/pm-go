@@ -2,6 +2,7 @@ import { proxyActivities } from "@temporalio/workflow";
 import type {
   AgentRun,
   Artifact,
+  MilestoneContext,
   Plan,
   ReviewFinding,
   SpecToPlanWorkflowInput,
@@ -23,6 +24,7 @@ interface SpecToPlanActivities {
     specDocumentId: string;
     repoSnapshotId: string;
     requestedBy: string;
+    milestoneContext?: MilestoneContext;
   }): Promise<{ plan: Plan; agentRun: AgentRun }>;
   auditPlanActivity(plan: Plan): Promise<{
     planId: string;
@@ -86,6 +88,9 @@ export async function SpecToPlanWorkflow(
     specDocumentId: input.specDocumentId,
     repoSnapshotId: input.repoSnapshotId,
     requestedBy: input.requestedBy,
+    ...(input.milestoneContext !== undefined
+      ? { milestoneContext: input.milestoneContext }
+      : {}),
   });
 
   await persistAgentRun(agentRun);

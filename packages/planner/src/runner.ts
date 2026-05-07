@@ -1,6 +1,7 @@
 import {
   validatePlan,
   type AgentRun,
+  type MilestoneContext,
   type Plan,
   type RepoSnapshot,
   type SpecDocument,
@@ -35,6 +36,16 @@ export interface RunPlannerInput {
    * confirms the rest of the plan is well-formed.
    */
   planId?: string;
+  /**
+   * Layer-A milestone scoping. When present, the planner-runner sees
+   * the milestone's `sourceSections` / `exitCriteria` in its user-turn
+   * prompt and is asked to plan that milestone alone (still within the
+   * standard ≤ 3-phase / ≤ 6-task budget). {@link runPlanner} passes
+   * this through to the runner verbatim and stamps the resulting
+   * plan's `decompositionId` / `milestoneId` from the context, so
+   * provenance round-trips back to the `spec_decompositions` row.
+   */
+  milestoneContext?: MilestoneContext;
 }
 
 /**
@@ -95,6 +106,9 @@ export async function runPlanner(
     budgetUsdCap,
     maxTurnsCap,
     cwd: input.repoSnapshot.repoRoot,
+    ...(input.milestoneContext !== undefined
+      ? { milestoneContext: input.milestoneContext }
+      : {}),
   });
 
   if (!validatePlan(result.plan)) {
@@ -120,7 +134,7 @@ export async function runPlanner(
   // would write children referencing the model's stale id and the
   // reconstructed plan would fail integrity checks. Phase/task ids
   // themselves are NOT touched — only their parent pointer.
-  const plan: Plan =
+  const idRewritten: Plan =
     input.planId !== undefined
       ? {
           ...result.plan,
@@ -135,6 +149,22 @@ export async function runPlanner(
           })),
         }
       : result.plan;
+
+  // Stamp Layer-A milestone provenance when the caller passed a
+  // `milestoneContext`. The context's `decompositionId` and
+  // `milestoneId` flow into the plan row as-is so a downstream
+  // operator (or plan-first follow-up) can trace this plan back to
+  // the manifest entry that scoped it. Absence is the common case
+  // (full-spec plan submissions), in which case the plan is left
+  // untouched.
+  const plan: Plan =
+    input.milestoneContext !== undefined
+      ? {
+          ...idRewritten,
+          decompositionId: input.milestoneContext.decompositionId,
+          milestoneId: input.milestoneContext.milestoneId,
+        }
+      : idRewritten;
 
   return { plan, agentRun: result.agentRun };
 }

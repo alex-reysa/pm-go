@@ -1,4 +1,5 @@
 import type { SignalDefinition } from "@temporalio/workflow";
+import type { MilestoneContext, SpecDecomposition } from "./decomposition.js";
 import type { MergeRun } from "./execution.js";
 import type { Plan, Task, UUID } from "./plan.js";
 import type { CompletionAuditReport, PhaseAuditReport, ReviewReport } from "./review.js";
@@ -29,11 +30,40 @@ export interface SpecToPlanWorkflowInput {
    * callers polling `GET /plans/<id>` never 404 against the wrong key.
    */
   planId: UUID;
+  /**
+   * Layer-A milestone scoping. When present, the planner system prompt
+   * is narrowed to the milestone's `sourceSections` / `exitCriteria`
+   * and the resulting plan row is stamped with `decompositionId` /
+   * `milestoneId` for provenance. Absent for full-spec plan submissions.
+   */
+  milestoneContext?: MilestoneContext;
 }
 
 export interface SpecToPlanWorkflowResult {
   plan: Plan;
   renderedPlanArtifactId?: UUID;
+}
+
+/**
+ * Input for the `SpecDecompositionWorkflow` — Layer-A's "spec → manifest"
+ * step. Returns once the decomposer agent has produced and persisted a
+ * `MilestoneManifest` (or a terminal failure with an `errorReason`).
+ */
+export interface SpecDecompositionWorkflowInput {
+  specDocumentId: UUID;
+  repoSnapshotId: UUID;
+  requestedBy: string;
+  /**
+   * API-supplied decomposition UUID. Mirrors the `planId` pattern on
+   * `SpecToPlanWorkflowInput` so callers polling
+   * `GET /spec-documents/:id/decompositions/:decompositionId` never
+   * 404 against a row that hasn't been written yet.
+   */
+  decompositionId: UUID;
+}
+
+export interface SpecDecompositionWorkflowResult {
+  decomposition: SpecDecomposition;
 }
 
 export interface PlanAuditWorkflowInput {

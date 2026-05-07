@@ -15,6 +15,7 @@ import type {
 } from "@pm-go/contracts";
 import {
   createClaudeCompletionAuditorRunner,
+  createClaudeDecomposerRunner,
   createClaudeImplementerRunner,
   createClaudePhaseAuditorRunner,
   createClaudePlannerRunner,
@@ -25,6 +26,7 @@ import {
   createStubReviewerRunner,
   type AgentRunFailureSink,
   type CompletionAuditorRunner,
+  type DecomposerRunner,
   type ImplementerRunner,
   type PhaseAuditorRunner,
   type PlannerRunner,
@@ -46,9 +48,11 @@ import { createRepoIntelligenceActivities } from "./activities/repo-intelligence
 import { createReviewActivities } from "./activities/reviewer.js";
 import { createReviewPersistenceActivities } from "./activities/review-persistence.js";
 import { createSpanActivities } from "./activities/spans.js";
+import { createSpecDecompositionActivities } from "./activities/spec-decomposition.js";
 import { createSpecIntakeActivities } from "./activities/spec-intake.js";
 import { createTaskExecutionActivities } from "./activities/task-execution.js";
 import { createWorktreeActivities } from "./activities/worktree.js";
+import { createFixtureSubstitutingStubDecomposerRunner } from "./lib/fixture-stub-decomposer-runner.js";
 import { createFixtureSubstitutingStubRunner } from "./lib/fixture-stub-runner.js";
 
 // ---------------------------------------------------------------------------
@@ -394,6 +398,32 @@ async function main() {
         ? createClaudePlannerRunner({ onFailure: onAgentRunFailure })
         : createFixtureSubstitutingStubRunner(resolveFixturePath());
 
+  // Decomposer (Layer-A): same runtime resolution as the planner — the
+  // decomposer is planner-class (read-only Opus) so the operator's
+  // PLANNER_RUNTIME / PLANNER_EXECUTOR_MODE choice applies. A stub
+  // backed by the on-disk MilestoneManifest fixture lets local smoke
+  // tests run without an API key; live mode uses the Claude SDK.
+  const decomposerRunner: DecomposerRunner =
+    plannerRuntime !== undefined
+      ? await resolveRuntimeRunner(
+          plannerRuntime,
+          "PLANNER_RUNTIME",
+          () => createClaudeDecomposerRunner({ onFailure: onAgentRunFailure }),
+          // No `claude` CLI process runner exists yet for the decomposer
+          // — fall through to the SDK factory's "not implemented" path.
+          () => {
+            throw new Error(
+              "PLANNER_RUNTIME=claude: the Claude CLI process runner does not yet implement decomposer. " +
+                "Set PLANNER_RUNTIME=sdk or fall back to the executor-mode stub.",
+            );
+          },
+        )
+      : plannerMode === "live"
+        ? createClaudeDecomposerRunner({ onFailure: onAgentRunFailure })
+        : createFixtureSubstitutingStubDecomposerRunner(
+            resolveDecomposerFixturePath(),
+          );
+
   const implementerRunner: ImplementerRunner =
     implementerRuntime !== undefined
       ? await resolveRuntimeRunner(
@@ -496,6 +526,13 @@ async function main() {
     ...(plannerBudgetUsd !== undefined ? { plannerBudgetUsd } : {}),
     ...(plannerModel !== undefined ? { plannerModel } : {}),
   });
+  const specDecomposition = createSpecDecompositionActivities({
+    db,
+    decomposerRunner,
+    ...(plannerMaxTurns !== undefined ? { decomposerMaxTurns: plannerMaxTurns } : {}),
+    ...(plannerBudgetUsd !== undefined ? { decomposerBudgetUsd: plannerBudgetUsd } : {}),
+    ...(plannerModel !== undefined ? { decomposerModel: plannerModel } : {}),
+  });
   const worktree = createWorktreeActivities({ db });
   const taskExecution = createTaskExecutionActivities({
     db,
@@ -548,6 +585,7 @@ async function main() {
     ...repoIntel,
     ...planPersistence,
     ...planner,
+    ...specDecomposition,
     ...worktree,
     ...taskExecution,
     ...review,
@@ -786,6 +824,25 @@ function resolveFixturePath(): string {
   return fileURLToPath(
     new URL(
       "../../../packages/contracts/src/fixtures/orchestration-review/plan.json",
+      import.meta.url,
+    ),
+  );
+}
+
+/**
+ * Mirror of {@link resolveFixturePath} for the decomposer's stub
+ * runner. `DECOMPOSER_STUB_FIXTURE_PATH` overrides; otherwise the
+ * shipped `MilestoneManifest` fixture from `@pm-go/contracts` is used
+ * so a vanilla `pm-go run` boots without extra config.
+ */
+function resolveDecomposerFixturePath(): string {
+  const override = process.env.DECOMPOSER_STUB_FIXTURE_PATH;
+  if (override && override.trim().length > 0) {
+    return path.isAbsolute(override) ? override : resolveFromRepoRoot(override);
+  }
+  return fileURLToPath(
+    new URL(
+      "../../../packages/contracts/src/fixtures/orchestration-review/milestone-manifest.json",
       import.meta.url,
     ),
   );

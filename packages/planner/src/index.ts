@@ -9,6 +9,13 @@ export {
 } from "./runner.js";
 
 export {
+  runDecomposer,
+  MilestoneManifestValidationError,
+  type RunDecomposerInput,
+  type RunDecomposerResult,
+} from "./decomposer-runner.js";
+
+export {
   runImplementer,
   type RunImplementerInput,
   type RunImplementerResult,

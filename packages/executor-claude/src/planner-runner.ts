@@ -298,7 +298,7 @@ function buildUserPrompt(input: PlannerRunnerInput): string {
     testCommands: snapshot.testCommands,
     ciConfigPaths: snapshot.ciConfigPaths,
   };
-  return [
+  const sections = [
     `# Specification (id ${input.specDocument.id})`,
     `Title: ${input.specDocument.title}`,
     "",
@@ -309,9 +309,38 @@ function buildUserPrompt(input: PlannerRunnerInput): string {
     JSON.stringify(condensed, null, 2),
     "```",
     "",
+  ];
+
+  if (input.milestoneContext !== undefined) {
+    const milestone = input.milestoneContext.manifest.milestones.find(
+      (m) => m.id === input.milestoneContext!.milestoneId,
+    );
+    if (milestone !== undefined) {
+      sections.push(
+        `# Milestone scope (decomposition ${input.milestoneContext.decompositionId})`,
+        "",
+        `You are planning ONLY milestone "${milestone.id}" — "${milestone.title}".`,
+        "",
+        `Summary: ${milestone.summary}`,
+        "",
+        "Source sections from the spec to draw scope from:",
+        ...milestone.sourceSections.map((s) => `- ${s}`),
+        "",
+        "Exit criteria — every Plan task must move toward at least one of these:",
+        ...milestone.exitCriteria.map((c) => `- ${c}`),
+        "",
+        "Do NOT plan scope from other sections of the spec. Other milestones cover the rest.",
+        "",
+      );
+    }
+  }
+
+  sections.push(
     "Emit a structured Plan JSON object per the system prompt. ",
     `Echo specDocumentId="${input.specDocument.id}" and repoSnapshotId="${input.repoSnapshot.id}" on the Plan.`,
-  ].join("\n");
+  );
+
+  return sections.join("\n");
 }
 
 function extractPathFromToolInput(toolInput: unknown): string {

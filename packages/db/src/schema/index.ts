@@ -1,5 +1,6 @@
 export * from "./spec-documents.js";
 export * from "./repo-snapshots.js";
+export * from "./spec-decompositions.js";
 export * from "./plans.js";
 export * from "./phases.js";
 export * from "./plan-tasks.js";

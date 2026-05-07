@@ -856,6 +856,18 @@ async function loadPlanById(
     phases: phasesOut,
     tasks: tasksOut,
     risks: (planRow.risks ?? []) as Risk[],
+    ...(planRow.autoApproveLowRisk !== null
+      ? { autoApproveLowRisk: planRow.autoApproveLowRisk }
+      : {}),
+    ...(planRow.decompositionId !== null
+      ? { decompositionId: planRow.decompositionId }
+      : {}),
+    ...(planRow.milestoneId !== null
+      ? { milestoneId: planRow.milestoneId }
+      : {}),
+    ...(planRow.predecessorPlanId !== null
+      ? { predecessorPlanId: planRow.predecessorPlanId }
+      : {}),
     createdAt: toIso(planRow.createdAt),
     updatedAt: toIso(planRow.updatedAt),
   };

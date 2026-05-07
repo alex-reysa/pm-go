@@ -12,6 +12,7 @@ import type { Risk } from "@pm-go/contracts";
 import { specDocuments } from "./spec-documents.js";
 import { repoSnapshots } from "./repo-snapshots.js";
 import { completionAuditReports } from "./completion-audit-reports.js";
+import { specDecompositions } from "./spec-decompositions.js";
 
 export const planStatus = pgEnum("plan_status", [
   "draft",
@@ -46,6 +47,21 @@ export const plans = pgTable("plans", {
   // declared in the migration.
   completionAuditReportId: uuid("completion_audit_report_id").references(
     (): AnyPgColumn => completionAuditReports.id,
+    { onDelete: "set null" },
+  ),
+  // Layer-A milestone-decomposition provenance. Populated only for plans
+  // generated via the spec → manifest → milestone-plan path. The DB-level
+  // CHECK constraint pairs `decomposition_id` with `milestone_id` (both
+  // present or both null).
+  decompositionId: uuid("decomposition_id").references(
+    (): AnyPgColumn => specDecompositions.id,
+    { onDelete: "set null" },
+  ),
+  milestoneId: text("milestone_id"),
+  // Reserved for future auto-chaining. Always null in v0.9; the column
+  // exists so plans persisted now stay forward-compatible.
+  predecessorPlanId: uuid("predecessor_plan_id").references(
+    (): AnyPgColumn => plans.id,
     { onDelete: "set null" },
   ),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
