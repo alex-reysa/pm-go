@@ -27,12 +27,15 @@ describe("isInsideCwd", () => {
   });
 
   it("normalises relative paths before comparison", () => {
-    // path.resolve resolves relative to process.cwd(), so these depend on
-    // the ambient cwd; pass in absolute form to the test helper.
     const inside = path.resolve(cwd, "./src/foo.ts");
     const outside = path.resolve(cwd, "../elsewhere/foo.ts");
     expect(isInsideCwd(inside, cwd)).toBe(true);
     expect(isInsideCwd(outside, cwd)).toBe(false);
+  });
+
+  it("resolves relative tool paths against cwd", () => {
+    expect(isInsideCwd("src/index.ts", "/tmp/repo")).toBe(true);
+    expect(isInsideCwd("../secret", "/tmp/repo")).toBe(false);
   });
 
   it("rejects traversal via .. even when the prefix matches textually", () => {

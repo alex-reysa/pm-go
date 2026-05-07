@@ -14,6 +14,7 @@ const snapshot: RepoSnapshot = {
   buildCommands: ["pnpm build"],
   testCommands: ["pnpm test"],
   ciConfigPaths: [".github/workflows/ci.yml"],
+  manifestPaths: ["package.json"],
   capturedAt: "2025-01-01T00:00:00.000Z",
 };
 
@@ -41,6 +42,7 @@ describe("persistRepoSnapshot", () => {
         buildCommands: snapshot.buildCommands,
         testCommands: snapshot.testCommands,
         ciConfigPaths: snapshot.ciConfigPaths,
+        manifestPaths: snapshot.manifestPaths,
         capturedAt: snapshot.capturedAt,
       }),
     );

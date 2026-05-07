@@ -588,6 +588,7 @@ async function loadRepoSnapshotImpl(
     buildCommands: row.buildCommands,
     testCommands: row.testCommands,
     ciConfigPaths: row.ciConfigPaths,
+    manifestPaths: row.manifestPaths,
     capturedAt: row.capturedAt,
   };
 }

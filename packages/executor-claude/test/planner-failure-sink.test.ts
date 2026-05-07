@@ -156,12 +156,11 @@ describe("createClaudePlannerRunner — onFailure sink", () => {
     expect(run.errorReason).toBe("ECONNRESET: connection reset by peer");
   });
 
-  it("does not invoke onFailure on the success path", async () => {
+  it("calls onFailure when the SDK returns no structured_output", async () => {
     queryMock.mockImplementation(() => {
       async function* empty(): AsyncGenerator<never, void, unknown> {
         // no messages — SDK returns cleanly, planner then throws a
-        // validation error outside the catch block (no structured_output).
-        // onFailure must not be called in either case.
+        // failed planner AgentRun because no structured_output was returned.
       }
       return empty();
     });
@@ -174,9 +173,16 @@ describe("createClaudePlannerRunner — onFailure sink", () => {
       },
     });
 
-    // The runner throws because no plan was returned, but onFailure
-    // is NOT invoked — the error originates outside the try/catch sink.
-    await expect(runner.run(buildInput())).rejects.toThrow();
-    expect(captured).toHaveLength(0);
+    await expect(runner.run(buildInput())).rejects.toThrow(
+      /SDK returned no structured_output Plan/,
+    );
+    expect(captured).toHaveLength(1);
+    const run = captured[0]!;
+    expect(run.status).toBe("failed");
+    expect(run.role).toBe("planner");
+    expect(run.stopReason).toBe("error");
+    expect(run.errorReason).toBe(
+      "createClaudePlannerRunner: SDK returned no structured_output Plan",
+    );
   });
 });

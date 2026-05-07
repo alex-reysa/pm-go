@@ -168,4 +168,24 @@ describe("SpecToPlanWorkflow", () => {
     expect(result.plan.status).toBe("blocked");
     expect(result.renderedPlanArtifactId).toBeUndefined();
   });
+
+  it("rejects cleanly when generatePlan fails and does not persist success state", async () => {
+    const plannerError = new Error("planner failed");
+    activityFns.generatePlan.mockRejectedValue(plannerError);
+
+    await expect(
+      SpecToPlanWorkflow({
+        planId: planFixture.id,
+        specDocumentId: planFixture.specDocumentId,
+        repoSnapshotId: planFixture.repoSnapshotId,
+        requestedBy: "test",
+      }),
+    ).rejects.toBe(plannerError);
+
+    expect(activityFns.persistAgentRun).not.toHaveBeenCalled();
+    expect(activityFns.auditPlanActivity).not.toHaveBeenCalled();
+    expect(activityFns.persistPlan).not.toHaveBeenCalled();
+    expect(activityFns.renderPlanMarkdownActivity).not.toHaveBeenCalled();
+    expect(activityFns.persistArtifact).not.toHaveBeenCalled();
+  });
 });

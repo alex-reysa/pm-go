@@ -148,6 +148,7 @@ async function resetSchema(db: PmGoDb): Promise<void> {
       "build_commands" text[] NOT NULL,
       "test_commands" text[] NOT NULL,
       "ci_config_paths" text[] NOT NULL,
+      "manifest_paths" text[] DEFAULT '{}'::text[] NOT NULL,
       "captured_at" timestamp with time zone DEFAULT now() NOT NULL
     )
   `);
@@ -276,6 +277,7 @@ async function seedPrerequisites(db: PmGoDb): Promise<void> {
     buildCommands: seedRepo.buildCommands,
     testCommands: seedRepo.testCommands,
     ciConfigPaths: seedRepo.ciConfigPaths,
+    manifestPaths: seedRepo.manifestPaths ?? [],
     capturedAt: seedRepo.capturedAt,
   });
 }

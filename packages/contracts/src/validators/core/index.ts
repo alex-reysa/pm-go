@@ -19,3 +19,9 @@ export {
   validateAgentRun,
   type AgentRunStatic
 } from "./agent-run.js";
+export {
+  AgentToolCallSchema,
+  AgentToolCallStatusSchema,
+  validateAgentToolCall,
+  type AgentToolCallStatic
+} from "./agent-tool-call.js";

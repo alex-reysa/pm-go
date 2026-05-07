@@ -102,6 +102,7 @@ export function createSpecDocumentsRoute(deps: SpecDocumentsRouteDeps) {
       buildCommands: snapshot.buildCommands,
       testCommands: snapshot.testCommands,
       ciConfigPaths: snapshot.ciConfigPaths,
+      manifestPaths: snapshot.manifestPaths ?? [],
       capturedAt: snapshot.capturedAt,
     });
 

@@ -64,6 +64,7 @@ describe.skipIf(!databaseUrl)("@pm-go/db round-trip", () => {
           "build_commands" text[] NOT NULL,
           "test_commands" text[] NOT NULL,
           "ci_config_paths" text[] NOT NULL,
+          "manifest_paths" text[] DEFAULT '{}'::text[] NOT NULL,
           "captured_at" timestamp with time zone DEFAULT now() NOT NULL
         )
       `);
@@ -94,6 +95,7 @@ describe.skipIf(!databaseUrl)("@pm-go/db round-trip", () => {
         buildCommands: repoFixture.buildCommands,
         testCommands: repoFixture.testCommands,
         ciConfigPaths: repoFixture.ciConfigPaths,
+        manifestPaths: repoFixture.manifestPaths ?? [],
         capturedAt: repoFixture.capturedAt,
       });
 
@@ -126,6 +128,7 @@ describe.skipIf(!databaseUrl)("@pm-go/db round-trip", () => {
         buildCommands: repoRow.buildCommands,
         testCommands: repoRow.testCommands,
         ciConfigPaths: repoRow.ciConfigPaths,
+        manifestPaths: repoRow.manifestPaths,
         capturedAt: repoRow.capturedAt,
       };
       expect(validateRepoSnapshot(repoCandidate)).toBe(true);

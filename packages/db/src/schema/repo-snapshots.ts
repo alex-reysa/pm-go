@@ -1,4 +1,5 @@
-import { pgTable, text, uuid, timestamp } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
 export const repoSnapshots = pgTable("repo_snapshots", {
   id: uuid("id").primaryKey(),
@@ -11,6 +12,10 @@ export const repoSnapshots = pgTable("repo_snapshots", {
   buildCommands: text("build_commands").array().notNull(),
   testCommands: text("test_commands").array().notNull(),
   ciConfigPaths: text("ci_config_paths").array().notNull(),
+  manifestPaths: text("manifest_paths")
+    .array()
+    .notNull()
+    .default(sql`'{}'::text[]`),
   capturedAt: timestamp("captured_at", { withTimezone: true, mode: "string" })
     .notNull()
     .defaultNow(),

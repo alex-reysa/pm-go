@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   check,
+  index,
   integer,
   numeric,
   pgEnum,
@@ -10,9 +11,11 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { planTasks } from "./plan-tasks.js";
+import { plans } from "./plans.js";
 import { riskLevel } from "./plan-tasks.js";
 
 export const agentRole = pgEnum("agent_role", [
+  "orchestrator",
   "planner",
   "partitioner",
   "implementer",
@@ -55,6 +58,9 @@ export const agentRuns = pgTable(
     taskId: uuid("task_id").references(() => planTasks.id, {
       onDelete: "set null",
     }),
+    planId: uuid("plan_id").references(() => plans.id, {
+      onDelete: "set null",
+    }),
     workflowRunId: text("workflow_run_id").notNull(),
     role: agentRole("role").notNull(),
     depth: integer("depth").notNull(),
@@ -87,6 +93,7 @@ export const agentRuns = pgTable(
     errorReason: text("error_reason"),
   },
   (table) => ({
+    planIdx: index("agent_runs_plan_id_idx").on(table.planId),
     depthRange: check(
       "agent_runs_depth_range",
       sql`${table.depth} >= 0 AND ${table.depth} <= 2`,
