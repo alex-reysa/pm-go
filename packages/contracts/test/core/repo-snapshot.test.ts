@@ -25,6 +25,18 @@ describe("RepoSnapshot contract", () => {
     expect(validateRepoSnapshot(fixture)).toBe(true);
   });
 
+  it("accepts manifest provenance paths when present", () => {
+    const fixture = loadFixture() as Record<string, unknown>;
+    fixture["manifestPaths"] = ["package.json", "packages/api/package.json"];
+    expect(validateRepoSnapshot(fixture)).toBe(true);
+  });
+
+  it("rejects manifest provenance paths with non-string entries", () => {
+    const fixture = loadFixture() as Record<string, unknown>;
+    fixture["manifestPaths"] = ["package.json", 42];
+    expect(validateRepoSnapshot(fixture)).toBe(false);
+  });
+
   it("rejects a fixture whose required `defaultBranch` is wrongly typed", () => {
     const fixture = loadFixture() as Record<string, unknown>;
     fixture["defaultBranch"] = 42;
@@ -58,6 +70,7 @@ describe("RepoSnapshot contract", () => {
       buildCommands: ["pnpm build"],
       testCommands: ["pnpm test"],
       ciConfigPaths: [".github/workflows/ci.yml"],
+      manifestPaths: ["package.json"],
       capturedAt: "2026-04-18T10:35:12.000Z"
     };
     const asContract: RepoSnapshot = sample;

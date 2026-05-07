@@ -907,6 +907,7 @@ function buildPlannerUserPrompt(input: PlannerRunnerInput): string {
         headSha: input.repoSnapshot.headSha,
         languageHints: input.repoSnapshot.languageHints,
         frameworkHints: input.repoSnapshot.frameworkHints,
+        manifestPaths: input.repoSnapshot.manifestPaths ?? [],
       },
       null,
       2,

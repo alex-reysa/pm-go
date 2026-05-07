@@ -37,8 +37,11 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
-import { detectAvailableRuntimes } from '@pm-go/runtime-detector'
-
+import {
+  agentCli,
+  type AgentOptions,
+  type AgentCliDeps,
+} from './agent.js'
 import {
   runDoctor,
   type InfraProbeDeps,
@@ -53,6 +56,8 @@ import {
 import {
   driveCli,
   DRIVE_USAGE,
+  EXIT_PAUSED,
+  runDrive,
   type DriveCliDeps,
   type DriveDeps,
 } from './drive.js'
@@ -64,13 +69,20 @@ import {
 import { applyDotenv } from './lib/dotenv.js'
 import {
   runCli,
+  runSupervisor,
   RUN_USAGE,
   type InstanceStateEntry,
   type PortConflict,
   type PortPreflightResult,
   type RunCliDeps,
   type RunDeps,
+  type RunOptions,
 } from './run.js'
+import { createProcessManager } from './lib/process-manager.js'
+import {
+  PmGoIdentityMismatchError,
+  probePmGoApi,
+} from './lib/api-client.js'
 import { runStatus, STATUS_USAGE } from './status.js'
 import { runWhy, WHY_USAGE } from './why.js'
 
@@ -79,6 +91,7 @@ const execFile = promisify(execFileCb)
 const ROOT_USAGE = `Usage: pm-go <command> [options]
 
 Commands:
+  agent       Start the agentic operator (default when no legacy command is used).
   implement   Boot stack + submit spec + drive to release in one command.
   run         Start the pm-go control plane (supervisor only).
   drive       Drive a submitted plan to released against a running stack.
@@ -93,7 +106,7 @@ Commands:
 Run \`pm-go <command> --help\` for command-specific options.
 
 Quickest path:
-  pm-go implement --repo . --spec ./feature.md`
+  pm-go --repo . --spec ./feature.md`
 
 const PS_USAGE = `Usage: pm-go ps [options]
 
@@ -135,9 +148,95 @@ Options:
   --verbose   Print extra diagnostic detail on failure.
   -h, --help  Show this message.`
 
-const [, , subcommand, ...rest] = process.argv
+const LEGACY_SUBCOMMANDS = new Set([
+  'doctor',
+  'run',
+  'drive',
+  'status',
+  'why',
+  'ps',
+  'stop',
+  'recover',
+])
+
+export type CliDispatch =
+  | { kind: 'root-help' }
+  | { kind: 'agent'; argv: string[]; compatibilityLog?: string }
+  | { kind: 'legacy'; subcommand: string; argv: string[] }
+  | { kind: 'unknown'; subcommand: string }
+
+export function resolveCliDispatch(argv: readonly string[]): CliDispatch {
+  const [first, ...rest] = argv
+  if (first === '--help' || first === '-h') {
+    return { kind: 'root-help' }
+  }
+  if (first === undefined) {
+    return { kind: 'agent', argv: [] }
+  }
+  if (first === 'agent') {
+    return { kind: 'agent', argv: rest }
+  }
+  if (first === 'implement') {
+    const legacyIndex = rest.indexOf('--legacy-drive')
+    if (legacyIndex !== -1) {
+      const legacyArgv = [...rest]
+      legacyArgv.splice(legacyIndex, 1)
+      return { kind: 'legacy', subcommand: 'implement', argv: legacyArgv }
+    }
+    if (rest.includes('--help') || rest.includes('-h')) {
+      return { kind: 'legacy', subcommand: 'implement', argv: rest }
+    }
+    return {
+      kind: 'agent',
+      argv: rest,
+      compatibilityLog:
+        '[pm-go] `pm-go implement` now runs the agentic operator. Use `pm-go implement --legacy-drive` for the legacy drive flow.',
+    }
+  }
+  if (LEGACY_SUBCOMMANDS.has(first)) {
+    return { kind: 'legacy', subcommand: first, argv: rest }
+  }
+  if (first.startsWith('-')) {
+    return { kind: 'agent', argv: [...argv] }
+  }
+  return { kind: 'unknown', subcommand: first }
+}
 
 async function main(): Promise<number> {
+  const dispatch = resolveCliDispatch(process.argv.slice(2))
+  if (dispatch.kind === 'root-help') {
+    console.log(ROOT_USAGE)
+    return 0
+  }
+  if (dispatch.kind === 'agent') {
+    if (dispatch.compatibilityLog) {
+      console.log(dispatch.compatibilityLog)
+    }
+    const userCwd = process.env.INIT_CWD ?? process.cwd()
+    const agentCliDeps: AgentCliDeps = {
+      argv: dispatch.argv,
+      cwd: userCwd,
+      log: (l) => console.log(l),
+      errLog: (l) => console.error(l),
+      resolve: (base, p) => (path.isAbsolute(p) ? p : path.resolve(base, p)),
+      runOperatorAgent: (options) =>
+        runProductionOperatorAgent(options, {
+          monorepoRoot: resolveMonorepoRoot(),
+          log: (l) => console.log(l),
+          errLog: (l) => console.error(l),
+        }),
+    }
+    return agentCli(agentCliDeps)
+  }
+  if (dispatch.kind === 'unknown') {
+    console.error(`Unknown subcommand: ${dispatch.subcommand}`)
+    console.error('')
+    console.error(ROOT_USAGE)
+    return 1
+  }
+
+  const subcommand = dispatch.subcommand
+  const rest = dispatch.argv
   switch (subcommand) {
     case 'doctor': {
       if (rest.includes('--help') || rest.includes('-h')) {
@@ -240,6 +339,7 @@ async function main(): Promise<number> {
             }
           }
         : undefined
+      const { detectAvailableRuntimes } = await import('@pm-go/runtime-detector')
       return runDoctor({
         detectRuntimes: detectAvailableRuntimes,
         env: process.env,
@@ -584,6 +684,371 @@ async function main(): Promise<number> {
   }
 }
 
+interface ProductionOperatorAgentDeps {
+  monorepoRoot: string
+  log: (line: string) => void
+  errLog: (line: string) => void
+  fetch?: typeof globalThis.fetch
+  loadOperatorAgent?: () => Promise<{
+    runOperatorAgent?: (
+      options: AgentOptions,
+      deps?: {
+        fetchImpl?: typeof globalThis.fetch
+        handlers?: PmGoToolHandlers
+      },
+    ) => Promise<OperatorAgentResult>
+  }>
+  createStackController?: (
+    options: AgentOptions,
+    deps: ProductionOperatorAgentDeps,
+  ) => AgentStackController
+}
+
+interface AgentStackController {
+  ensure(input: {
+    repoRoot?: string | undefined
+    runtime?: string | undefined
+    apiUrl: string
+  }): Promise<Record<string, unknown>>
+  stop(): Promise<Record<string, unknown>>
+  readonly apiUrl: string | undefined
+}
+
+interface OperatorAgentResult {
+  status: 'completed' | 'failed'
+  text: string
+}
+
+interface PmGoToolHandlers {
+  doctor?: (input: {
+    repair?: boolean | undefined
+    verbose?: boolean | undefined
+  }) => Promise<Record<string, unknown>>
+  recover?: () => Promise<Record<string, unknown>>
+  ensureStack?: (input: {
+    repoRoot?: string | undefined
+    runtime?: string | undefined
+    apiUrl: string
+  }) => Promise<Record<string, unknown>>
+  stop?: () => Promise<Record<string, unknown>>
+  drivePlan?: (input: {
+    planId: string
+    approve: 'all' | 'none' | 'interactive'
+  }) => Promise<Record<string, unknown>>
+}
+
+export async function runProductionOperatorAgent(
+  options: AgentOptions,
+  deps: ProductionOperatorAgentDeps,
+): Promise<number> {
+  const mod = deps.loadOperatorAgent
+    ? await deps.loadOperatorAgent()
+    : await loadOperatorAgentModule()
+  if (typeof mod.runOperatorAgent !== 'function') {
+    deps.errLog('pm-go agent: @pm-go/orchestrator does not export runOperatorAgent')
+    return 1
+  }
+
+  const stack = deps.createStackController
+    ? deps.createStackController(options, deps)
+    : createAgentStackController(options, deps)
+  const fetchImpl = deps.fetch ?? globalThis.fetch.bind(globalThis)
+  const handlers: PmGoToolHandlers = {
+    async doctor() {
+      const apiUrl = resolveAgentApiUrl(options)
+      return {
+        status: (await isPmGoApiReachable(apiUrl, fetchImpl)) ? 'ok' : 'api_unreachable',
+        apiUrl,
+      }
+    },
+    async recover() {
+      return recoverInstanceState()
+    },
+    async ensureStack(input) {
+      return stack.ensure(input)
+    },
+    async stop() {
+      return stack.stop()
+    },
+    async drivePlan(input) {
+      const apiUrl = stack.apiUrl ?? resolveAgentApiUrl(options)
+      const exitCode = await runDrive(
+        {
+          planId: input.planId,
+          apiUrl,
+          approve: input.approve,
+        },
+        buildProductionDriveDeps(),
+      )
+      return {
+        status:
+          exitCode === 0
+            ? 'released'
+            : exitCode === EXIT_PAUSED
+              ? 'paused'
+              : 'blocked',
+        exitCode,
+        planId: input.planId,
+      }
+    },
+  }
+
+  try {
+    const ensureResult = await stack.ensure({
+      repoRoot: options.repoRoot,
+      runtime: options.runtime,
+      apiUrl: resolveAgentApiUrl(options),
+    })
+    if (!isReadyAgentStack(ensureResult)) {
+      deps.errLog(
+        `pm-go agent: unable to ensure pm-go API (${JSON.stringify(ensureResult)})`,
+      )
+      return 1
+    }
+    const ensuredApiUrl =
+      typeof ensureResult.apiUrl === 'string'
+        ? ensureResult.apiUrl
+        : resolveAgentApiUrl(options)
+    const result = await mod.runOperatorAgent({ ...options, apiUrl: ensuredApiUrl }, {
+      fetchImpl,
+      handlers,
+    })
+    if (typeof result.text === 'string' && result.text.trim().length > 0) {
+      deps.log(result.text)
+    }
+    return result.status === 'completed' ? 0 : 1
+  } finally {
+    await stack.stop().catch(() => undefined)
+  }
+}
+
+async function loadOperatorAgentModule(): Promise<{
+  runOperatorAgent?: (
+    options: AgentOptions,
+    deps?: {
+      fetchImpl?: typeof globalThis.fetch
+      handlers?: PmGoToolHandlers
+    },
+  ) => Promise<OperatorAgentResult>
+}> {
+  const dynamicImport = new Function(
+    'specifier',
+    'return import(specifier)',
+  ) as (specifier: string) => Promise<unknown>
+  return (await dynamicImport('@pm-go/orchestrator')) as {
+    runOperatorAgent?: (
+      options: AgentOptions,
+      deps?: {
+        fetchImpl?: typeof globalThis.fetch
+        handlers?: PmGoToolHandlers
+      },
+    ) => Promise<OperatorAgentResult>
+  }
+}
+
+function isReadyAgentStack(value: Record<string, unknown>): value is Record<string, unknown> & {
+  apiUrl?: string
+} {
+  return value.status === 'reachable' || value.status === 'started'
+}
+
+function createAgentStackController(
+  options: AgentOptions,
+  agentDeps: ProductionOperatorAgentDeps,
+): AgentStackController {
+  let current:
+    | {
+        apiUrl: string
+        release: () => void
+        done: Promise<number>
+      }
+    | undefined
+
+  async function ensure(input: {
+    repoRoot?: string | undefined
+    runtime?: string | undefined
+    apiUrl: string
+  }): Promise<Record<string, unknown>> {
+    const apiUrl = input.apiUrl.replace(/\/+$/, '')
+    if (await isPmGoApiReachable(apiUrl, agentDeps.fetch ?? globalThis.fetch.bind(globalThis))) {
+      return { status: 'reachable', apiUrl, started: false }
+    }
+    if (current) {
+      return { status: 'starting_or_running', apiUrl: current.apiUrl, started: true }
+    }
+    if (!isLocalAgentApiUrl(apiUrl)) {
+      return {
+        status: 'unreachable',
+        apiUrl,
+        message: 'explicit non-local apiUrl cannot be started by pm-go',
+      }
+    }
+
+    const apiPort = portFromApiUrl(apiUrl) ?? options.apiPort ?? 3001
+    let releaseKeepAlive: (() => void) | undefined
+    let readySettled = false
+    let readyResolve:
+      | ((handle: { apiUrl: string }) => void)
+      | undefined
+    let readyReject: ((err: Error) => void) | undefined
+    const ready = new Promise<{ apiUrl: string }>((resolve, reject) => {
+      readyResolve = resolve
+      readyReject = reject
+    })
+    const keepAlive = new Promise<number>((resolve) => {
+      releaseKeepAlive = () => resolve(0)
+    })
+    const supervisorDeps = buildProductionSupervisorDeps()
+    const pm = createProcessManager({
+      process,
+      log: agentDeps.errLog,
+      removeInstanceState: () =>
+        productionRemoveInstanceState(defaultStateFilePath()),
+    })
+    const runOptions: RunOptions = {
+      repoRoot: input.repoRoot ?? options.repoRoot,
+      specPath: undefined,
+      title: undefined,
+      runtime: (input.runtime ?? options.runtime) as RunOptions['runtime'],
+      apiPort,
+      databaseUrl:
+        process.env.DATABASE_URL ?? 'postgres://pmgo:pmgo@localhost:5432/pm_go',
+      skipDocker: false,
+      skipMigrate: false,
+    }
+
+    const done = runSupervisor(
+      runOptions,
+      {
+        ...supervisorDeps,
+        pm,
+        monorepoRoot: agentDeps.monorepoRoot,
+      },
+      async (handle) => {
+        readySettled = true
+        readyResolve?.({ apiUrl: handle.apiUrl })
+        return keepAlive
+      },
+    ).then(
+      (code) => {
+        if (!readySettled) {
+          readyReject?.(
+            new Error(`supervisor exited before API became ready (code ${code})`),
+          )
+        }
+        return code
+      },
+      (err) => {
+        if (!readySettled) {
+          readyReject?.(err instanceof Error ? err : new Error(String(err)))
+        }
+        throw err
+      },
+    )
+
+    current = {
+      apiUrl: `http://localhost:${apiPort}`,
+      release: releaseKeepAlive ?? (() => undefined),
+      done,
+    }
+    try {
+      const handle = await ready
+      current.apiUrl = handle.apiUrl
+      return { status: 'started', apiUrl: handle.apiUrl, started: true }
+    } catch (err) {
+      current = undefined
+      return {
+        status: 'failed',
+        apiUrl,
+        error: err instanceof Error ? err.message : String(err),
+      }
+    }
+  }
+
+  async function stop(): Promise<Record<string, unknown>> {
+    if (!current) return { status: 'not_started' }
+    const active = current
+    current = undefined
+    active.release()
+    const exitCode = await active.done.catch(() => 1)
+    return { status: 'stopped', apiUrl: active.apiUrl, exitCode }
+  }
+
+  return {
+    ensure,
+    stop,
+    get apiUrl() {
+      return current?.apiUrl
+    },
+  }
+}
+
+async function isPmGoApiReachable(
+  apiUrl: string,
+  fetchImpl: typeof globalThis.fetch,
+): Promise<boolean> {
+  try {
+    await probePmGoApi(fetchImpl, `${apiUrl.replace(/\/+$/, '')}/health`)
+    return true
+  } catch (err) {
+    if (
+      err instanceof PmGoIdentityMismatchError &&
+      err.message.includes('detail: network error:')
+    ) {
+      return false
+    }
+    throw err
+  }
+}
+
+async function isApiReachable(apiUrl: string): Promise<boolean> {
+  try {
+    return await isPmGoApiReachable(apiUrl, globalThis.fetch.bind(globalThis))
+  } catch {
+    return false
+  }
+}
+
+function resolveAgentApiUrl(options: AgentOptions): string {
+  return (options.apiUrl ?? `http://127.0.0.1:${options.apiPort ?? 3001}`)
+    .replace(/\/+$/, '')
+}
+
+function isLocalAgentApiUrl(apiUrl: string): boolean {
+  try {
+    const host = new URL(apiUrl).hostname
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1'
+  } catch {
+    return false
+  }
+}
+
+function portFromApiUrl(apiUrl: string): number | undefined {
+  try {
+    const parsed = new URL(apiUrl)
+    if (parsed.port) return Number.parseInt(parsed.port, 10)
+    return parsed.protocol === 'https:' ? 443 : 80
+  } catch {
+    return undefined
+  }
+}
+
+async function recoverInstanceState(): Promise<Record<string, unknown>> {
+  const filePath = defaultStateFilePath()
+  const entries = await readInstanceStateEntries(filePath)
+  const live = entries.filter((e) => isPidAlive(e.pid))
+  if (live.length === 0) {
+    await productionRemoveInstanceState(filePath)
+    return { status: 'cleared', liveCount: 0 }
+  }
+  const body = `${JSON.stringify(live, null, 2)}\n`
+  await mkdir(path.dirname(filePath), { recursive: true })
+  const tmp = `${filePath}.tmp`
+  await writeFile(tmp, body, 'utf8')
+  await rename(tmp, filePath)
+  return { status: 'live_entries_remain', liveCount: live.length, entries: live }
+}
+
 /**
  * Tiny argv splitter for the inline ps/stop/recover dispatchers. We
  * accept --help / -h, plus any flags whose names appear in
@@ -866,9 +1331,14 @@ function buildProductionDecomposeDeps(): DecomposeDeps {
   }
 }
 
-void main()
-  .then((code) => process.exit(code))
-  .catch((err) => {
-    console.error('pm-go failed:', err)
-    process.exit(1)
-  })
+const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : ''
+const modulePath = fileURLToPath(import.meta.url)
+
+if (invokedPath === modulePath) {
+  void main()
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      console.error('pm-go failed:', err)
+      process.exit(1)
+    })
+}

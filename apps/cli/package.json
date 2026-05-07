@@ -16,6 +16,7 @@
     "typescript": "^5.6.3"
   },
   "dependencies": {
+    "@pm-go/orchestrator": "workspace:*",
     "@pm-go/runtime-detector": "workspace:*"
   }
 }

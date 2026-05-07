@@ -166,7 +166,11 @@ export async function runPlanner(
         }
       : idRewritten;
 
-  return { plan, agentRun: result.agentRun };
+  const agentRun: AgentRun =
+    input.planId !== undefined
+      ? { ...result.agentRun, planId: input.planId }
+      : result.agentRun;
+  return { plan, agentRun };
 }
 
 /**

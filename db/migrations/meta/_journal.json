@@ -134,6 +134,20 @@
       "when": 1777500000000,
       "tag": "0018_spec_decompositions",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1777550000000,
+      "tag": "0019_agent_tool_calls",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1777600000000,
+      "tag": "0020_repo_snapshot_manifest_paths",
+      "breakpoints": true
     }
   ]
 }

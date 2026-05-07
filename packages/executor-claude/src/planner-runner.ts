@@ -88,6 +88,36 @@ export function createClaudePlannerRunner(
       let stopReason: AgentStopReason = "completed";
 
       const startedAt = new Date().toISOString();
+      const buildFailedRun = (classified: unknown): AgentRun => ({
+        id: randomUUID(),
+        workflowRunId: sessionId ?? randomUUID(),
+        role: "planner",
+        depth: 0,
+        status: "failed",
+        riskLevel: "low",
+        executor: "claude",
+        model: input.model,
+        promptVersion: input.promptVersion,
+        ...(sessionId !== undefined ? { sessionId } : {}),
+        permissionMode: "default",
+        ...(typeof input.budgetUsdCap === "number"
+          ? { budgetUsdCap: input.budgetUsdCap }
+          : {}),
+        ...(typeof input.maxTurnsCap === "number"
+          ? { maxTurnsCap: input.maxTurnsCap }
+          : {}),
+        turns,
+        inputTokens,
+        outputTokens,
+        cacheCreationTokens,
+        cacheReadTokens,
+        costUsd,
+        stopReason: "error",
+        errorReason: errorReasonFromClassified(classified),
+        outputFormatSchemaRef: "Plan@1",
+        startedAt,
+        completedAt: new Date().toISOString(),
+      });
 
       try {
         // Capture the input shape locally so the closure below doesn't
@@ -204,44 +234,20 @@ export function createClaudePlannerRunner(
       } catch (err) {
         stopReason = "error";
         const classified = classifyExecutorError(err);
-        const failedRun: AgentRun = {
-          id: randomUUID(),
-          workflowRunId: sessionId ?? randomUUID(),
-          role: "planner",
-          depth: 0,
-          status: "failed",
-          riskLevel: "low",
-          executor: "claude",
-          model: input.model,
-          promptVersion: input.promptVersion,
-          ...(sessionId !== undefined ? { sessionId } : {}),
-          permissionMode: "default",
-          ...(typeof input.budgetUsdCap === "number"
-            ? { budgetUsdCap: input.budgetUsdCap }
-            : {}),
-          ...(typeof input.maxTurnsCap === "number"
-            ? { maxTurnsCap: input.maxTurnsCap }
-            : {}),
-          turns,
-          inputTokens,
-          outputTokens,
-          cacheCreationTokens,
-          cacheReadTokens,
-          costUsd,
-          stopReason: "error",
-          errorReason: errorReasonFromClassified(classified),
-          outputFormatSchemaRef: "Plan@1",
-          startedAt,
-          completedAt: new Date().toISOString(),
-        };
-        await safeInvokeFailureSink(config.onFailure, failedRun);
+        await safeInvokeFailureSink(config.onFailure, buildFailedRun(classified));
         throw classified;
       }
 
       if (plan === undefined || plan === null) {
-        throw new Error(
+        stopReason = "error";
+        const missingStructuredOutputError = new Error(
           "createClaudePlannerRunner: SDK returned no structured_output Plan",
         );
+        await safeInvokeFailureSink(
+          config.onFailure,
+          buildFailedRun(missingStructuredOutputError),
+        );
+        throw missingStructuredOutputError;
       }
 
       const completedAt = new Date().toISOString();
@@ -297,6 +303,7 @@ function buildUserPrompt(input: PlannerRunnerInput): string {
     buildCommands: snapshot.buildCommands,
     testCommands: snapshot.testCommands,
     ciConfigPaths: snapshot.ciConfigPaths,
+    manifestPaths: snapshot.manifestPaths ?? [],
   };
   const sections = [
     `# Specification (id ${input.specDocument.id})`,
@@ -357,8 +364,8 @@ function extractPathFromToolInput(toolInput: unknown): string {
  * when `cwd = /repo`). Segment boundary enforced via `path.sep`.
  */
 export function isInsideCwd(target: string, cwd: string): boolean {
-  const absTarget = path.resolve(target);
   const absCwd = path.resolve(cwd);
+  const absTarget = path.resolve(absCwd, target);
   if (absTarget === absCwd) return true;
   return absTarget.startsWith(absCwd + path.sep);
 }

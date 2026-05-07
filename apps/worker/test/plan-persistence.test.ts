@@ -397,6 +397,61 @@ describe("persistAgentRun", () => {
       expect(args[key]).toBeNull();
     }
   });
+
+  it("Claim 4 — writes planId on insert when present on the AgentRun", async () => {
+    const planId = "deadbeef-1234-4567-89ab-cdef00112233";
+    const run: AgentRun = {
+      ...agentRunFixture,
+      planId,
+    };
+
+    const { db, calls } = createMockDb();
+    const activities = createPlanPersistenceActivities({ db });
+    await activities.persistAgentRun(run);
+
+    // The insert builder receives the planId verbatim.
+    const insertArgs = calls.values[0]?.args as Record<string, unknown>;
+    expect(insertArgs.planId).toBe(planId);
+
+    // The onConflictDoUpdate `.set()` block also threads planId so a
+    // re-insert under the same id does not blank out the FK.
+    const onConflictArgs = calls.onConflictDoUpdate[0]?.args as {
+      set: Record<string, unknown>;
+    };
+    expect(onConflictArgs.set.planId).toBe(planId);
+  });
+
+  it("Claim 4 — onConflict path threads the updated planId on a second persistAgentRun call", async () => {
+    const firstPlanId = "deadbeef-1234-4567-89ab-cdef00112233";
+    const secondPlanId = "feedface-1234-4567-89ab-cdef00112233";
+    const run: AgentRun = {
+      ...agentRunFixture,
+      planId: firstPlanId,
+    };
+
+    const { db, calls } = createMockDb();
+    const activities = createPlanPersistenceActivities({ db });
+    await activities.persistAgentRun(run);
+    // Second call mutates planId; the upsert path is responsible for
+    // landing the new value via the .set() block.
+    await activities.persistAgentRun({ ...run, planId: secondPlanId });
+
+    expect(calls.values).toHaveLength(2);
+    const firstInsert = calls.values[0]?.args as Record<string, unknown>;
+    const secondInsert = calls.values[1]?.args as Record<string, unknown>;
+    expect(firstInsert.planId).toBe(firstPlanId);
+    expect(secondInsert.planId).toBe(secondPlanId);
+
+    expect(calls.onConflictDoUpdate).toHaveLength(2);
+    const firstSet = (
+      calls.onConflictDoUpdate[0]?.args as { set: Record<string, unknown> }
+    ).set;
+    const secondSet = (
+      calls.onConflictDoUpdate[1]?.args as { set: Record<string, unknown> }
+    ).set;
+    expect(firstSet.planId).toBe(firstPlanId);
+    expect(secondSet.planId).toBe(secondPlanId);
+  });
 });
 
 describe("persistArtifact", () => {

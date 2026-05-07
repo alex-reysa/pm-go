@@ -13,6 +13,7 @@ import "./formats.js";
  * this module to avoid cross-lane helper proliferation.
  */
 export const AgentRoleSchema = Type.Union([
+  Type.Literal("orchestrator"),
   Type.Literal("planner"),
   Type.Literal("partitioner"),
   Type.Literal("implementer"),
@@ -74,6 +75,7 @@ export const AgentRunSchema = Type.Object(
   {
     id: UuidSchema,
     taskId: Type.Optional(UuidSchema),
+    planId: Type.Optional(UuidSchema),
     workflowRunId: Type.String(),
     role: AgentRoleSchema,
     depth: AgentDepthSchema,
@@ -96,7 +98,8 @@ export const AgentRunSchema = Type.Object(
     stopReason: Type.Optional(AgentStopReasonSchema),
     outputFormatSchemaRef: Type.Optional(Type.String()),
     startedAt: Type.Optional(Iso8601Schema),
-    completedAt: Type.Optional(Iso8601Schema)
+    completedAt: Type.Optional(Iso8601Schema),
+    errorReason: Type.Optional(Type.String())
   },
   { $id: "AgentRun", additionalProperties: false }
 );

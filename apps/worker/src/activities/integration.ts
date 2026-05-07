@@ -475,6 +475,7 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
             buildCommands: snapshot.buildCommands,
             testCommands: snapshot.testCommands,
             ciConfigPaths: snapshot.ciConfigPaths,
+            manifestPaths: snapshot.manifestPaths ?? [],
             capturedAt: snapshot.capturedAt,
           })
           .onConflictDoNothing({ target: repoSnapshots.id });

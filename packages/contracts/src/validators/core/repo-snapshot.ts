@@ -8,8 +8,9 @@ import type { RepoSnapshot } from "../../execution.js";
 import "./formats.js";
 
 /**
- * TypeBox schema for {@link RepoSnapshot}. `repoUrl` is the only
- * optional property; every other field is required.
+ * TypeBox schema for {@link RepoSnapshot}. `repoUrl` and `manifestPaths`
+ * are optional for compatibility with snapshots captured before manifest
+ * provenance was persisted.
  */
 export const RepoSnapshotSchema = Type.Object(
   {
@@ -23,6 +24,7 @@ export const RepoSnapshotSchema = Type.Object(
     buildCommands: Type.Array(Type.String()),
     testCommands: Type.Array(Type.String()),
     ciConfigPaths: Type.Array(Type.String()),
+    manifestPaths: Type.Optional(Type.Array(Type.String())),
     capturedAt: Iso8601Schema
   },
   { $id: "RepoSnapshot", additionalProperties: false }

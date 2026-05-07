@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 import type { RepoSnapshot } from "@pm-go/contracts";
@@ -226,6 +226,40 @@ async function collectWorkspaceFrameworkHints(
   }
 }
 
+function toRepoRelative(repoRoot: string, absolutePath: string): string {
+  return relative(repoRoot, absolutePath).split(sep).join("/");
+}
+
+async function collectManifestPaths(repoRoot: string): Promise<string[]> {
+  const paths = new Set<string>();
+  for (const rootManifest of [
+    "package.json",
+    "pnpm-workspace.yaml",
+    "pnpm-lock.yaml",
+    "package-lock.json",
+    "yarn.lock",
+    "bun.lock",
+    "bun.lockb",
+  ]) {
+    if (await pathExists(join(repoRoot, rootManifest))) {
+      paths.add(rootManifest);
+    }
+  }
+
+  const globs = await readPnpmWorkspaceGlobs(repoRoot);
+  for (const globPattern of globs) {
+    const dirs = await expandWorkspaceGlob(repoRoot, globPattern);
+    for (const dir of dirs) {
+      const manifestPath = join(dir, "package.json");
+      if (await pathExists(manifestPath)) {
+        paths.add(toRepoRelative(repoRoot, manifestPath));
+      }
+    }
+  }
+
+  return Array.from(paths).sort();
+}
+
 async function findCiConfigPaths(repoRoot: string): Promise<string[]> {
   const dir = join(repoRoot, ".github", "workflows");
   let entries: Dirent[];
@@ -319,6 +353,7 @@ export async function collectRepoSnapshot(
 
   // Step 6: CI config paths.
   const ciConfigPaths = await findCiConfigPaths(repoRoot);
+  const manifestPaths = await collectManifestPaths(repoRoot);
 
   // Step 7/8: metadata.
   const capturedAt = new Date().toISOString();
@@ -337,6 +372,7 @@ export async function collectRepoSnapshot(
     buildCommands,
     testCommands,
     ciConfigPaths,
+    manifestPaths,
     capturedAt,
   };
   return snapshot;

@@ -67,7 +67,7 @@ To keep plans demoable and auditable:
     - `pnpm --filter <pkg> typecheck`
     - `pnpm --filter <pkg> test`
   - **Forbidden:** `pnpm test --filter <pkg>` (and any other form that appends `--filter` after `pnpm test`). In this monorepo, `pnpm test` maps to `pnpm -r --if-present test`, which forwards trailing args to every package's test script and fails with `too many arguments`. Use `pnpm --filter <pkg> test` instead.
-  - Tasks that create or modify a workspace package MUST also include `package.json` and `pnpm-lock.yaml` in `fileScope.includes`, plus the relevant `packages/<name>/package.json` or `apps/<name>/package.json`. Adding a package without these scope entries is a planning bug — the integration step will fail file-scope validation on root-level lock/manifest changes.
+  - Tasks that create or modify a workspace package MUST also include `package.json` and `pnpm-lock.yaml` in `fileScope.includes`, plus the relevant local manifest (`packages/<name>/package.json` or `apps/<name>/package.json`) whenever the task scopes files under that package/app. Package work without these scope entries is a planning bug — the integration step will fail file-scope validation on root-level lock/manifest changes or local manifest updates.
 - `tasks[].budget.maxWallClockMinutes`: realistic minutes for a Claude implementer to finish. Keep it tight; 15–90 minutes is typical.
 - `tasks[].reviewerPolicy`: `required: true` for anything non-trivial; `strictness: "standard"` by default, `"elevated"` or `"critical"` for security-adjacent or risky tasks; `reviewerWriteAccess: false` always.
 - `tasks[].requiresHumanApproval`: true only when the task itself (not the plan) needs a human in the loop before merge — e.g. production deploys, schema migrations on prod data.

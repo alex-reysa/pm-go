@@ -6,6 +6,7 @@ import type { Plan } from "@pm-go/contracts";
 
 import {
   auditPlanFileScopeForPackageCreation,
+  missingLocalManifestScopes,
   missingRootArtifactScopes,
   taskSignalsPackageCreation,
 } from "../src/file-scope-hygiene.js";
@@ -30,12 +31,50 @@ describe("taskSignalsPackageCreation", () => {
     expect(taskSignalsPackageCreation(task)).toBe(true);
   });
 
+  it("matches summaries that announce workspace package modification", () => {
+    const plan = loadPlan();
+    const task = plan.tasks[0]!;
+    task.title = "Modify @pm-go/runtime-detector workspace package";
+    task.summary = "Update the workspace package to expose runtime metadata.";
+    expect(taskSignalsPackageCreation(task)).toBe(true);
+  });
+
   it("does not match a generic task summary", () => {
     const plan = loadPlan();
     const task = plan.tasks[0]!;
     task.title = "Tighten reviewer prompt severity wording";
     task.summary = "Update the reviewer prompt to reserve changes_requested for real defects.";
     expect(taskSignalsPackageCreation(task)).toBe(false);
+  });
+});
+
+describe("missingLocalManifestScopes", () => {
+  it("requires a package manifest when package files are scoped", () => {
+    const plan = loadPlan();
+    const task = plan.tasks[0]!;
+    task.fileScope.includes = ["packages/runtime-detector/src/index.ts"];
+    expect(missingLocalManifestScopes(task)).toEqual([
+      "packages/runtime-detector/package.json",
+    ]);
+  });
+
+  it("requires an app manifest when app files are scoped", () => {
+    const plan = loadPlan();
+    const task = plan.tasks[0]!;
+    task.fileScope.includes = ["apps/worker/src/index.ts"];
+    expect(missingLocalManifestScopes(task)).toEqual([
+      "apps/worker/package.json",
+    ]);
+  });
+
+  it("reports nothing when the local manifest is scoped", () => {
+    const plan = loadPlan();
+    const task = plan.tasks[0]!;
+    task.fileScope.includes = [
+      "packages/runtime-detector/package.json",
+      "packages/runtime-detector/src/index.ts",
+    ];
+    expect(missingLocalManifestScopes(task)).toEqual([]);
   });
 });
 
@@ -76,6 +115,41 @@ describe("auditPlanFileScopeForPackageCreation", () => {
     expect(findings[0]!.severity).toBe("medium");
     expect(findings[0]!.summary).toContain("package.json");
     expect(findings[0]!.summary).toContain("pnpm-lock.yaml");
+  });
+
+  it("flags a package-modification task that omits required artifacts", () => {
+    const plan = loadPlan();
+    const task = plan.tasks[0]!;
+    task.title = "Modify @pm-go/runtime-detector workspace package";
+    task.summary = "Update the workspace package to add runtime metadata.";
+    task.fileScope.includes = ["packages/runtime-detector/src/index.ts"];
+
+    const findings = auditPlanFileScopeForPackageCreation(plan);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.summary).toContain("package.json");
+    expect(findings[0]!.summary).toContain("pnpm-lock.yaml");
+    expect(findings[0]!.summary).toContain(
+      "packages/runtime-detector/package.json",
+    );
+  });
+
+  it("flags root-present package work that omits the local manifest", () => {
+    const plan = loadPlan();
+    const task = plan.tasks[0]!;
+    task.title = "Modify @pm-go/runtime-detector workspace package";
+    task.summary = "Update the workspace package to add runtime metadata.";
+    task.fileScope.includes = [
+      "package.json",
+      "pnpm-lock.yaml",
+      "packages/runtime-detector/src/index.ts",
+    ];
+
+    const findings = auditPlanFileScopeForPackageCreation(plan);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.summary).not.toContain('"pnpm-lock.yaml"');
+    expect(findings[0]!.summary).toContain(
+      "packages/runtime-detector/package.json",
+    );
   });
 
   it("passes a package-creation task that includes root artifacts (the v0.8.2 contract)", () => {

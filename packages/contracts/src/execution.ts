@@ -1,6 +1,7 @@
 import type { RiskLevel, UUID } from "./plan.js";
 
 export type AgentRole =
+  | "orchestrator"
   | "planner"
   | "partitioner"
   | "implementer"
@@ -47,6 +48,12 @@ export interface RepoSnapshot {
   buildCommands: string[];
   testCommands: string[];
   ciConfigPaths: string[];
+  /**
+   * Repo-relative manifest/config paths that informed this snapshot.
+   * Older rows may omit the field; new collectors persist it so planners can
+   * distinguish root-package hints from workspace-package provenance.
+   */
+  manifestPaths?: string[];
   capturedAt: string;
 }
 
@@ -68,6 +75,7 @@ export type AgentPermissionMode =
 export interface AgentRun {
   id: UUID;
   taskId?: UUID;
+  planId?: UUID;
   workflowRunId: string;
   role: AgentRole;
   depth: 0 | 1 | 2;
@@ -100,6 +108,26 @@ export interface AgentRun {
    * prompt bodies.
    */
   errorReason?: string;
+}
+
+export type AgentToolCallStatus = "running" | "completed" | "failed";
+
+export interface AgentToolCall {
+  id: UUID;
+  agentRunId: UUID;
+  sequence?: number;
+  toolName: string;
+  sanitizedInput: Record<string, unknown>;
+  summarizedOutput?: Record<string, unknown>;
+  status: AgentToolCallStatus;
+  startedAt: string;
+  completedAt?: string;
+  errorReason?: string;
+  specDocumentId?: UUID;
+  repoSnapshotId?: UUID;
+  planId?: UUID;
+  phaseId?: UUID;
+  taskId?: UUID;
 }
 
 export interface WorktreeLease {

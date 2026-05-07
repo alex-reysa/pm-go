@@ -27,6 +27,7 @@ export function createRepoIntelligenceActivities(deps: RepoIntelligenceDeps) {
           buildCommands: snapshot.buildCommands,
           testCommands: snapshot.testCommands,
           ciConfigPaths: snapshot.ciConfigPaths,
+          manifestPaths: snapshot.manifestPaths ?? [],
           capturedAt: snapshot.capturedAt,
         })
         .returning({ id: repoSnapshots.id });

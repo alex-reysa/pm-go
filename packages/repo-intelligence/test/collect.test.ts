@@ -44,7 +44,13 @@ describe("collectRepoSnapshot", () => {
     const capturedDate = new Date(snapshot.capturedAt);
     expect(Number.isNaN(capturedDate.getTime())).toBe(false);
 
-    // 9. id is a UUID (36 chars, 4 dashes) when not provided.
+    // 9. manifestPaths records the manifests that informed the snapshot.
+    expect(snapshot.manifestPaths).toContain("package.json");
+    expect(snapshot.manifestPaths).toContain("pnpm-workspace.yaml");
+    expect(snapshot.manifestPaths).toContain("apps/api/package.json");
+    expect(snapshot.manifestPaths).toContain("packages/planner/package.json");
+
+    // 10. id is a UUID (36 chars, 4 dashes) when not provided.
     expect(snapshot.id).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
     );
