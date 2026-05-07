@@ -9,16 +9,20 @@ pm-go pulls planning, retries, approvals, budgets, worktree lifecycle, merge ord
 
 ## Activation Loop (start here)
 
-When the user wants to use pm-go on a spec, pick based on spec size:
+`pm-go` is **agent-first as of v0.9.x**. The default invocation is the agentic operator: it calls `stack.ensure()` to bring up Docker + Postgres + Temporal + worker + API automatically, then drives via typed MCP tools.
 
-| Spec | Use |
+| Goal | Command |
 |---|---|
-| Small (<100 lines, planning expected <10 min) | `pm-go implement --repo <repo> --spec <spec.md>` |
-| Larger / unknown / expect >10 min Opus planning | `pm-go run --repo <repo>` (background) + `pm-go drive --plan <id>` once planning lands |
+| Default — agent drives a spec | `pm-go --repo <repo> --spec <spec.md>` (or `pm-go agent ...`) |
+| Larger / multi-milestone spec | `pm-go decompose --repo <repo> --spec <spec.md>` (Layer-A: split first, plan one milestone, repeat) |
+| Interactive operator (no spec) | `pm-go --repo <repo>` |
+| Resume an operator session | `pm-go --resume <session-id>` |
+| Legacy one-shot drive | `pm-go implement --legacy-drive --repo <repo> --spec <spec.md>` |
+| Manual stack control | `pm-go run --repo <repo>` (background) + `pm-go drive --plan <id>` |
 
-`pm-go implement` is the one-shot path: it boots Docker (Postgres + Temporal), applies migrations, starts the API + worker, submits the spec, and drives the resulting plan all the way to release. Stay in the foreground; `Ctrl+C` tears it down cleanly. The catch: it has a 20-minute ceiling on plan persistence, so a slow planner makes it bail (see Common Failure Modes).
+`pm-go implement` (without `--legacy-drive`) also defaults to agent mode since v0.9 — the pre-v0.9 "boot + submit + drive in one process" semantics live behind `--legacy-drive` (which has a 20-minute plan-persistence ceiling — see Common Failure Modes).
 
-For anything bigger, prefer `pm-go run` — the supervisor backgrounds cleanly and never times out. Submit the spec via the API (or wait for the auto-submission), then attach with `pm-go drive --plan <id>` once `pm-go why <spec-id>` shows the plan UUID.
+Stay in the foreground; `Ctrl+C` tears it down cleanly. Default `--approve interactive` prompts the operator for high-risk gates inline; `--yes` or `--approve all` runs autonomously; `--approve none` exits when a gate fires (resume after approval).
 
 **Do not interrogate the user about env vars before running.** Trust `--runtime auto` (the default). It auto-detects, in priority order:
 
@@ -28,13 +32,43 @@ For anything bigger, prefer `pm-go run` — the supervisor backgrounds cleanly a
 
 If none of those are present, the worker fails loudly at boot with an actionable error. You don't need to pre-check — the supervisor's first banner line tells you which auth source was selected.
 
-If `pm-go` isn't on PATH, install it once:
+If `pm-go` isn't on PATH, install it once (idempotent — re-running upgrades):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/alex-reysa/pm-go/main/scripts/install.sh | bash
 ```
 
-The installer is idempotent — re-running it upgrades.
+## Agentic Operator (default)
+
+The operator runs inside the Claude Agent SDK and exposes a typed MCP tool surface so the model can drive pm-go without raw curl. Every tool call lands on `agent_tool_calls` (with FK to `agent_runs.plan_id`) for full replay.
+
+Tool surface (13 tools):
+
+- **Lifecycle** — `pmgo_ensure_stack`, `pmgo_recover`, `pmgo_stop`, `pmgo_doctor`, `pmgo_status`
+- **Submission** — `pmgo_submit_spec` (rejects model-supplied `specPath` / `repoRoot` outside operator scope)
+- **Layer-A** — `pmgo_decompose_spec`, `pmgo_update_manifest`, `pmgo_plan_first`
+- **Drive** — `pmgo_drive_plan` (rejects `approve` override; only operator's `--approve` policy wins)
+- **Approve** — `pmgo_approve_pending` (returns `requires_confirmation` when operator chose `--approve none`)
+- **Inspect** — `pmgo_why`, `pmgo_tail_events`
+
+Path containment, approval-policy enforcement, and FK-safe `planId` extraction (`pmgo_decompose_spec` intentionally does NOT record `planId` on the tool-call row — the plans row is async-inserted by `persistPlan`, so the FK would race) are wired into the tool wrappers. A hostile or confused model cannot escalate.
+
+## Layer-A: Decompose Large Specs
+
+For specs > ~100 lines or scoping multiple milestones, `pm-go decompose` splits the spec into an ordered `MilestoneManifest` *before* any plan is generated:
+
+```bash
+# Step 1 — decompose: opens $EDITOR on the manifest at $TMPDIR/pm-go/<id>.json
+pm-go decompose --repo . --spec ./feature.md
+
+# Step 2 — edit/save/close. Manifest is validated + audited
+# (cycle, forward-reference, and exit-criteria sanity checks).
+
+# Step 3 — plan-first on a chosen milestone (becomes a normal plan)
+pm-go decompose --repo . --spec ./feature.md --plan-first --milestone-id m01-…
+```
+
+Provenance (`decompositionId`, `milestoneId`) flows through to the `plans` row so a downstream operator can trace any plan back to the manifest entry that scoped it. Auto-chaining of milestones is intentionally NOT implemented — the operator picks each one. Can also be invoked agent-side via `pmgo_decompose_spec` + `pmgo_update_manifest` + `pmgo_plan_first`.
 
 ## Visibility
 
@@ -62,16 +96,18 @@ Recognized vars: `PLANNER_MODEL`, `IMPLEMENTER_MODEL`, `REVIEWER_MODEL`, `PHASE_
 
 You should not need to edit `packages/planner/src/*.ts` — the env vars are the supported override.
 
-## When to Use Sub-Commands Instead of `implement`
+## When to Use Sub-Commands Instead of the Default Agent
 
-`pm-go implement` covers the common case. Reach for the lower-level commands when:
+The default `pm-go` (agent) covers the common case. Reach for sub-commands when:
 
 | Goal | Command |
 |---|---|
 | Boot the stack and stay attached to drive manually | `pm-go run --repo .` |
 | Drive an already-submitted plan (e.g. after a crash) | `pm-go drive --plan <uuid>` |
 | Resume after pause-for-approval | `pm-go drive --plan <uuid>` after approving |
-| Pre-flight checks before committing to a long run | `pm-go doctor` then `pm-go implement` |
+| Pre-flight checks before committing to a long run | `pm-go doctor` then `pm-go --spec ...` |
+| Layer-A: split a multi-milestone spec first | `pm-go decompose --repo . --spec ./feature.md` |
+| Legacy one-shot (pre-v0.9 `implement` semantics) | `pm-go implement --legacy-drive --spec ./feature.md` |
 
 `pm-go run` is the supervisor without the auto-drive. `pm-go drive` assumes the API is already up on `:3001` and a plan exists in Postgres.
 
