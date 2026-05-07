@@ -21,7 +21,7 @@ cd "$DEV_REPO_ROOT"
 # shellcheck source=./lib/phase7-harness.sh
 source "$DEV_REPO_ROOT/scripts/lib/phase7-harness.sh"
 
-SMOKE_BASE="$(mktemp -d -t pm-go-phase7-matrix)"
+SMOKE_BASE="$(mktemp -d -t pm-go-phase7-matrix.XXXXXX)"
 trap 'rm -rf "$SMOKE_BASE"' EXIT INT TERM
 
 pass_count=0

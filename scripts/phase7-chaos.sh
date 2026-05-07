@@ -30,7 +30,7 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
-SMOKE_BASE="$(mktemp -d -t pm-go-phase7-chaos)"
+SMOKE_BASE="$(mktemp -d -t pm-go-phase7-chaos.XXXXXX)"
 trap 'rm -rf "$SMOKE_BASE"' EXIT INT TERM
 
 # Each mode runs against a fresh single-package fixture clone. Using the
