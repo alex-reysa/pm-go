@@ -79,6 +79,10 @@ import {
   type RunOptions,
 } from './run.js'
 import { createProcessManager } from './lib/process-manager.js'
+import {
+  PmGoIdentityMismatchError,
+  probePmGoApi,
+} from './lib/api-client.js'
 import { runStatus, STATUS_USAGE } from './status.js'
 import { runWhy, WHY_USAGE } from './why.js'
 
@@ -178,6 +182,9 @@ export function resolveCliDispatch(argv: readonly string[]): CliDispatch {
       const legacyArgv = [...rest]
       legacyArgv.splice(legacyIndex, 1)
       return { kind: 'legacy', subcommand: 'implement', argv: legacyArgv }
+    }
+    if (rest.includes('--help') || rest.includes('-h')) {
+      return { kind: 'legacy', subcommand: 'implement', argv: rest }
     }
     return {
       kind: 'agent',
@@ -681,6 +688,20 @@ interface ProductionOperatorAgentDeps {
   monorepoRoot: string
   log: (line: string) => void
   errLog: (line: string) => void
+  fetch?: typeof globalThis.fetch
+  loadOperatorAgent?: () => Promise<{
+    runOperatorAgent?: (
+      options: AgentOptions,
+      deps?: {
+        fetchImpl?: typeof globalThis.fetch
+        handlers?: PmGoToolHandlers
+      },
+    ) => Promise<OperatorAgentResult>
+  }>
+  createStackController?: (
+    options: AgentOptions,
+    deps: ProductionOperatorAgentDeps,
+  ) => AgentStackController
 }
 
 interface AgentStackController {
@@ -716,34 +737,27 @@ interface PmGoToolHandlers {
   }) => Promise<Record<string, unknown>>
 }
 
-async function runProductionOperatorAgent(
+export async function runProductionOperatorAgent(
   options: AgentOptions,
   deps: ProductionOperatorAgentDeps,
 ): Promise<number> {
-  const dynamicImport = new Function(
-    'specifier',
-    'return import(specifier)',
-  ) as (specifier: string) => Promise<unknown>
-  const mod = (await dynamicImport('@pm-go/orchestrator')) as {
-    runOperatorAgent?: (
-      options: AgentOptions,
-      deps?: {
-        fetchImpl?: typeof globalThis.fetch
-        handlers?: PmGoToolHandlers
-      },
-    ) => Promise<OperatorAgentResult>
-  }
+  const mod = deps.loadOperatorAgent
+    ? await deps.loadOperatorAgent()
+    : await loadOperatorAgentModule()
   if (typeof mod.runOperatorAgent !== 'function') {
     deps.errLog('pm-go agent: @pm-go/orchestrator does not export runOperatorAgent')
     return 1
   }
 
-  const stack = createAgentStackController(options, deps)
+  const stack = deps.createStackController
+    ? deps.createStackController(options, deps)
+    : createAgentStackController(options, deps)
+  const fetchImpl = deps.fetch ?? globalThis.fetch.bind(globalThis)
   const handlers: PmGoToolHandlers = {
     async doctor() {
       const apiUrl = resolveAgentApiUrl(options)
       return {
-        status: (await isApiReachable(apiUrl)) ? 'ok' : 'api_unreachable',
+        status: (await isPmGoApiReachable(apiUrl, fetchImpl)) ? 'ok' : 'api_unreachable',
         apiUrl,
       }
     },
@@ -780,8 +794,23 @@ async function runProductionOperatorAgent(
   }
 
   try {
-    const result = await mod.runOperatorAgent(options, {
-      fetchImpl: globalThis.fetch.bind(globalThis),
+    const ensureResult = await stack.ensure({
+      repoRoot: options.repoRoot,
+      runtime: options.runtime,
+      apiUrl: resolveAgentApiUrl(options),
+    })
+    if (!isReadyAgentStack(ensureResult)) {
+      deps.errLog(
+        `pm-go agent: unable to ensure pm-go API (${JSON.stringify(ensureResult)})`,
+      )
+      return 1
+    }
+    const ensuredApiUrl =
+      typeof ensureResult.apiUrl === 'string'
+        ? ensureResult.apiUrl
+        : resolveAgentApiUrl(options)
+    const result = await mod.runOperatorAgent({ ...options, apiUrl: ensuredApiUrl }, {
+      fetchImpl,
       handlers,
     })
     if (typeof result.text === 'string' && result.text.trim().length > 0) {
@@ -791,6 +820,36 @@ async function runProductionOperatorAgent(
   } finally {
     await stack.stop().catch(() => undefined)
   }
+}
+
+async function loadOperatorAgentModule(): Promise<{
+  runOperatorAgent?: (
+    options: AgentOptions,
+    deps?: {
+      fetchImpl?: typeof globalThis.fetch
+      handlers?: PmGoToolHandlers
+    },
+  ) => Promise<OperatorAgentResult>
+}> {
+  const dynamicImport = new Function(
+    'specifier',
+    'return import(specifier)',
+  ) as (specifier: string) => Promise<unknown>
+  return (await dynamicImport('@pm-go/orchestrator')) as {
+    runOperatorAgent?: (
+      options: AgentOptions,
+      deps?: {
+        fetchImpl?: typeof globalThis.fetch
+        handlers?: PmGoToolHandlers
+      },
+    ) => Promise<OperatorAgentResult>
+  }
+}
+
+function isReadyAgentStack(value: Record<string, unknown>): value is Record<string, unknown> & {
+  apiUrl?: string
+} {
+  return value.status === 'reachable' || value.status === 'started'
 }
 
 function createAgentStackController(
@@ -811,7 +870,7 @@ function createAgentStackController(
     apiUrl: string
   }): Promise<Record<string, unknown>> {
     const apiUrl = input.apiUrl.replace(/\/+$/, '')
-    if (await isApiReachable(apiUrl)) {
+    if (await isPmGoApiReachable(apiUrl, agentDeps.fetch ?? globalThis.fetch.bind(globalThis))) {
       return { status: 'reachable', apiUrl, started: false }
     }
     if (current) {
@@ -924,10 +983,27 @@ function createAgentStackController(
   }
 }
 
+async function isPmGoApiReachable(
+  apiUrl: string,
+  fetchImpl: typeof globalThis.fetch,
+): Promise<boolean> {
+  try {
+    await probePmGoApi(fetchImpl, `${apiUrl.replace(/\/+$/, '')}/health`)
+    return true
+  } catch (err) {
+    if (
+      err instanceof PmGoIdentityMismatchError &&
+      err.message.includes('detail: network error:')
+    ) {
+      return false
+    }
+    throw err
+  }
+}
+
 async function isApiReachable(apiUrl: string): Promise<boolean> {
   try {
-    const res = await globalThis.fetch(`${apiUrl.replace(/\/+$/, '')}/health`)
-    return res.ok
+    return await isPmGoApiReachable(apiUrl, globalThis.fetch.bind(globalThis))
   } catch {
     return false
   }

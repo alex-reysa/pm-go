@@ -363,6 +363,7 @@ async function persistAgentRunImpl(db: PmGoDb, run: AgentRun): Promise<string> {
   const values = {
     id: run.id,
     taskId: run.taskId ?? null,
+    planId: run.planId ?? null,
     workflowRunId: run.workflowRunId,
     role: run.role,
     depth: run.depth,
@@ -423,6 +424,7 @@ async function persistAgentRunImpl(db: PmGoDb, run: AgentRun): Promise<string> {
           target: agentRuns.id,
           set: {
             taskId: values.taskId,
+            planId: values.planId,
             workflowRunId: values.workflowRunId,
             role: values.role,
             depth: values.depth,

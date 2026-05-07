@@ -60,6 +60,66 @@ describe('resolveCliDispatch', () => {
     )
   })
 
+  // Claim 5 — `pm-go implement --help` must reach the legacy `implement`
+  // help text, not the agentic operator. Without the help-aware bypass
+  // the operator agent would swallow `--help` as just another root flag
+  // and never print the legacy usage block.
+  it('routes implement --help to legacy implement', () => {
+    assert.deepStrictEqual(
+      resolveCliDispatch(['implement', '--help']),
+      {
+        kind: 'legacy',
+        subcommand: 'implement',
+        argv: ['--help'],
+      },
+    )
+  })
+
+  it('routes implement -h to legacy implement', () => {
+    assert.deepStrictEqual(
+      resolveCliDispatch(['implement', '-h']),
+      {
+        kind: 'legacy',
+        subcommand: 'implement',
+        argv: ['-h'],
+      },
+    )
+  })
+
+  // Precedence — when both --legacy-drive and --help are present, the
+  // explicit --legacy-drive route wins (operator typed it for a reason)
+  // but the flag itself is still stripped before forwarding to the
+  // legacy implement parser.
+  it('routes implement --legacy-drive --help to legacy implement and strips --legacy-drive', () => {
+    assert.deepStrictEqual(
+      resolveCliDispatch(['implement', '--legacy-drive', '--help']),
+      {
+        kind: 'legacy',
+        subcommand: 'implement',
+        argv: ['--help'],
+      },
+    )
+  })
+
+  // Sanity guards on the implement-to-agent default route.
+  it('routes bare pm-go implement to agent mode', () => {
+    const dispatch = resolveCliDispatch(['implement'])
+    assert.strictEqual(dispatch.kind, 'agent')
+    assert.deepStrictEqual(
+      dispatch.kind === 'agent' ? dispatch.argv : undefined,
+      [],
+    )
+  })
+
+  it('routes pm-go implement --some-flag (non-help) to agent mode', () => {
+    const dispatch = resolveCliDispatch(['implement', '--some-flag'])
+    assert.strictEqual(dispatch.kind, 'agent')
+    assert.deepStrictEqual(
+      dispatch.kind === 'agent' ? dispatch.argv : undefined,
+      ['--some-flag'],
+    )
+  })
+
   it('keeps known legacy subcommands on the legacy path', () => {
     assert.deepStrictEqual(resolveCliDispatch(['run', '--spec', './feature.md']), {
       kind: 'legacy',

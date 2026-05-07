@@ -110,9 +110,11 @@ export function createPmGoSdkTools(input: PmGoSdkToolsInput) {
         runtime: z.enum(["auto", "stub", "sdk", "claude"]).optional(),
       },
       runtime.wrap("pmgo_ensure_stack", async (args) => {
+        const repoRoot = resolveScopedRepoRoot(input.options, args.repoRoot);
+        if (typeof repoRoot !== "string") return repoRoot.error;
         if (input.handlers?.ensureStack) {
           return input.handlers.ensureStack({
-            repoRoot: args.repoRoot ?? input.options.repoRoot,
+            repoRoot,
             runtime: args.runtime ?? input.options.runtime,
             apiUrl: resolveApiUrl(input.options),
           });
@@ -142,10 +144,10 @@ export function createPmGoSdkTools(input: PmGoSdkToolsInput) {
         title: z.string().optional(),
       },
       runtime.wrap("pmgo_submit_spec", async (args) => {
-        const repoRoot = args.repoRoot ?? input.options.repoRoot;
-        const specPath = args.specPath ?? input.options.specPath;
-        if (!repoRoot) return { status: "needs_input", message: "repoRoot is required" };
-        if (!specPath) return { status: "needs_input", message: "specPath is required" };
+        const repoRoot = resolveScopedRepoRoot(input.options, args.repoRoot);
+        if (typeof repoRoot !== "string") return repoRoot.error;
+        const specPath = resolveScopedSpecPath(input.options, args.specPath);
+        if (typeof specPath !== "string") return specPath.error;
         const body = await readFile(specPath, "utf8");
         const title =
           args.title ??
@@ -212,7 +214,16 @@ export function createPmGoSdkTools(input: PmGoSdkToolsInput) {
         approve: z.enum(["all", "none", "interactive"]).optional(),
       },
       runtime.wrap("pmgo_drive_plan", async (args) => {
-        const approve = args.approve ?? input.options.approve;
+        const approve = input.options.approve;
+        if (args.approve !== undefined && args.approve !== approve) {
+          return {
+            status: "rejected",
+            message:
+              "pmgo_drive_plan may not override the operator-selected approval policy",
+            requestedApprove: args.approve,
+            effectiveApprove: approve,
+          };
+        }
         if (input.handlers?.drivePlan) {
           return input.handlers.drivePlan({ planId: args.planId, approve });
         }
@@ -273,6 +284,14 @@ export function createPmGoSdkTools(input: PmGoSdkToolsInput) {
         reason: z.string().min(1).optional(),
       },
       runtime.wrap("pmgo_approve_pending", async (args) => {
+        if (input.options.approve === "none") {
+          return {
+            status: "requires_confirmation",
+            message:
+              "operator selected --approve none; approve pending requests manually",
+            planId: args.planId,
+          };
+        }
         const approvalsBody = await runtime.fetchJson(runtime.apiUrl(`/approvals?planId=${args.planId}`));
         const approvals = Array.isArray((approvalsBody as { approvals?: unknown[] }).approvals)
           ? ((approvalsBody as { approvals: Array<Record<string, unknown>> }).approvals)
@@ -348,7 +367,7 @@ function createToolRuntime(input: PmGoSdkToolsInput) {
           status: "completed",
           summarizedOutput: summarizeJson(output),
           completedAt: now().toISOString(),
-          ...extractRefs(output),
+          ...extractOutputRefs(toolName, output),
         };
         await input.persistence.updateToolCall(completed);
         return jsonResult(output);
@@ -395,6 +414,61 @@ function deriveTitle(body: string, specPath: string): string {
     .map((line) => line.match(/^#\s+(.+?)\s*$/)?.[1]?.trim())
     .find((line): line is string => typeof line === "string" && line.length > 0);
   return h1 ?? path.basename(specPath).replace(/\.[^.]+$/, "");
+}
+
+function resolveScopedRepoRoot(
+  options: OperatorAgentOptions,
+  requested: string | undefined,
+):
+  | { error: ToolHandlerResult }
+  | string {
+  if (!options.repoRoot) {
+    return { error: { status: "needs_input", message: "repoRoot is required" } };
+  }
+  const allowedRoot = path.resolve(options.repoRoot);
+  const repoRoot = requested === undefined ? allowedRoot : path.resolve(requested);
+  if (repoRoot !== allowedRoot && !isInsidePath(repoRoot, allowedRoot)) {
+    return {
+      error: {
+        status: "rejected",
+        message: "repoRoot must stay within the operator-provided repo root",
+        requestedRepoRoot: repoRoot,
+        allowedRepoRoot: allowedRoot,
+      },
+    };
+  }
+  return repoRoot;
+}
+
+function resolveScopedSpecPath(
+  options: OperatorAgentOptions,
+  requested: string | undefined,
+):
+  | { error: ToolHandlerResult }
+  | string {
+  if (!options.specPath) {
+    return { error: { status: "needs_input", message: "specPath is required" } };
+  }
+  const allowedSpecPath = path.resolve(options.specPath);
+  const specPath = requested === undefined ? allowedSpecPath : path.resolve(requested);
+  if (specPath !== allowedSpecPath) {
+    return {
+      error: {
+        status: "rejected",
+        message:
+          "specPath must match the operator-provided spec path; root agent reads are constrained",
+        requestedSpecPath: specPath,
+        allowedSpecPath,
+      },
+    };
+  }
+  return specPath;
+}
+
+function isInsidePath(target: string, root: string): boolean {
+  const absTarget = path.resolve(target);
+  const absRoot = path.resolve(root);
+  return absTarget === absRoot || absTarget.startsWith(absRoot + path.sep);
 }
 
 function summarizePlanFirst(planResponse: unknown): ToolHandlerResult {
@@ -493,6 +567,20 @@ function extractRefs(value: unknown): Partial<ToolCallRecord> {
     if (typeof obj[field] === "string" && UUID_RE.test(obj[field])) {
       refs[attr] = obj[field];
     }
+  }
+  return refs;
+}
+
+function extractOutputRefs(
+  toolName: PmGoToolName,
+  value: unknown,
+): Partial<ToolCallRecord> {
+  const refs = extractRefs(value);
+  // POST /plans returns planId synchronously, but the row is inserted
+  // asynchronously by the persistPlan activity. Recording planId on
+  // the agent_tool_calls row right now would violate the plan_id FK.
+  if (toolName === "pmgo_decompose_spec" && "planId" in refs) {
+    delete refs.planId;
   }
   return refs;
 }

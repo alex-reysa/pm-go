@@ -93,6 +93,39 @@ describe("runPlanner", () => {
     expect(result.plan.id).toBe(fixture.id);
   });
 
+  it("Claim 4 — stamps agentRun.planId when input.planId is supplied", async () => {
+    // The planner AgentRun is the planner's own run record; persisting
+    // it via the API requires the row land under the plan that was
+    // created up-front by `POST /plans`. Without this stamp the foreign
+    // key lookup against `plan_id` would resolve to NULL and
+    // /plans/<id>/agent-runs would not return the planner's row.
+    const apiPlanId = "deadbeef-1234-4567-89ab-cdef00112233";
+    const fixture = JSON.parse(JSON.stringify(planFixture)) as Plan;
+    const runner = createStubPlannerRunner(fixture);
+    const result = await runPlanner({
+      specDocument: specDocumentFixture,
+      repoSnapshot: repoSnapshotFixture,
+      requestedBy: "alex@example.com",
+      runner,
+      planId: apiPlanId,
+    });
+
+    expect(result.agentRun.planId).toBe(apiPlanId);
+  });
+
+  it("Claim 4 — leaves agentRun.planId undefined when input.planId is omitted", async () => {
+    const fixture = JSON.parse(JSON.stringify(planFixture)) as Plan;
+    const runner = createStubPlannerRunner(fixture);
+    const result = await runPlanner({
+      specDocument: specDocumentFixture,
+      repoSnapshot: repoSnapshotFixture,
+      requestedBy: "alex@example.com",
+      runner,
+    });
+
+    expect(result.agentRun.planId).toBeUndefined();
+  });
+
   it("throws PlanValidationError when the runner returns an invalid plan", async () => {
     // Build a plan variant that is missing a required top-level field
     // (title). The stub just passes the fixture through, so we smuggle

@@ -168,4 +168,204 @@ describe("pm-go SDK MCP tools", () => {
       }),
     );
   });
+
+  it("Claim 3 — pmgo_decompose_spec drops planId on the recorded ToolCallRecord while keeping spec/snapshot refs", async () => {
+    // POST /plans returns the planId synchronously, but the plan row is
+    // inserted asynchronously by the persistPlan activity. Recording
+    // planId on the agent_tool_calls row right now would violate the
+    // plan_id FK — so the recorded refs must include specDocumentId /
+    // repoSnapshotId but NOT planId, even though the response carries one.
+    const fetchImpl: typeof globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          plan: { id: PLAN_ID, specDocumentId: SPEC_ID, repoSnapshotId: SNAPSHOT_ID },
+          planId: PLAN_ID,
+          specDocumentId: SPEC_ID,
+          repoSnapshotId: SNAPSHOT_ID,
+        }),
+        { status: 201, headers: { "content-type": "application/json" } },
+      );
+    const persistence = new MemoryAgentRunPersistence();
+    const tools = createPmGoSdkTools({
+      agentRunId: AGENT_RUN_ID,
+      options: baseOptions(),
+      persistence,
+      fetchImpl,
+    });
+
+    await findTool(tools, "pmgo_decompose_spec").handler(
+      { specDocumentId: SPEC_ID, repoSnapshotId: SNAPSHOT_ID },
+      {},
+    );
+
+    const lastCall = persistence.toolCalls.at(-1)!;
+    expect(lastCall.toolName).toBe("pmgo_decompose_spec");
+    expect(lastCall.status).toBe("completed");
+    expect(lastCall.planId).toBeUndefined();
+    expect(lastCall.specDocumentId).toBe(SPEC_ID);
+    expect(lastCall.repoSnapshotId).toBe(SNAPSHOT_ID);
+  });
+
+  it("Claim 2 — pmgo_submit_spec rejects out-of-scope repoRoot with the operator-provided root in the message", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "pm-go-orchestrator-tools-"));
+    try {
+      const specPath = join(tmp, "feature.md");
+      await writeFile(specPath, "# Feature\n\nBody", "utf8");
+      const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+      const fetchImpl: typeof globalThis.fetch = async (url, init) => {
+        fetchCalls.push({ url: String(url), init });
+        return new Response("{}", {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        });
+      };
+      const persistence = new MemoryAgentRunPersistence();
+      const tools = createPmGoSdkTools({
+        agentRunId: AGENT_RUN_ID,
+        options: baseOptions({ repoRoot: tmp, specPath }),
+        persistence,
+        fetchImpl,
+      });
+
+      const result = await findTool(tools, "pmgo_submit_spec").handler(
+        { repoRoot: "/etc" },
+        {},
+      );
+
+      const decoded = decodeResult(result) as Record<string, unknown>;
+      expect(decoded.status).toBe("rejected");
+      expect(String(decoded.message)).toMatch(/operator-provided repo root/);
+      expect(decoded.allowedRepoRoot).toBe(tmp);
+      // No HTTP call should have been issued — the guard fires before postJson.
+      expect(fetchCalls).toHaveLength(0);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("Claim 2 — pmgo_submit_spec rejects mismatched specPath", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "pm-go-orchestrator-tools-"));
+    try {
+      const specPath = join(tmp, "feature.md");
+      await writeFile(specPath, "# Feature\n\nBody", "utf8");
+      const otherSpecPath = join(tmp, "other.md");
+      await writeFile(otherSpecPath, "# Other\n\nBody", "utf8");
+      const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+      const fetchImpl: typeof globalThis.fetch = async (url, init) => {
+        fetchCalls.push({ url: String(url), init });
+        return new Response("{}", {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        });
+      };
+      const persistence = new MemoryAgentRunPersistence();
+      const tools = createPmGoSdkTools({
+        agentRunId: AGENT_RUN_ID,
+        options: baseOptions({ repoRoot: tmp, specPath }),
+        persistence,
+        fetchImpl,
+      });
+
+      const result = await findTool(tools, "pmgo_submit_spec").handler(
+        { specPath: otherSpecPath },
+        {},
+      );
+
+      const decoded = decodeResult(result) as Record<string, unknown>;
+      expect(decoded.status).toBe("rejected");
+      expect(String(decoded.message)).toMatch(/operator-provided spec path/);
+      expect(decoded.allowedSpecPath).toBe(specPath);
+      expect(fetchCalls).toHaveLength(0);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("Codex extra — pmgo_drive_plan rejects an approve override and surfaces effectiveApprove", async () => {
+    const persistence = new MemoryAgentRunPersistence();
+    const tools = createPmGoSdkTools({
+      agentRunId: AGENT_RUN_ID,
+      options: baseOptions({ approve: "interactive" }),
+      persistence,
+      handlers: {
+        async drivePlan() {
+          throw new Error("handler must not be called when guard rejects");
+        },
+      },
+    });
+
+    const result = await findTool(tools, "pmgo_drive_plan").handler(
+      { planId: PLAN_ID, approve: "all" },
+      {},
+    );
+
+    const decoded = decodeResult(result) as Record<string, unknown>;
+    expect(decoded.status).toBe("rejected");
+    expect(decoded.requestedApprove).toBe("all");
+    expect(decoded.effectiveApprove).toBe("interactive");
+  });
+
+  it("Codex extra — pmgo_approve_pending under --approve none returns requires_confirmation without hitting the API", async () => {
+    const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl: typeof globalThis.fetch = async (url, init) => {
+      fetchCalls.push({ url: String(url), init });
+      return new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const persistence = new MemoryAgentRunPersistence();
+    const tools = createPmGoSdkTools({
+      agentRunId: AGENT_RUN_ID,
+      options: baseOptions({ approve: "none" }),
+      persistence,
+      fetchImpl,
+    });
+
+    const result = await findTool(tools, "pmgo_approve_pending").handler(
+      { planId: PLAN_ID },
+      {},
+    );
+
+    const decoded = decodeResult(result) as Record<string, unknown>;
+    expect(decoded.status).toBe("requires_confirmation");
+    expect(decoded.planId).toBe(PLAN_ID);
+    // The 'none' guard fires before any HTTP call to the approvals endpoint.
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  it("T2.2.2 — pmgo_ensure_stack rejects out-of-scope repoRoot", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "pm-go-orchestrator-tools-"));
+    try {
+      const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+      const fetchImpl: typeof globalThis.fetch = async (url, init) => {
+        fetchCalls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ status: "ok" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      };
+      const persistence = new MemoryAgentRunPersistence();
+      const tools = createPmGoSdkTools({
+        agentRunId: AGENT_RUN_ID,
+        options: baseOptions({ repoRoot: tmp }),
+        persistence,
+        fetchImpl,
+      });
+
+      const result = await findTool(tools, "pmgo_ensure_stack").handler(
+        { repoRoot: "/etc" },
+        {},
+      );
+
+      const decoded = decodeResult(result) as Record<string, unknown>;
+      expect(decoded.status).toBe("rejected");
+      expect(String(decoded.message)).toMatch(/operator-provided repo root/);
+      expect(decoded.allowedRepoRoot).toBe(tmp);
+      // No /health probe — the scope guard fires first.
+      expect(fetchCalls).toHaveLength(0);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
 });
