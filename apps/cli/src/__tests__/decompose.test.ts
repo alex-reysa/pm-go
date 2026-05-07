@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 
 import {
   decomposeCli,
@@ -367,31 +368,33 @@ describe("parseDecomposeArgv", () => {
   });
 
   it("resolves --repo and --spec against the supplied cwd via the injected resolve", () => {
+    // Use `path.posix.resolve` so the assertions are stable on every
+    // CI platform — the test verifies that the parser THREADS the
+    // resolver through, not the resolver's own logic. The same call
+    // shape ships in `apps/cli/src/index.ts` for the production
+    // dispatcher.
     const r = parseDecomposeArgv(
       ["--repo", ".", "--spec", "./feature.md"],
       {
         cwd: "/Users/op/projects/foo",
-        resolve: (base, p) => (p.startsWith("/") ? p : `${base}/${p.replace(/^\.\//, "")}`),
+        resolve: (base, p) =>
+          path.posix.isAbsolute(p) ? p : path.posix.resolve(base, p),
       },
     );
     assert.equal(r.ok, true);
     if (r.ok) {
-      assert.equal(r.options.repoRoot, "/Users/op/projects/foo/");
+      assert.equal(r.options.repoRoot, "/Users/op/projects/foo");
       assert.equal(r.options.specPath, "/Users/op/projects/foo/feature.md");
     }
   });
 
   it("leaves absolute paths untouched even when cwd is provided", () => {
     const r = parseDecomposeArgv(
-      [
-        "--repo",
-        "/abs/repo",
-        "--spec",
-        "/abs/spec.md",
-      ],
+      ["--repo", "/abs/repo", "--spec", "/abs/spec.md"],
       {
         cwd: "/Users/op",
-        resolve: (base, p) => (p.startsWith("/") ? p : `${base}/${p}`),
+        resolve: (base, p) =>
+          path.posix.isAbsolute(p) ? p : path.posix.resolve(base, p),
       },
     );
     assert.equal(r.ok, true);
