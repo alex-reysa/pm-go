@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   formatStaleOrchestratorRunRecovery,
+  loadDotenvForAgent,
   recoverStaleOrchestratorRuns,
   resolveCliDispatch,
 } from '../index.js'
@@ -136,6 +137,102 @@ describe('resolveCliDispatch', () => {
     assert.deepStrictEqual(resolveCliDispatch(['--help']), {
       kind: 'root-help',
     })
+  })
+})
+
+describe('loadDotenvForAgent', () => {
+  // Regression: the agent dispatch path used to skip .env entirely,
+  // so env vars like PLANNER_BUDGET_USD never reached the worker the
+  // agent spawned. The fix routes dotenv through loadDotenvForAgent
+  // before agentCli runs; these tests pin that wiring.
+  it('invokes applyDotenv with <monorepoRoot>/.env and applies missing keys', async () => {
+    let seenPath = ''
+    let seenEnvPassed: NodeJS.ProcessEnv | undefined
+    const env: NodeJS.ProcessEnv = { ALREADY_SET: 'shell' }
+    const logs: string[] = []
+    const errs: string[] = []
+    const result = await loadDotenvForAgent('/abs/repo', {
+      applyDotenv: async (p, d) => {
+        seenPath = p
+        seenEnvPassed = d.env
+        // Simulate dotenv setting an unset key and skipping the one
+        // already exported in the shell.
+        d.env['PLANNER_BUDGET_USD'] = '2.5'
+        return {
+          loaded: true,
+          applied: ['PLANNER_BUDGET_USD'],
+          skipped: ['ALREADY_SET'],
+          warnings: [],
+        }
+      },
+      readFile: async () => '',
+      fileExists: async () => true,
+      env,
+      log: (l) => logs.push(l),
+      errLog: (l) => errs.push(l),
+    })
+
+    assert.strictEqual(seenPath, '/abs/repo/.env')
+    assert.strictEqual(seenEnvPassed, env)
+    assert.strictEqual(env['PLANNER_BUDGET_USD'], '2.5')
+    assert.deepStrictEqual(result, {
+      loaded: true,
+      applied: ['PLANNER_BUDGET_USD'],
+      skipped: ['ALREADY_SET'],
+      warnings: [],
+    })
+    assert.ok(
+      logs.some((l) =>
+        l.startsWith('[pm-go] loaded .env (1 applied, 1 pre-set in shell)'),
+      ),
+      `expected banner in logs: ${JSON.stringify(logs)}`,
+    )
+    assert.deepStrictEqual(errs, [])
+  })
+
+  it('is a silent no-op when .env is absent', async () => {
+    const logs: string[] = []
+    const errs: string[] = []
+    const result = await loadDotenvForAgent('/abs/repo', {
+      applyDotenv: async () => ({
+        loaded: false,
+        applied: [],
+        skipped: [],
+        warnings: [],
+      }),
+      readFile: async () => '',
+      fileExists: async () => false,
+      env: {},
+      log: (l) => logs.push(l),
+      errLog: (l) => errs.push(l),
+    })
+
+    assert.strictEqual(result.loaded, false)
+    assert.deepStrictEqual(logs, [])
+    assert.deepStrictEqual(errs, [])
+  })
+
+  it('forwards parser warnings to errLog', async () => {
+    const logs: string[] = []
+    const errs: string[] = []
+    await loadDotenvForAgent('/abs/repo', {
+      applyDotenv: async () => ({
+        loaded: true,
+        applied: [],
+        skipped: [],
+        warnings: ['line 3: missing = (skipped): BOGUS'],
+      }),
+      readFile: async () => '',
+      fileExists: async () => true,
+      env: {},
+      log: (l) => logs.push(l),
+      errLog: (l) => errs.push(l),
+    })
+
+    assert.ok(
+      errs.some((l) => l.includes('[pm-go] .env: line 3: missing =')),
+      `expected warning in errs: ${JSON.stringify(errs)}`,
+    )
   })
 })
 
