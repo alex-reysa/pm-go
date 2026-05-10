@@ -79,7 +79,7 @@ export async function waitFor(
 
     const elapsed = deps.now() - start
     // Fire onTick once per tick interval — covers the common case of
-    // a long poll (plan-persistence: 20 minutes) where the operator
+    // a long poll (plan-persistence can run for many minutes) where the operator
     // needs heartbeat output. We fire after each check rather than
     // before the sleep so the first tick lands at ~tickIntervalMs of
     // real elapsed time, not at boot.

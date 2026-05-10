@@ -26,7 +26,7 @@ When state is unclear, inspect first with `pm-go status` or `pm-go why <id>`. Wh
 | Legacy one-shot drive | `pm-go implement --legacy-drive --repo <repo> --spec <spec.md>` |
 | Manual stack control | `pm-go run --repo <repo>` (keep attached) + `pm-go drive --plan <id>` from another shell |
 
-`pm-go implement` without `--legacy-drive` also defaults to agent mode since v0.9. The pre-v0.9 "boot + submit + drive in one process" semantics live behind `--legacy-drive`, including its 20-minute plan-persistence ceiling.
+`pm-go implement` without `--legacy-drive` also defaults to agent mode since v0.9. The pre-v0.9 "boot + submit + drive in one process" semantics live behind `--legacy-drive`, including its 45-minute default plan-persistence wait (`--plan-wait 60m` overrides it).
 
 Stay in the foreground; `Ctrl+C` tears it down cleanly. For the default agent, `--approve interactive` is the default; `--yes` changes the default approval policy to `all`; an explicit `--approve all|none|interactive` always wins. The legacy `implement` and low-level `drive` commands default to `--approve all`.
 
@@ -170,7 +170,7 @@ It returns one sentence with the current state and the exact next action. This i
 - **Content-filter rejection** — `agent_runs.error_reason="ContentFilterError"` and the task is `blocked`. Adjust the spec wording for the affected task and re-run.
 - **Phase won't advance** — every task in the phase must be `ready_to_merge`. Find the laggards: `curl http://localhost:3001/plans/<id>` and look for tasks in `reviewing` / `fixing`.
 - **Workflow-id collision on resume** — `drive` reports `WorkflowExecutionAlreadyStarted` after a supervisor restart. Run `pm-go why <id>` and `pm-go status` first, sweep stale process state with `pm-go recover` if needed, then re-run `pm-go drive --plan <id>`.
-- **Legacy `pm-go implement --legacy-drive` exits but plan exists in DB** — the supervisor's plan-persistence poll has a 20-minute ceiling. If hit, the API + worker stay up (post-v0.8.7 fail-open). Run `pm-go why <spec-id>` to find the actual plan UUID, then `pm-go drive --plan <real-id>` to pick up where it bailed.
+- **Legacy `pm-go implement --legacy-drive` exits before the plan exists in DB** — the supervisor's plan-persistence poll defaults to 45 minutes and reports whether the Temporal workflow is still running when it times out. If hit, keep the API + worker up, run `pm-go status`, and once `GET /plans/<id>` is queryable resume with `pm-go drive --plan <id>`. Use `--plan-wait 60m` for larger specs.
 
 ### `[pm-go] port <port> is held by another service`
 

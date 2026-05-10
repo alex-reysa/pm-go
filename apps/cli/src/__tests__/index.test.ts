@@ -1,7 +1,11 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { resolveCliDispatch } from '../index.js'
+import {
+  formatStaleOrchestratorRunRecovery,
+  recoverStaleOrchestratorRuns,
+  resolveCliDispatch,
+} from '../index.js'
 
 describe('resolveCliDispatch', () => {
   it('routes root options to agent mode', () => {
@@ -132,5 +136,34 @@ describe('resolveCliDispatch', () => {
     assert.deepStrictEqual(resolveCliDispatch(['--help']), {
       kind: 'root-help',
     })
+  })
+})
+
+describe('recoverStaleOrchestratorRuns', () => {
+  it('marks only running planless orchestrator rows failed', async () => {
+    let seenSql = ''
+    const result = await recoverStaleOrchestratorRuns({
+      monorepoRoot: '/abs/monorepo',
+      exec: async (_cmd, args) => {
+        seenSql = String(args.at(-1))
+        return { code: 0, stdout: '2\n', stderr: '' }
+      },
+    })
+
+    assert.deepStrictEqual(result, { status: 'updated', count: 2 })
+    assert.match(seenSql, /UPDATE agent_runs/)
+    assert.match(seenSql, /role = 'orchestrator'/)
+    assert.match(seenSql, /plan_id IS NULL/)
+    assert.match(seenSql, /status = 'running'/)
+  })
+
+  it('formats skipped postgres cleanup without throwing', () => {
+    assert.strictEqual(
+      formatStaleOrchestratorRunRecovery({
+        status: 'skipped',
+        reason: 'postgres unavailable',
+      }),
+      '(agent_runs cleanup skipped: postgres unavailable)',
+    )
   })
 })

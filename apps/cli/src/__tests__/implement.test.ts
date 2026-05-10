@@ -81,6 +81,26 @@ describe('parseImplementArgv', () => {
     assert.strictEqual(r.options.skipMigrate, true)
   })
 
+  it('parses --plan-wait durations', () => {
+    const r = parseImplementArgv(
+      ['--spec', '/abs/x.md', '--plan-wait', '60m'],
+      cwd,
+      resolve,
+    )
+    assert.ok(r.ok)
+    assert.strictEqual(r.options.planWaitMs, 60 * 60_000)
+  })
+
+  it('rejects invalid --plan-wait durations', () => {
+    const r = parseImplementArgv(
+      ['--spec', '/abs/x.md', '--plan-wait', 'forever'],
+      cwd,
+      resolve,
+    )
+    assert.ok(!r.ok)
+    assert.match(r.error, /--plan-wait/)
+  })
+
   it('rejects unknown flags', () => {
     const r = parseImplementArgv(
       ['--spec', '/abs/x.md', '--bogus'],

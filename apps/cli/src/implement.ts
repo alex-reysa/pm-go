@@ -26,6 +26,7 @@
  */
 
 import {
+  parsePlanWaitMs,
   runSupervisor as runSupervisorImpl,
   type RunOptions,
   type RunDeps,
@@ -64,6 +65,8 @@ export interface ImplementOptions {
   skipMigrate: boolean
   /** Approval policy passed straight to runDrive. */
   approve: 'all' | 'none' | 'interactive'
+  /** How long to wait for plan persistence before fail-open recovery. */
+  planWaitMs?: number
 }
 
 export interface ParsedImplementArgv {
@@ -171,6 +174,19 @@ export function parseImplementArgv(
         i++
         break
       }
+      case '--plan-wait': {
+        if (!value) return { ok: false, error: `${flag} requires a duration` }
+        const parsed = parsePlanWaitMs(value)
+        if (parsed === undefined) {
+          return {
+            ok: false,
+            error: `${flag} must be a positive duration like 45m, 2700s, or 1h`,
+          }
+        }
+        opts.planWaitMs = parsed
+        i++
+        break
+      }
       case '--help':
       case '-h':
         return { ok: false, error: 'help' }
@@ -219,10 +235,12 @@ Options:
   --skip-docker          Skip docker compose; assume stack is up.
   --skip-migrate         Skip pnpm db:migrate.
   --approve <mode>       all | none | interactive (default: all).
+  --plan-wait <duration> Wait for plan persistence (default: 45m).
   --help, -h             Show this message.
 
 Examples:
   pm-go implement --repo . --spec ./feature.md
+  pm-go implement --repo . --spec ./feature.md --plan-wait 60m
   pm-go implement --runtime stub --approve all --spec ./examples/golden-path/spec.md
   pm-go implement --runtime sdk --approve interactive --spec ./feature.md
 `
@@ -330,6 +348,9 @@ export async function implementCli(cliDeps: ImplementCliDeps): Promise<number> {
     databaseUrl: parsed.options.databaseUrl,
     skipDocker: parsed.options.skipDocker,
     skipMigrate: parsed.options.skipMigrate,
+    ...(parsed.options.planWaitMs !== undefined
+      ? { planWaitMs: parsed.options.planWaitMs }
+      : {}),
   }
 
   const driveDeps = cliDeps.buildDriveDeps()
@@ -351,11 +372,9 @@ export async function implementCli(cliDeps: ImplementCliDeps): Promise<number> {
       //       nothing to drive against. Tearing the stack down is
       //       fine but unhelpful; the operator usually wants the API
       //       up so they can re-submit a corrected spec.
-      //   (b) Plan-persistence wait timed out (20-minute ceiling).
-      //       The plan was almost certainly persisted under a
-      //       different UUID (see the recovery-message logged by
-      //       submitSpecAndPlan); the operator MUST keep the API
-      //       running to look it up and resume with `pm-go drive`.
+      //   (b) Plan-persistence wait timed out. The planner workflow
+      //       may still be running; the operator MUST keep the API
+      //       running to inspect status and resume with `pm-go drive`.
       // In both cases the right move is to STAY UP and wait for
       // SIGINT — never tear children down out from under a recovery
       // session that has no other way to find the real plan id.

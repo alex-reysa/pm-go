@@ -58,6 +58,10 @@ export interface PmGoSdkToolsInput {
   fetchImpl?: typeof globalThis.fetch;
   handlers?: PmGoToolHandlers;
   now?: () => Date;
+  nowMs?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  planWaitMs?: number;
+  planPollIntervalMs?: number;
 }
 
 const UUID_RE =
@@ -169,10 +173,15 @@ export function createPmGoSdkTools(input: PmGoSdkToolsInput) {
         repoSnapshotId: z.string().regex(UUID_RE),
       },
       runtime.wrap("pmgo_decompose_spec", async (args) => {
-        return runtime.postJson(runtime.apiUrl("/plans"), {
+        const started = await runtime.postJson(runtime.apiUrl("/plans"), {
           specDocumentId: args.specDocumentId,
           repoSnapshotId: args.repoSnapshotId,
           requestedBy: "operator-orchestrator",
+        });
+        return runtime.waitForPlanPersistence({
+          started,
+          specDocumentId: args.specDocumentId,
+          repoSnapshotId: args.repoSnapshotId,
         });
       }),
     ),
@@ -319,6 +328,10 @@ function createToolRuntime(input: PmGoSdkToolsInput) {
   let sequence = 0;
   const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const now = input.now ?? (() => new Date());
+  const nowMs = input.nowMs ?? (() => Date.now());
+  const sleep = input.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const planWaitMs = input.planWaitMs ?? 45 * 60_000;
+  const planPollIntervalMs = input.planPollIntervalMs ?? 1_000;
   const apiBase = resolveApiUrl(input.options);
 
   async function fetchJson(url: string, init?: RequestInit): Promise<unknown> {
@@ -336,6 +349,52 @@ function createToolRuntime(input: PmGoSdkToolsInput) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     })) as ToolHandlerResult;
+  }
+
+  async function waitForPlanPersistence(input: {
+    started: ToolHandlerResult;
+    specDocumentId: string;
+    repoSnapshotId: string;
+  }): Promise<ToolHandlerResult> {
+    const planId = extractPlanId(input.started);
+    if (!planId) {
+      return input.started;
+    }
+    const deadline = nowMs() + planWaitMs;
+    let lastStatus = 0;
+    let lastBody = "";
+    while (nowMs() <= deadline) {
+      const res = await fetchImpl(apiUrl(`/plans/${planId}`));
+      lastStatus = res.status;
+      if (res.ok) {
+        const plan = await res.json().catch(() => ({}));
+        return {
+          status: "ready",
+          planId,
+          specDocumentId: input.specDocumentId,
+          repoSnapshotId: input.repoSnapshotId,
+          plan,
+        };
+      }
+      lastBody = await res.text().catch(() => "");
+      if (res.status !== 404) {
+        throw new Error(`GET ${apiUrl(`/plans/${planId}`)} -> ${res.status}: ${lastBody}`);
+      }
+      const remaining = deadline - nowMs();
+      if (remaining <= 0) break;
+      await sleep(Math.min(planPollIntervalMs, remaining));
+    }
+    return {
+      status: "planning",
+      planId,
+      specDocumentId: input.specDocumentId,
+      repoSnapshotId: input.repoSnapshotId,
+      workflowId: `plan-${input.specDocumentId}`,
+      message:
+        "plan row is not queryable yet; the SpecToPlanWorkflow may still be running",
+      lastStatus,
+      ...(lastBody ? { lastBody } : {}),
+    };
   }
 
   function apiUrl(suffix: string): string {
@@ -370,6 +429,12 @@ function createToolRuntime(input: PmGoSdkToolsInput) {
           ...extractOutputRefs(toolName, output),
         };
         await input.persistence.updateToolCall(completed);
+        if (completed.planId) {
+          await input.persistence.linkRunToPlan({
+            agentRunId: input.agentRunId,
+            planId: completed.planId,
+          });
+        }
         return jsonResult(output);
       } catch (err) {
         const failed: ToolCallRecord = {
@@ -387,7 +452,7 @@ function createToolRuntime(input: PmGoSdkToolsInput) {
     };
   }
 
-  return { apiUrl, fetchJson, postJson, wrap };
+  return { apiUrl, fetchJson, postJson, waitForPlanPersistence, wrap };
 }
 
 function resolveApiUrl(options: OperatorAgentOptions): string {
@@ -494,6 +559,20 @@ function summarizePlanFirst(planResponse: unknown): ToolHandlerResult {
   };
 }
 
+function extractPlanId(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.planId === "string" && UUID_RE.test(obj.planId)) {
+    return obj.planId;
+  }
+  const plan = obj.plan;
+  if (plan && typeof plan === "object") {
+    const id = (plan as { id?: unknown }).id;
+    if (typeof id === "string" && UUID_RE.test(id)) return id;
+  }
+  return undefined;
+}
+
 async function defaultWhy(
   runtime: ReturnType<typeof createToolRuntime>,
   id: string,
@@ -577,9 +656,14 @@ function extractOutputRefs(
 ): Partial<ToolCallRecord> {
   const refs = extractRefs(value);
   // POST /plans returns planId synchronously, but the row is inserted
-  // asynchronously by the persistPlan activity. Recording planId on
-  // the agent_tool_calls row right now would violate the plan_id FK.
-  if (toolName === "pmgo_decompose_spec" && "planId" in refs) {
+  // asynchronously by the persistPlan activity. `pmgo_decompose_spec`
+  // now waits for GET /plans/:id before returning `status: ready`; only
+  // that ready result is safe to FK-link.
+  if (
+    toolName === "pmgo_decompose_spec" &&
+    (value as { status?: unknown })?.status !== "ready" &&
+    "planId" in refs
+  ) {
     delete refs.planId;
   }
   return refs;

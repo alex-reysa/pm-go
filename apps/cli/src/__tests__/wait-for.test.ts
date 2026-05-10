@@ -91,7 +91,7 @@ describe('waitFor', () => {
 
   // --------------------------------------------------------------------------
   // onTick heartbeat — used by `pm-go run` to surface plan-persistence
-  // progress every 60s during the 20-minute plan wait. Without this the
+  // progress every 60s during long plan-persistence waits. Without this the
   // operator stares at a silent terminal and assumes the supervisor wedged.
   // --------------------------------------------------------------------------
   it('fires onTick roughly every tickIntervalMs while the wait runs', async () => {

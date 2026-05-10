@@ -24,6 +24,10 @@ export interface AgentRunPersistence {
     errorReason?: string;
     completedAt: string;
   }): Promise<void>;
+  linkRunToPlan(input: {
+    agentRunId: UUID;
+    planId: UUID;
+  }): Promise<void>;
   createToolCall(input: ToolCallRecord): Promise<void>;
   updateToolCall(input: ToolCallRecord): Promise<void>;
 }
@@ -99,6 +103,24 @@ export class ApiAgentRunPersistence implements AgentRunPersistence {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
+      },
+    );
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`PATCH /agent-runs/${input.agentRunId} -> ${res.status}: ${text}`);
+    }
+  }
+
+  async linkRunToPlan(input: {
+    agentRunId: UUID;
+    planId: UUID;
+  }): Promise<void> {
+    const res = await this.fetchImpl(
+      `${this.apiUrl}/agent-runs/${input.agentRunId}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ planId: input.planId }),
       },
     );
     if (!res.ok) {
@@ -199,6 +221,18 @@ export class MemoryAgentRunPersistence implements AgentRunPersistence {
       ...(input.stopReason !== undefined ? { stopReason: input.stopReason } : {}),
       ...(input.errorReason !== undefined ? { errorReason: input.errorReason } : {}),
       completedAt: input.completedAt,
+    };
+  }
+
+  async linkRunToPlan(input: {
+    agentRunId: UUID;
+    planId: UUID;
+  }): Promise<void> {
+    const idx = this.runs.findIndex((r) => r.id === input.agentRunId);
+    if (idx < 0) return;
+    this.runs[idx] = {
+      ...this.runs[idx]!,
+      planId: input.planId,
     };
   }
 

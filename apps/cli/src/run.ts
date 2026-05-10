@@ -38,6 +38,12 @@ export interface RunOptions {
   repoRoot: string
   /** Absolute path to the spec markdown file (optional). */
   specPath: string | undefined
+  /**
+   * Whether the supervisor itself should submit `specPath` during
+   * step [6/6]. Agent mode passes a spec for banner/operator context
+   * but leaves submission to the typed agent tool flow.
+   */
+  submitSpecOnBoot?: boolean
   /** Title for the spec document. Falls back to first H1 or filename. */
   title: string | undefined
   /** Runtime mode for every agent role. */
@@ -50,6 +56,8 @@ export interface RunOptions {
   skipDocker: boolean
   /** Skip `pnpm db:migrate` (e.g. CI already migrated). */
   skipMigrate: boolean
+  /** How long to wait for POST /plans to become queryable. */
+  planWaitMs?: number
 }
 
 /**
@@ -220,6 +228,19 @@ export function parseRunArgv(
       case '--skip-migrate':
         opts.skipMigrate = true
         break
+      case '--plan-wait': {
+        if (!value) return { ok: false, error: `${flag} requires a duration` }
+        const parsed = parsePlanWaitMs(value)
+        if (parsed === undefined) {
+          return {
+            ok: false,
+            error: `${flag} must be a positive duration like 45m, 2700s, or 1h`,
+          }
+        }
+        opts.planWaitMs = parsed
+        i++
+        break
+      }
       case '--help':
       case '-h':
         return { ok: false, error: 'help' }
@@ -234,6 +255,26 @@ export function parseRunArgv(
   }
 
   return { ok: true, options: opts as RunOptions }
+}
+
+export function parsePlanWaitMs(raw: string): number | undefined {
+  const match = raw.trim().match(/^([1-9]\d*)(ms|s|m|h)?$/)
+  if (!match) return undefined
+  const n = Number.parseInt(match[1]!, 10)
+  const unit = match[2] ?? 'm'
+  const multiplier =
+    unit === 'ms'
+      ? 1
+      : unit === 's'
+        ? 1_000
+        : unit === 'm'
+          ? 60_000
+          : 60 * 60_000
+  const ms = n * multiplier
+  if (!Number.isSafeInteger(ms) || ms <= 0 || ms > 24 * 60 * 60_000) {
+    return undefined
+  }
+  return ms
 }
 
 /**
@@ -345,6 +386,31 @@ export interface RunDeps {
   writeInstanceState: (entry: InstanceStateEntry) => Promise<void>
   /** Supervisor's own pid — injected so tests can pin it deterministically. */
   processPid: number
+  /**
+   * Optional diagnostic hook used only when plan persistence times out.
+   * Production describes the Temporal SpecToPlanWorkflow; tests inject
+   * narrow status fixtures.
+   */
+  describeSpecToPlanWorkflow?: (
+    workflowId: string,
+  ) => Promise<SpecToPlanWorkflowDescription>
+}
+
+export type SpecToPlanWorkflowStatus =
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'terminated'
+  | 'canceled'
+  | 'timed_out'
+  | 'continued_as_new'
+  | 'not_found'
+  | 'unknown'
+
+export interface SpecToPlanWorkflowDescription {
+  workflowId: string
+  status: SpecToPlanWorkflowStatus
+  detail?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -354,7 +420,7 @@ export interface RunDeps {
 const POSTGRES_TIMEOUT_MS = 60_000
 const TEMPORAL_TIMEOUT_MS = 60_000
 const API_HEALTH_TIMEOUT_MS = 30_000
-export const PLAN_PERSISTENCE_TIMEOUT_MS = 20 * 60_000
+export const PLAN_PERSISTENCE_TIMEOUT_MS = 45 * 60_000
 const POLL_INTERVAL_MS = 500
 
 /**
@@ -638,7 +704,8 @@ export async function runSupervisor(
 
   // 6. Optional: submit spec + start plan.
   let planId: string | undefined
-  if (options.specPath) {
+  const submitSpecOnBoot = options.submitSpecOnBoot ?? true
+  if (options.specPath && submitSpecOnBoot) {
     log('[6/6] submitting spec + starting plan...')
     try {
       planId = await submitSpecAndPlan(options, deps)
@@ -646,10 +713,9 @@ export async function runSupervisor(
         log(`       plan started: ${planId}`)
       } else {
         // submitSpecAndPlan returns undefined on plan-persistence
-        // timeout. The plan was likely persisted under a different
-        // UUID (separate planId-mismatch bug); the recovery hint was
-        // already written to errLog. Don't tear the stack down — the
-        // operator can still query the API to find the real planId.
+        // timeout. The recovery hint was already written to errLog.
+        // Don't tear the stack down — the operator can still query the
+        // API/Temporal to see whether planning is still running.
         log(
           '       plan submission timed out waiting for persistence — supervisor staying up so you can recover (see error log above).',
         )
@@ -661,6 +727,8 @@ export async function runSupervisor(
       // Don't bring down the supervisor — the user can submit a different
       // spec via the API or TUI without restarting the stack.
     }
+  } else if (options.specPath) {
+    log('[6/6] spec provided; agent operator will submit + plan it after stack readiness')
   } else {
     log('[6/6] no --spec provided; skipping plan submission')
   }
@@ -807,12 +875,10 @@ function formatElapsed(ms: number): string {
 /**
  * Submit a spec and start a plan. On success returns the planId.
  *
- * On plan-persistence timeout (a 20-minute hard ceiling), returns
- * `undefined` rather than throwing: the plan was almost certainly
- * persisted under a different UUID (a separate planId-mismatch bug)
- * and the supervisor must NOT tear the stack down — the operator
- * still needs the running API to query for the real id. We log a
- * structured recovery message to errLog instead.
+ * On plan-persistence timeout, returns `undefined` rather than
+ * throwing: the planner workflow may still be running and the
+ * supervisor must NOT tear the stack down. We log a structured
+ * recovery message to errLog instead.
  *
  * Other failures (HTTP non-2xx, network errors) still throw and are
  * handled by `runSupervisor`'s existing catch.
@@ -859,6 +925,7 @@ export async function submitSpecAndPlan(
     throw new Error(`POST /plans → ${planRes.status}: ${text}`)
   }
   const planJson = (await planRes.json()) as { planId: string }
+  const planWaitMs = opts.planWaitMs ?? PLAN_PERSISTENCE_TIMEOUT_MS
 
   // POST /plans returns 202 — the SpecToPlanWorkflow is async and the
   // plan row only lands in Postgres after the planner finishes. Poll
@@ -868,7 +935,7 @@ export async function submitSpecAndPlan(
   // specs can run for several minutes, so keep this comfortably above
   // the startup-scale timeouts.
   //
-  // The 60s onTick callback turns 20 minutes of dead silence into a
+  // The 60s onTick callback turns long planner waits into a
   // visible heartbeat — operators were previously left wondering if
   // the supervisor was wedged or if planning was just slow.
   const planQueryable = await waitFor(
@@ -878,7 +945,7 @@ export async function submitSpecAndPlan(
     },
     {
       label: 'plan-persistence',
-      timeoutMs: PLAN_PERSISTENCE_TIMEOUT_MS,
+      timeoutMs: planWaitMs,
       intervalMs: POLL_INTERVAL_MS,
       onTick: (elapsedMs) => {
         deps.log(
@@ -890,15 +957,77 @@ export async function submitSpecAndPlan(
   )
   if (planQueryable.status === 'timeout') {
     // Don't throw — that would propagate through runSupervisor and
-    // tear the stack down via deps.pm.stop(). The plan was probably
-    // persisted under a different id (separate planId-mismatch bug);
-    // the operator needs the API still running so they can find it.
+    // tear the stack down via deps.pm.stop(). The operator needs the
+    // API still running so they can inspect Temporal/API state.
+    const workflowId = `plan-${specJson.specDocumentId}`
+    const workflow = await deps
+      .describeSpecToPlanWorkflow?.(workflowId)
+      .catch((err) => ({
+        workflowId,
+        status: 'unknown' as const,
+        detail: err instanceof Error ? err.message : String(err),
+      }))
     deps.errLog(
-      `[pm-go] plan-persistence wait exceeded ${PLAN_PERSISTENCE_TIMEOUT_MS / 1000}s. The plan may have been persisted under a different UUID; query GET /spec-documents/${specJson.specDocumentId}/plan (or curl /plans and search by spec_document_id) to locate it, then resume with: pm-go drive --plan <id>`,
+      formatPlanPersistenceTimeoutMessage({
+        planId: planJson.planId,
+        specDocumentId: specJson.specDocumentId,
+        workflowId,
+        waitMs: planWaitMs,
+        ...(workflow !== undefined ? { workflow } : {}),
+      }),
     )
     return undefined
   }
   return planJson.planId
+}
+
+export function formatPlanPersistenceTimeoutMessage(input: {
+  planId: string
+  specDocumentId: string
+  workflowId: string
+  waitMs: number
+  workflow?: SpecToPlanWorkflowDescription
+}): string {
+  const wait = formatElapsed(input.waitMs)
+  const status = input.workflow?.status
+  if (status === 'running') {
+    return (
+      `[pm-go] plan-persistence wait exceeded ${wait}. ` +
+      `Temporal workflow ${input.workflowId} is still running, so the planner activity may simply still be working. ` +
+      'Keep the supervisor up and run `pm-go status` to monitor it, or retry with `--plan-wait 60m`. ' +
+      `When GET /plans/${input.planId} returns 200, resume with: pm-go drive --plan ${input.planId}`
+    )
+  }
+  if (
+    status === 'completed' ||
+    status === 'continued_as_new' ||
+    status === 'not_found'
+  ) {
+    return (
+      `[pm-go] plan-persistence wait exceeded ${wait}. ` +
+      `Temporal workflow ${input.workflowId} is ${status}, but GET /plans/${input.planId} never became queryable. ` +
+      `Check GET /spec-documents/${input.specDocumentId}/plan and /plans for a projection or plan-id mismatch, then resume with: pm-go drive --plan <id>`
+    )
+  }
+  if (
+    status === 'failed' ||
+    status === 'terminated' ||
+    status === 'canceled' ||
+    status === 'timed_out'
+  ) {
+    const detail = input.workflow?.detail ? ` (${input.workflow.detail})` : ''
+    return (
+      `[pm-go] plan-persistence wait exceeded ${wait}. ` +
+      `Temporal workflow ${input.workflowId} is ${status}${detail}; no plan row is expected until that workflow is recovered or restarted. ` +
+      'Run `pm-go status` and inspect the worker/Temporal logs before retrying.'
+    )
+  }
+  const detail = input.workflow?.detail ? ` (${input.workflow.detail})` : ''
+  return (
+    `[pm-go] plan-persistence wait exceeded ${wait}. ` +
+    `Could not confirm Temporal workflow status for ${input.workflowId}${detail}. ` +
+    'The planner may still be running; keep the supervisor up, run `pm-go status`, and retry with `--plan-wait 60m` if needed.'
+  )
 }
 
 /**
@@ -959,11 +1088,13 @@ Options:
   --database-url <url>      Override DATABASE_URL.
   --skip-docker             Skip docker compose; assume stack is up.
   --skip-migrate            Skip pnpm db:migrate.
+  --plan-wait <duration>    Wait for plan persistence (default: 45m).
   --help, -h                Show this message.
 
 Examples:
   pm-go run                                         # boot the stack only
   pm-go run --spec ./examples/golden-path/spec.md   # boot + submit spec
+  pm-go run --spec ./feature.md --plan-wait 60m
   pm-go run --runtime stub --skip-docker            # CI / smokes
 `
 

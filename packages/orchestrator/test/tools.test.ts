@@ -169,22 +169,28 @@ describe("pm-go SDK MCP tools", () => {
     );
   });
 
-  it("Claim 3 — pmgo_decompose_spec drops planId on the recorded ToolCallRecord while keeping spec/snapshot refs", async () => {
-    // POST /plans returns the planId synchronously, but the plan row is
-    // inserted asynchronously by the persistPlan activity. Recording
-    // planId on the agent_tool_calls row right now would violate the
-    // plan_id FK — so the recorded refs must include specDocumentId /
-    // repoSnapshotId but NOT planId, even though the response carries one.
-    const fetchImpl: typeof globalThis.fetch = async () =>
-      new Response(
+  it("Claim 3 — pmgo_decompose_spec waits for plan persistence before recording planId", async () => {
+    const fetchCalls: string[] = [];
+    const fetchImpl: typeof globalThis.fetch = async (url) => {
+      const u = String(url);
+      fetchCalls.push(u);
+      if (u.endsWith("/plans")) {
+        return new Response(
+          JSON.stringify({
+            planId: PLAN_ID,
+            specDocumentId: SPEC_ID,
+            repoSnapshotId: SNAPSHOT_ID,
+          }),
+          { status: 202, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(
         JSON.stringify({
           plan: { id: PLAN_ID, specDocumentId: SPEC_ID, repoSnapshotId: SNAPSHOT_ID },
-          planId: PLAN_ID,
-          specDocumentId: SPEC_ID,
-          repoSnapshotId: SNAPSHOT_ID,
         }),
-        { status: 201, headers: { "content-type": "application/json" } },
+        { status: 200, headers: { "content-type": "application/json" } },
       );
+    };
     const persistence = new MemoryAgentRunPersistence();
     const tools = createPmGoSdkTools({
       agentRunId: AGENT_RUN_ID,
@@ -198,9 +204,57 @@ describe("pm-go SDK MCP tools", () => {
       {},
     );
 
+    expect(fetchCalls).toEqual([
+      "http://api.test/plans",
+      `http://api.test/plans/${PLAN_ID}`,
+    ]);
     const lastCall = persistence.toolCalls.at(-1)!;
     expect(lastCall.toolName).toBe("pmgo_decompose_spec");
     expect(lastCall.status).toBe("completed");
+    expect(lastCall.planId).toBe(PLAN_ID);
+    expect(lastCall.specDocumentId).toBe(SPEC_ID);
+    expect(lastCall.repoSnapshotId).toBe(SNAPSHOT_ID);
+  });
+
+  it("keeps the planId out of refs when planning is still running after the wait", async () => {
+    let clock = 0;
+    const fetchImpl: typeof globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.endsWith("/plans")) {
+        return new Response(JSON.stringify({ planId: PLAN_ID }), {
+          status: 202,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    };
+    const persistence = new MemoryAgentRunPersistence();
+    const tools = createPmGoSdkTools({
+      agentRunId: AGENT_RUN_ID,
+      options: baseOptions(),
+      persistence,
+      fetchImpl,
+      nowMs: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      planWaitMs: 2_000,
+      planPollIntervalMs: 1_000,
+    });
+
+    const result = await findTool(tools, "pmgo_decompose_spec").handler(
+      { specDocumentId: SPEC_ID, repoSnapshotId: SNAPSHOT_ID },
+      {},
+    );
+
+    expect(decodeResult(result)).toEqual(
+      expect.objectContaining({
+        status: "planning",
+        planId: PLAN_ID,
+        workflowId: `plan-${SPEC_ID}`,
+      }),
+    );
+    const lastCall = persistence.toolCalls.at(-1)!;
     expect(lastCall.planId).toBeUndefined();
     expect(lastCall.specDocumentId).toBe(SPEC_ID);
     expect(lastCall.repoSnapshotId).toBe(SNAPSHOT_ID);

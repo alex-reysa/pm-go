@@ -77,6 +77,7 @@ import {
   type RunCliDeps,
   type RunDeps,
   type RunOptions,
+  type SpecToPlanWorkflowDescription,
 } from './run.js'
 import { createProcessManager } from './lib/process-manager.js'
 import {
@@ -650,7 +651,11 @@ async function main(): Promise<number> {
       const live = entries.filter((e) => isPidAlive(e.pid))
       if (live.length === 0) {
         await productionRemoveInstanceState(filePath)
+        const staleRuns = await recoverStaleOrchestratorRuns({
+          monorepoRoot: resolveMonorepoRoot(),
+        })
         console.log('(state file cleared; no live entries)')
+        console.log(formatStaleOrchestratorRunRecovery(staleRuns))
         return 0
       }
       const body = `${JSON.stringify(live, null, 2)}\n`
@@ -661,6 +666,7 @@ async function main(): Promise<number> {
       for (const entry of live) {
         console.log(`${entry.label.padEnd(10)} ${entry.pid}`)
       }
+      console.log('(agent_runs cleanup skipped; live pm-go entries remain)')
       return 0
     }
 
@@ -772,6 +778,20 @@ export async function runProductionOperatorAgent(
     },
     async drivePlan(input) {
       const apiUrl = stack.apiUrl ?? resolveAgentApiUrl(options)
+      const planReady = await waitForAgentPlanReady(
+        apiUrl,
+        input.planId,
+        fetchImpl,
+        deps.log,
+      )
+      if (!planReady) {
+        return {
+          status: 'planning',
+          planId: input.planId,
+          message:
+            'plan row is not queryable yet; planner workflow may still be running',
+        }
+      }
       const exitCode = await runDrive(
         {
           planId: input.planId,
@@ -820,6 +840,34 @@ export async function runProductionOperatorAgent(
   } finally {
     await stack.stop().catch(() => undefined)
   }
+}
+
+async function waitForAgentPlanReady(
+  apiUrl: string,
+  planId: string,
+  fetchImpl: typeof globalThis.fetch,
+  log: (line: string) => void,
+): Promise<boolean> {
+  const waitMs = 45 * 60_000
+  const intervalMs = 1_000
+  const startedAt = Date.now()
+  let nextHeartbeatAt = startedAt + 60_000
+  while (Date.now() - startedAt <= waitMs) {
+    const res = await fetchImpl(`${apiUrl.replace(/\/+$/, '')}/plans/${planId}`)
+    if (res.ok) return true
+    if (res.status !== 404) return false
+    const now = Date.now()
+    if (now >= nextHeartbeatAt) {
+      log(
+        `[agent] waiting for plan ${planId} to become queryable (${Math.floor(
+          (now - startedAt) / 60_000,
+        )}m elapsed)`,
+      )
+      nextHeartbeatAt += 60_000
+    }
+    await delay(intervalMs)
+  }
+  return false
 }
 
 async function loadOperatorAgentModule(): Promise<{
@@ -907,8 +955,9 @@ function createAgentStackController(
     })
     const runOptions: RunOptions = {
       repoRoot: input.repoRoot ?? options.repoRoot,
-      specPath: undefined,
-      title: undefined,
+      specPath: options.specPath,
+      submitSpecOnBoot: false,
+      title: options.title,
       runtime: (input.runtime ?? options.runtime) as RunOptions['runtime'],
       apiPort,
       databaseUrl:
@@ -1172,6 +1221,90 @@ async function productionRemoveInstanceState(filePath: string): Promise<void> {
   }
 }
 
+export type StaleOrchestratorRunRecovery =
+  | { status: 'updated'; count: number }
+  | { status: 'skipped'; reason: string }
+
+export async function recoverStaleOrchestratorRuns(input: {
+  monorepoRoot: string
+  exec?: (
+    cmd: string,
+    args: readonly string[],
+    opts: { cwd: string; maxBuffer: number },
+  ) => Promise<{ code: number; stdout: string; stderr: string }>
+}): Promise<StaleOrchestratorRunRecovery> {
+  const sql = [
+    'WITH updated AS (',
+    '  UPDATE agent_runs',
+    "  SET status = 'failed',",
+    '      completed_at = now(),',
+    "      stop_reason = 'error',",
+    "      error_reason = COALESCE(error_reason, 'recover: orphaned by previous supervisor')",
+    "  WHERE status = 'running'",
+    "    AND role = 'orchestrator'",
+    '    AND plan_id IS NULL',
+    '    AND completed_at IS NULL',
+    '  RETURNING id',
+    ')',
+    'SELECT count(*)::int FROM updated;',
+  ].join('\n')
+  const exec =
+    input.exec ??
+    ((cmd, args, opts) =>
+      execFile(cmd, [...args], opts).then(
+        ({ stdout, stderr }) => ({
+          code: 0,
+          stdout: String(stdout),
+          stderr: String(stderr),
+        }),
+        (err: NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: number | string }) => ({
+          code: typeof err.code === 'number' ? err.code : 1,
+          stdout: String(err.stdout ?? ''),
+          stderr: String(err.stderr ?? err.message ?? ''),
+        }),
+      ))
+  const result = await exec('docker', [
+    'compose',
+    'exec',
+    '-T',
+    'postgres',
+    'psql',
+    '-U',
+    'pmgo',
+    '-d',
+    'pm_go',
+    '-tA',
+    '-c',
+    sql,
+  ], {
+    cwd: input.monorepoRoot,
+    maxBuffer: 1024 * 1024,
+  })
+  if (result.code !== 0) {
+    const reason = (result.stderr || result.stdout || `exit ${result.code}`)
+      .trim()
+      .split('\n')[0]
+    return {
+      status: 'skipped',
+      reason: reason || 'postgres cleanup command failed',
+    }
+  }
+  const count = Number.parseInt(result.stdout.trim(), 10)
+  return {
+    status: 'updated',
+    count: Number.isInteger(count) ? count : 0,
+  }
+}
+
+export function formatStaleOrchestratorRunRecovery(
+  result: StaleOrchestratorRunRecovery,
+): string {
+  if (result.status === 'updated') {
+    return `(agent_runs cleanup: marked ${result.count} stale orchestrator run(s) failed)`
+  }
+  return `(agent_runs cleanup skipped: ${result.reason})`
+}
+
 /**
  * Probe a single TCP port: try to bind to 127.0.0.1:`port`. If bind
  * fails with EADDRINUSE the port is in use; any other error is
@@ -1203,6 +1336,78 @@ async function productionCheckPorts(
   }
   if (conflicts.length === 0) return { ok: true }
   return { ok: false, conflicts }
+}
+
+async function productionDescribeSpecToPlanWorkflow(
+  workflowId: string,
+  monorepoRoot: string,
+): Promise<SpecToPlanWorkflowDescription> {
+  const namespace = process.env.TEMPORAL_NAMESPACE ?? 'default'
+  const r = await execFile('docker', [
+    'compose',
+    'exec',
+    '-T',
+    'temporal',
+    'sh',
+    '-c',
+    `tctl --ad "$(hostname -i):7233" --ns ${shellQuote(namespace)} workflow describe --wid ${shellQuote(workflowId)}`,
+  ], {
+    cwd: monorepoRoot,
+    maxBuffer: 8 * 1024 * 1024,
+  }).then(
+    ({ stdout, stderr }) => ({ code: 0, stdout, stderr }),
+    (err: NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: number | string }) => ({
+      code: typeof err.code === 'number' ? err.code : 1,
+      stdout: err.stdout ?? '',
+      stderr: err.stderr ?? err.message ?? '',
+    }),
+  )
+  const output = `${r.stdout}\n${r.stderr}`.trim()
+  if (r.code !== 0) {
+    const lowered = output.toLowerCase()
+    return {
+      workflowId,
+      status: lowered.includes('not found') ? 'not_found' : 'unknown',
+      ...(output ? { detail: output.split('\n')[0] } : {}),
+    }
+  }
+  return {
+    workflowId,
+    status: parseTemporalWorkflowStatus(output),
+    ...(output ? { detail: output.split('\n')[0] } : {}),
+  }
+}
+
+function parseTemporalWorkflowStatus(output: string): SpecToPlanWorkflowDescription['status'] {
+  const match =
+    output.match(/Status\s*:\s*([A-Za-z_]+)/i) ??
+    output.match(/Status\s+([A-Za-z_]+)/i) ??
+    output.match(/WorkflowExecutionStatus\s*:\s*([A-Za-z_]+)/i)
+  const raw = match?.[1]?.toLowerCase().replace(/^workflow_execution_status_/, '')
+  switch (raw) {
+    case 'running':
+      return 'running'
+    case 'completed':
+      return 'completed'
+    case 'failed':
+      return 'failed'
+    case 'terminated':
+      return 'terminated'
+    case 'canceled':
+    case 'cancelled':
+      return 'canceled'
+    case 'timed_out':
+    case 'timeout':
+      return 'timed_out'
+    case 'continued_as_new':
+      return 'continued_as_new'
+    default:
+      return 'unknown'
+  }
+}
+
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`
 }
 
 function buildProductionSupervisorDeps(): Omit<
@@ -1258,6 +1463,8 @@ function buildProductionSupervisorDeps(): Omit<
     sleep: (ms) => delay(ms),
     log: (l) => console.log(l),
     errLog: (l) => console.error(l),
+    describeSpecToPlanWorkflow: (workflowId) =>
+      productionDescribeSpecToPlanWorkflow(workflowId, resolveMonorepoRoot()),
   }
 }
 

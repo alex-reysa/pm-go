@@ -9,7 +9,6 @@ import {
   formatPortConflictError,
   runSupervisor,
   submitSpecAndPlan,
-  PLAN_PERSISTENCE_TIMEOUT_MS,
   type InstanceStateEntry,
   type PortPreflightResult,
   type RunDeps,
@@ -96,6 +95,18 @@ describe('parseRunArgv', () => {
     assert.ok(r.ok)
     assert.strictEqual(r.options.skipDocker, true)
     assert.strictEqual(r.options.skipMigrate, true)
+  })
+
+  it('parses --plan-wait durations as milliseconds', () => {
+    const r = parseRunArgv(['--plan-wait', '60m'], cwd, resolve)
+    assert.ok(r.ok)
+    assert.strictEqual(r.options.planWaitMs, 60 * 60_000)
+  })
+
+  it('rejects invalid --plan-wait durations', () => {
+    const r = parseRunArgv(['--plan-wait', 'forever'], cwd, resolve)
+    assert.ok(!r.ok)
+    assert.match(r.error, /--plan-wait/)
   })
 
   it('returns help signal on --help / -h', () => {
@@ -434,6 +445,43 @@ function makeSupervisorFixture(overrides: {
 }
 
 describe('runSupervisor port pre-flight + state file', () => {
+  it('prints the spec but does not submit it when agent mode owns submission', async () => {
+    const fixture = makeSupervisorFixture({
+      options: {
+        specPath: '/abs/spec.md',
+        submitSpecOnBoot: false,
+        skipDocker: true,
+        skipMigrate: true,
+      },
+    })
+    const fetchUrls: string[] = []
+    const origFetch = fixture.deps.fetch
+    fixture.deps.fetch = (async (input: unknown, init?: unknown) => {
+      const u =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as { url: string }).url
+      fetchUrls.push(u)
+      return (origFetch as unknown as (a: unknown, b: unknown) => Promise<unknown>)(
+        u,
+        init,
+      )
+    }) as unknown as typeof globalThis.fetch
+
+    await runSupervisor(fixture.options, fixture.deps, async () => 0)
+
+    const joined = fixture.logs.join('\n')
+    assert.match(joined, /spec:\s+\/abs\/spec\.md/)
+    assert.ok(joined.includes('spec provided; agent operator will submit + plan it'))
+    assert.ok(!joined.includes('no --spec provided'))
+    assert.ok(
+      fetchUrls.every((url) => !url.endsWith('/spec-documents') && !url.endsWith('/plans')),
+      `agent-mode supervisor must not submit the spec itself; saw ${fetchUrls.join(', ')}`,
+    )
+  })
+
   it('invokes checkPorts with [5432, 7233, 8233, apiPort] BEFORE any docker compose up', async () => {
     let portsArg: readonly number[] | undefined
     let portsCheckOrder: number = -1
@@ -698,15 +746,15 @@ describe('processManager removeInstanceState wiring', () => {
 
 // ---------------------------------------------------------------------------
 // submitSpecAndPlan: plan-persistence timeout no longer throws — it logs a
-// recovery message and returns undefined so the supervisor can stay UP for
-// the operator to find the (mismatched) planId. v0.8.4.2 hardening.
+// recovery message and returns undefined so the supervisor can stay UP while
+// the operator inspects Temporal/API state. v0.8.4.2 hardening.
 // ---------------------------------------------------------------------------
 
 describe('submitSpecAndPlan plan-persistence timeout (v0.8.4.2)', () => {
   /**
    * Build a deps fixture that simulates spec + plan POSTs succeeding,
    * but every GET /plans/<id> returning 404 — i.e. the plan-persistence
-   * wait will never see a 200 and will hit the 20-minute timeout.
+   * wait will never see a 200 and will hit the configured timeout.
    * `now`/`sleep` are virtual so the test runs in microseconds.
    */
   function makeTimeoutFixture(): {
@@ -789,6 +837,10 @@ describe('submitSpecAndPlan plan-persistence timeout (v0.8.4.2)', () => {
       checkPorts: async () => ({ ok: true } as PortPreflightResult),
       writeInstanceState: async () => undefined,
       processPid: 9999,
+      describeSpecToPlanWorkflow: async (workflowId) => ({
+        workflowId,
+        status: 'running',
+      }),
     }
     const options: RunOptions = {
       repoRoot: '/abs/repo',
@@ -822,44 +874,45 @@ describe('submitSpecAndPlan plan-persistence timeout (v0.8.4.2)', () => {
       undefined,
       'expected undefined return so the supervisor stays up',
     )
-    // The recovery hint must be on errLog with the documented shape so
-    // operators can paste-and-run it. Pin the load-bearing fragments.
+    // The recovery hint must be on errLog with the documented shape.
+    // Pin the load-bearing fragments.
     const joined = errs.join('\n')
     assert.match(
       joined,
       new RegExp(
-        `plan-persistence wait exceeded ${PLAN_PERSISTENCE_TIMEOUT_MS / 1000}s`,
+        `plan-persistence wait exceeded 45m 0s`,
       ),
       `expected timeout-seconds fragment in errLog:\n${joined}`,
     )
     assert.match(
       joined,
-      /persisted under a different UUID/,
-      `expected mismatched-UUID hint in errLog:\n${joined}`,
+      /Temporal workflow plan-spec-aaaa-bbbb is still running/,
+      `expected running-workflow diagnostic in errLog:\n${joined}`,
     )
+    assert.doesNotMatch(joined, /different UUID/)
     assert.match(
       joined,
-      /pm-go drive --plan/,
+      /--plan-wait 60m/,
       `expected pm-go drive recovery command in errLog:\n${joined}`,
     )
     assert.match(
       joined,
-      /\/spec-documents\/spec-aaaa-bbbb\/plan/,
-      `expected spec-doc lookup hint pointing at the actual specDocumentId:\n${joined}`,
+      /GET \/plans\/plan-dddd-eeee/,
+      `expected plan lookup hint pointing at the returned planId:\n${joined}`,
     )
   })
 
   it('emits per-minute heartbeat lines on log while waiting', async () => {
     const { deps, options, logs } = makeTimeoutFixture()
     await submitSpecAndPlan(options, deps)
-    // Across a 20-minute timeout we expect roughly 20 heartbeat
+    // Across a 45-minute timeout we expect roughly 45 heartbeat
     // lines (one per minute). Don't pin the exact count — the loop's
     // last sleep is clamped to the remaining budget so the trailing
     // tick may or may not fire — but we MUST see heartbeat output.
     const heartbeats = logs.filter((l) => l.startsWith('[plan-persistence] still waiting'))
     assert.ok(
-      heartbeats.length >= 15,
-      `expected ~20 heartbeat lines over the 20-minute wait, got ${heartbeats.length}`,
+      heartbeats.length >= 40,
+      `expected ~45 heartbeat lines over the 45-minute wait, got ${heartbeats.length}`,
     )
     // The first heartbeat must report a sane "Xm Ys" elapsed.
     assert.match(
