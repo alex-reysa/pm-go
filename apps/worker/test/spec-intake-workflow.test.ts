@@ -74,7 +74,7 @@ beforeEach(() => {
 });
 
 describe("SpecToPlanWorkflow", () => {
-  it("runs plan -> persist agent run -> audit -> persist plan -> render + persist artifact (approved)", async () => {
+  it("runs plan -> audit -> persist plan -> persist agent run -> render + persist artifact (approved)", async () => {
     activityFns.generatePlan.mockResolvedValue({
       plan: planFixture,
       agentRun: makeAgentRun(),
@@ -106,9 +106,9 @@ describe("SpecToPlanWorkflow", () => {
     // invocation-timestamp comparison on the mock.invocationCallOrder.
     const order = [
       activityFns.generatePlan.mock.invocationCallOrder[0],
-      activityFns.persistAgentRun.mock.invocationCallOrder[0],
       activityFns.auditPlanActivity.mock.invocationCallOrder[0],
       activityFns.persistPlan.mock.invocationCallOrder[0],
+      activityFns.persistAgentRun.mock.invocationCallOrder[0],
       activityFns.renderPlanMarkdownActivity.mock.invocationCallOrder[0],
       activityFns.persistArtifact.mock.invocationCallOrder[0],
     ];

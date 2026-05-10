@@ -74,10 +74,12 @@ const {
 /**
  * Spec-to-plan orchestration:
  * 1. Run the planner (`generatePlan`) to obtain a Plan + AgentRun.
- * 2. Persist the AgentRun (planner telemetry).
- * 3. Audit the Plan deterministically; stamp the Plan status based on the
+ * 2. Audit the Plan deterministically; stamp the Plan status based on the
  *    audit outcome (`approved` -> `"approved"`, otherwise `"blocked"`).
- * 4. Persist the (stamped) Plan.
+ * 3. Persist the (stamped) Plan. This MUST happen before `persistAgentRun`
+ *    because `agent_runs.plan_id` has an FK to `plans.id` — persisting the
+ *    planner telemetry first violates the constraint and fails the run.
+ * 4. Persist the AgentRun (planner telemetry).
  * 5. Only if approved, render + persist the Markdown artifact.
  */
 export async function SpecToPlanWorkflow(
@@ -93,8 +95,6 @@ export async function SpecToPlanWorkflow(
       : {}),
   });
 
-  await persistAgentRun(agentRun);
-
   const auditResult = await auditPlanActivity(plan);
   const planToPersist: Plan = {
     ...plan,
@@ -102,6 +102,8 @@ export async function SpecToPlanWorkflow(
   };
 
   await persistPlan(planToPersist);
+
+  await persistAgentRun(agentRun);
 
   if (!auditResult.approved) {
     return { plan: planToPersist };
