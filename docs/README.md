@@ -16,6 +16,9 @@ This directory is organized by what you are trying to do.
 
 - [Architecture overview](architecture/overview.md): the product model and
   execution sequence.
+- [Desktop docs](desktop/README.md): product, IA, architecture, API boundary,
+  prototype alignment, dogfood, and release plan for the attach-first Electron
+  app.
 - [Domain model](specs/domain-model.md): durable objects and invariants.
 - [Workflow model](specs/workflow-model.md): Temporal workflow responsibilities
   and state transitions.
@@ -57,6 +60,7 @@ This directory is organized by what you are trying to do.
 |---|---|
 | [`adrs/`](adrs/) | Architecture decision records. |
 | [`architecture/`](architecture/) | High-level system overview. |
+| [`desktop/`](desktop/) | Attach-first Electron desktop product, IA, API boundary, Workflow Builder, dogfood, and release docs. |
 | [`dogfood/`](dogfood/) | Real-run logs from driving pm-go on its own repo. |
 | [`phases/`](phases/) | Phase-by-phase build notes (phase6, phase7, harness). |
 | [`reports/`](reports/) | Postmortems and observation reports. |
