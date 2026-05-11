@@ -26,9 +26,9 @@
  *      from the URL, `currentRouteId`) survive the swap.
  *   4. The Artifact Detail route renders the error envelope without
  *      injecting executable markup: no `<script>` or `<img>` tags,
- *      the error banner stays inside the run shell, and the
- *      back-link is suppressed (because the artifact body is null
- *      under the error envelope).
+ *      the error banner stays inside the run shell, and the back-link
+ *      stays anchored to the URL planId so the operator can escape
+ *      back to evidence even when the artifact body is null.
  *   5. The Runs List "disconnected" fallback (empty fixture) lands
  *      the operator on the New Spec entry point — the empty banner
  *      links to /runs/new so an operator on a disconnected daemon
@@ -289,11 +289,14 @@ describe("route-level live data fallbacks", () => {
     expect(html).not.toContain("<script");
     expect(html).not.toContain("<img");
     expect(html).not.toContain("<iframe");
-    // Back-link is suppressed when there is no artifact body to
-    // anchor it (the route would otherwise compose a route from a
-    // null planId).
-    expect(html).not.toContain('data-testid="artifact-detail-back-link"');
-    // Body container should also stay absent under the error envelope.
+    // The back-link is anchored to the URL planId (not artifact.planId),
+    // so it stays available under the error envelope: the operator can
+    // always escape back to the run's evidence list. The route guards
+    // on planId !== null, so a null URL param would suppress it.
+    expect(html).toContain('data-testid="artifact-detail-back-link"');
+    expect(html).toContain(`href="/runs/${planId}/evidence"`);
+    // Body container stays absent under the error envelope (no artifact
+    // payload to render).
     expect(html).not.toContain('data-testid="artifact-detail-body"');
     // Run-scoped chrome stays available — the operator can still pop
     // the event drawer to read the failure event sequence.
