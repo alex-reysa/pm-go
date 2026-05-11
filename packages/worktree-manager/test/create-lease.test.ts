@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -151,6 +151,75 @@ describe("createLease", () => {
     });
 
     expect(lease.id).toBe(fakeId);
+  });
+
+  it("forks the agent branch from the supplied `baseSha` (phase snapshot override)", async () => {
+    // Regression for bug #11: pre-fix, createLease always passed `HEAD`
+    // to `git worktree add`, so Phase N+1 task worktrees branched off
+    // the working repo's current HEAD instead of the phase's recorded
+    // `base_snapshot_id → repo_snapshots.head_sha`. After an
+    // override-audit run (main intentionally NOT fast-forwarded),
+    // Phase N+1's worktrees would miss every commit Phase N landed on
+    // the integration branch. The fix threads an optional `baseSha`
+    // through `CreateLeaseInput`; this test pins both halves of the
+    // contract: (1) the worktree HEAD matches the supplied SHA, not
+    // the repo's current HEAD, and (2) `lease.baseSha` echoes the
+    // supplied SHA so downstream diff-scope reads from the same
+    // baseline.
+    const initialHead = (
+      await exec("git", ["-C", repo.path, "rev-parse", "HEAD"])
+    ).stdout.trim();
+
+    // Advance the working repo's HEAD one commit beyond the snapshot.
+    await writeFile(join(repo.path, "drift.txt"), "drift\n");
+    await exec("git", ["-C", repo.path, "add", "."]);
+    await exec("git", ["-C", repo.path, "commit", "-m", "drift"]);
+    const driftedHead = (
+      await exec("git", ["-C", repo.path, "rev-parse", "HEAD"])
+    ).stdout.trim();
+    expect(driftedHead).not.toBe(initialHead);
+
+    const lease = await createLease({
+      task: buildTask(),
+      repoRoot: repo.path,
+      worktreeRoot,
+      maxLifetimeHours: 1,
+      baseSha: initialHead,
+    });
+
+    // The worktree's HEAD must point at the snapshot SHA, not the
+    // working repo's current (drifted) HEAD.
+    const worktreeHead = (
+      await exec("git", ["-C", lease.worktreePath, "rev-parse", "HEAD"])
+    ).stdout.trim();
+    expect(worktreeHead).toBe(initialHead);
+    expect(worktreeHead).not.toBe(driftedHead);
+
+    // The persisted lease.baseSha mirrors the supplied SHA so
+    // diff-scope downstream reads from the right base.
+    expect(lease.baseSha).toBe(initialHead);
+  });
+
+  it("falls back to working-repo HEAD when no `baseSha` is supplied", async () => {
+    // Back-compat: golden-path tests and sample-repo flows don't
+    // record phase snapshots. The activity layer falls through to
+    // undefined `baseSha`; createLease must keep the legacy behavior.
+    const headSha = (
+      await exec("git", ["-C", repo.path, "rev-parse", "HEAD"])
+    ).stdout.trim();
+
+    const lease = await createLease({
+      task: buildTask(),
+      repoRoot: repo.path,
+      worktreeRoot,
+      maxLifetimeHours: 1,
+    });
+
+    expect(lease.baseSha).toBe(headSha);
+    const worktreeHead = (
+      await exec("git", ["-C", lease.worktreePath, "rev-parse", "HEAD"])
+    ).stdout.trim();
+    expect(worktreeHead).toBe(headSha);
   });
 
   it("surfaces WorktreeManagerError — never a raw Error", async () => {

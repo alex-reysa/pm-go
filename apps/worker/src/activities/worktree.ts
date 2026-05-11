@@ -1,5 +1,12 @@
 import type { Task, WorktreeLease } from "@pm-go/contracts";
-import { planTasks, plans, worktreeLeases, type PmGoDb } from "@pm-go/db";
+import {
+  phases,
+  planTasks,
+  plans,
+  repoSnapshots,
+  worktreeLeases,
+  type PmGoDb,
+} from "@pm-go/db";
 import { and, eq } from "drizzle-orm";
 import {
   createLease,
@@ -141,7 +148,21 @@ async function leaseWorktreeImpl(
       status: existing.status,
     };
   }
-  const lease = await createLease(input);
+  // Resolve the phase's recorded base SHA so the agent branch forks
+  // from `phases.base_snapshot_id → repo_snapshots.head_sha` rather
+  // than the working repo's current `HEAD`. Without this, an
+  // override-audit run (where `main` is intentionally NOT
+  // fast-forwarded) leaves Phase N+1 worktrees branching off stale
+  // main and missing every commit Phase N landed. The lookup is
+  // deterministic and idempotent across Temporal retries: the phase's
+  // base_snapshot_id changes only when the integration activity
+  // advances it for the next phase, so re-running this activity
+  // produces the same SHA. Lookup failures fall through to the
+  // working-repo HEAD fallback inside `createLease` (preserves
+  // golden-path tests + sample-repo flows that haven't recorded a
+  // phase snapshot).
+  const baseSha = await resolvePhaseBaseSha(db, input.task.phaseId);
+  const lease = await createLease({ ...input, ...(baseSha ? { baseSha } : {}) });
   try {
     // Single transaction so the lease row and the task-row stamp
     // commit together. If the plan_tasks update fails after the
@@ -281,6 +302,32 @@ async function loadLatestLeaseImpl(
     expiresAt: row.expiresAt,
     status: row.status,
   };
+}
+
+/**
+ * Resolve a phase's recorded base SHA via
+ * `phases.base_snapshot_id → repo_snapshots.head_sha`. Returns `null`
+ * when either row is missing (which causes `createLease` to fall back
+ * to working-repo `HEAD` — safe default for sample-repo / golden-path
+ * flows that don't record snapshots). The lookup is read-only and
+ * idempotent across Temporal retries.
+ */
+async function resolvePhaseBaseSha(
+  db: PmGoDb,
+  phaseId: string,
+): Promise<string | null> {
+  const [phaseRow] = await db
+    .select({ baseSnapshotId: phases.baseSnapshotId })
+    .from(phases)
+    .where(eq(phases.id, phaseId))
+    .limit(1);
+  if (!phaseRow) return null;
+  const [snapRow] = await db
+    .select({ headSha: repoSnapshots.headSha })
+    .from(repoSnapshots)
+    .where(eq(repoSnapshots.id, phaseRow.baseSnapshotId))
+    .limit(1);
+  return snapRow?.headSha ?? null;
 }
 
 /**

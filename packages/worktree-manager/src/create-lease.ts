@@ -16,12 +16,22 @@ const execFileAsync = promisify(execFile);
  *
  * `now` and `newUuid` are exposed purely for tests: production callers
  * should omit them so `createLease` falls back to `Date`/`randomUUID`.
+ *
+ * `baseSha` is the commitish to fork the agent branch from. Production
+ * callers should resolve this from `phases.base_snapshot_id →
+ * repo_snapshots.head_sha` so Phase N+1 worktrees branch from the
+ * snapshot the orchestrator recorded for that phase (not the working
+ * repo's current `HEAD`). When omitted, `createLease` falls back to
+ * `HEAD` for backwards compatibility with golden-path tests and one-off
+ * sample-repo flows. The supplied SHA also becomes the persisted
+ * `lease.baseSha`, so downstream diff-scope reads from the same base.
  */
 export interface CreateLeaseInput {
   task: Task;
   repoRoot: string;
   worktreeRoot: string;
   maxLifetimeHours: number;
+  baseSha?: string;
   now?: () => Date;
   newUuid?: () => string;
 }
@@ -61,7 +71,15 @@ export async function createLease(
     );
   }
 
-  const baseSha = await captureBaseSha(input.repoRoot);
+  // When the caller threads an explicit `baseSha` (Phase N+1 task
+  // worktrees do, sourced from `phases.base_snapshot_id`), fork the
+  // branch from that exact commit so the diff baseline matches the
+  // phase snapshot. Otherwise capture working-repo `HEAD` — keeps
+  // golden-path tests and one-off sample-repo callers working without
+  // touching the new code path.
+  const baseSha =
+    input.baseSha ?? (await captureBaseSha(input.repoRoot));
+  const commitish = input.baseSha ?? "HEAD";
 
   try {
     await execFileAsync("git", [
@@ -72,7 +90,7 @@ export async function createLease(
       worktreePath,
       "-b",
       branchName,
-      "HEAD",
+      commitish,
     ]);
   } catch (err) {
     const stderr = extractStderrTail(err);
