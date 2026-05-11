@@ -126,6 +126,26 @@ describe("runPlanner", () => {
     expect(result.agentRun.planId).toBeUndefined();
   });
 
+  it("strips model-supplied milestone provenance from full-spec plans", async () => {
+    const fixture = {
+      ...(JSON.parse(JSON.stringify(planFixture)) as Plan),
+      decompositionId: "11111111-2222-4333-8444-555555555555",
+      milestoneId: "M3",
+    };
+    const runner = createStubPlannerRunner(fixture);
+
+    const result = await runPlanner({
+      specDocument: specDocumentFixture,
+      repoSnapshot: repoSnapshotFixture,
+      requestedBy: "alex@example.com",
+      runner,
+      planId: "deadbeef-1234-4567-89ab-cdef00112233",
+    });
+
+    expect(result.plan.decompositionId).toBeUndefined();
+    expect(result.plan.milestoneId).toBeUndefined();
+  });
+
   it("throws PlanValidationError when the runner returns an invalid plan", async () => {
     // Build a plan variant that is missing a required top-level field
     // (title). The stub just passes the fixture through, so we smuggle

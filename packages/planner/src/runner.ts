@@ -150,13 +150,10 @@ export async function runPlanner(
         }
       : result.plan;
 
-  // Stamp Layer-A milestone provenance when the caller passed a
-  // `milestoneContext`. The context's `decompositionId` and
-  // `milestoneId` flow into the plan row as-is so a downstream
-  // operator (or plan-first follow-up) can trace this plan back to
-  // the manifest entry that scoped it. Absence is the common case
-  // (full-spec plan submissions), in which case the plan is left
-  // untouched.
+  // Stamp Layer-A milestone provenance only when the caller passed a
+  // trusted `milestoneContext`. Model-supplied provenance on a full-spec
+  // plan is not authoritative and cannot satisfy the DB pairing
+  // constraint, so strip it before persistence.
   const plan: Plan =
     input.milestoneContext !== undefined
       ? {
@@ -164,13 +161,23 @@ export async function runPlanner(
           decompositionId: input.milestoneContext.decompositionId,
           milestoneId: input.milestoneContext.milestoneId,
         }
-      : idRewritten;
+      : stripMilestoneProvenance(idRewritten);
 
   const agentRun: AgentRun =
     input.planId !== undefined
       ? { ...result.agentRun, planId: input.planId }
       : result.agentRun;
   return { plan, agentRun };
+}
+
+function stripMilestoneProvenance(plan: Plan): Plan {
+  if (plan.decompositionId === undefined && plan.milestoneId === undefined) {
+    return plan;
+  }
+  const { decompositionId, milestoneId, ...rest } = plan;
+  void decompositionId;
+  void milestoneId;
+  return rest;
 }
 
 /**
