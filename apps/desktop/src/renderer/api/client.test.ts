@@ -113,6 +113,56 @@ describe("Desktop API base URLs", () => {
     expect(streamUrl.searchParams.get("sinceEventId")).toBe("event-1");
   });
 
+  it("classifies health probe request failures as api_unreachable", async () => {
+    const request: typeof globalThis.fetch = async () => {
+      throw new Error("connect ECONNREFUSED");
+    };
+    const api = createDesktopApiClient({
+      baseUrl: "http://localhost:3001",
+      request,
+    });
+
+    await expect(api.probeHealth()).resolves.toEqual({
+      kind: "api_unreachable",
+      message: "connect ECONNREFUSED",
+    });
+  });
+
+  it("preserves health probe API error status, body, and request id", async () => {
+    const body = { error: "startup_pending", requestId: "body-request-id" };
+    const { request } = stubRequest(() => ({
+      status: 503,
+      body,
+      headers: { "x-request-id": "header-request-id" },
+    }));
+    const api = createDesktopApiClient({
+      baseUrl: "http://localhost:3001",
+      request,
+    });
+
+    await expect(api.probeHealth()).resolves.toEqual({
+      kind: "api_error",
+      status: 503,
+      body,
+      requestId: "header-request-id",
+    });
+  });
+
+  it("classifies non-envelope successful health responses as foreign_service", async () => {
+    const { request } = stubRequest(() => ({
+      body: { status: "ok", service: "legacy-api" },
+    }));
+    const api = createDesktopApiClient({
+      baseUrl: "http://localhost:3001",
+      request,
+    });
+
+    await expect(api.probeHealth()).resolves.toEqual({
+      kind: "foreign_service",
+      status: 200,
+    });
+  });
+
   it("preserves desktop config values and rejects unsafe base URL parts", () => {
     const { request } = stubRequest(() => ({ body: { plans: [] } }));
     const api = createDesktopApiClientFromConfig(
