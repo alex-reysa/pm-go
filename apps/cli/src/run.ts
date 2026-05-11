@@ -20,6 +20,7 @@
  */
 
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
+import { StringDecoder } from 'node:string_decoder'
 
 import { applyDotenv, type ApplyDotenvResult } from './lib/dotenv.js'
 import {
@@ -846,18 +847,109 @@ export function buildChildEnv(opts: RunOptions): NodeJS.ProcessEnv {
   return base
 }
 
-function pipeToLog(
-  proc: ChildProcess,
+/**
+ * Wire a child process's stdout + stderr into the supervisor log.
+ *
+ * The original implementation buffered raw `'data'` chunks and split
+ * each one on `\n`, which had two silent-data-loss bugs that only
+ * surfaced after hours of sustained child output:
+ *
+ *   1. Chunks arrive at arbitrary buffer boundaries. A line split
+ *      across two chunks had its tail dropped: the trailing fragment
+ *      (no `\n` yet) was emitted as a "line" and forgotten — the
+ *      next chunk's leading fragment was then treated as a separate
+ *      line rather than the rest of the previous one. Over hours,
+ *      a non-zero fraction of every long line disappeared.
+ *   2. The same boundary issue could split a multi-byte UTF-8
+ *      codepoint, producing U+FFFD replacement characters in the log.
+ *
+ * Over a 12h dogfood this manifested as the consolidated log file
+ * (`.dogfood-logs/...`) appearing to stop receiving `[worker]` and
+ * `[api]` output around T+3h while the children were still healthy
+ * and Temporal workflows still progressing — the operator had to fall
+ * back to DB queries for in-flight state.
+ *
+ * Fix: maintain a persistent partial-line buffer per stream and
+ * decode bytes through `StringDecoder` so codepoints split across
+ * chunks are reassembled correctly. The listener stays attached for
+ * the full lifetime of the child stream, so there is no
+ * pause/resume window and no closed-fd reference. We also attach an
+ * `'error'` listener so a transient EPIPE on either stream surfaces
+ * to the supervisor log instead of crashing the parent via Node's
+ * default 'error' behaviour, and an `'end'` listener so a final
+ * unterminated line is still forwarded.
+ *
+ * Exported so the supervisor-pipe test in run.test.ts can verify
+ * lossless framing without spawning a real child.
+ */
+export function pipeToLog(
+  proc: {
+    stdout?: NodeJS.EventEmitter | null
+    stderr?: NodeJS.EventEmitter | null
+  },
   log: (line: string) => void,
   label: string,
 ): void {
-  const onChunk = (buf: Buffer) => {
-    for (const line of buf.toString('utf8').split('\n')) {
+  if (proc.stdout) attachLineStream(proc.stdout, log, label)
+  if (proc.stderr) attachLineStream(proc.stderr, log, label)
+}
+
+/**
+ * Attach a lossless line-framing pipeline to a single readable-like
+ * stream. Works with both real `child_process.ChildProcess` stdout /
+ * stderr handles (Readable extends EventEmitter) AND the
+ * EventEmitter-based fakes used in run.test.ts — we only rely on
+ * `'data'` / `'end'` / `'error'` events.
+ */
+function attachLineStream(
+  stream: NodeJS.EventEmitter,
+  log: (line: string) => void,
+  label: string,
+): void {
+  const decoder = new StringDecoder('utf8')
+  let buffer = ''
+
+  const flushLines = (text: string): void => {
+    buffer += text
+    // Process every complete line in the buffer. Anything after the
+    // last '\n' stays in `buffer` until the next chunk arrives — that
+    // is the critical fix vs. the old `.split('\n')` approach which
+    // would emit the trailing fragment as a "line" and forget it.
+    let nl = buffer.indexOf('\n')
+    while (nl !== -1) {
+      // Trim a trailing CR so Windows-style line endings don't show
+      // up as visible artefacts in the log.
+      const raw = buffer.slice(0, nl)
+      const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
       if (line.length > 0) log(`[${label}] ${line}`)
+      buffer = buffer.slice(nl + 1)
+      nl = buffer.indexOf('\n')
     }
   }
-  proc.stdout?.on('data', onChunk)
-  proc.stderr?.on('data', onChunk)
+
+  stream.on('data', (chunk: Buffer | string) => {
+    const text =
+      typeof chunk === 'string' ? chunk : decoder.write(chunk)
+    if (text.length > 0) flushLines(text)
+  })
+  stream.on('end', () => {
+    // Flush any bytes still held by the StringDecoder (a multi-byte
+    // codepoint cut by the final chunk would otherwise be silently
+    // dropped), then surface an unterminated final line if present.
+    const tail = decoder.end()
+    if (tail.length > 0) flushLines(tail)
+    if (buffer.length > 0) {
+      const line = buffer.endsWith('\r') ? buffer.slice(0, -1) : buffer
+      if (line.length > 0) log(`[${label}] ${line}`)
+      buffer = ''
+    }
+  })
+  stream.on('error', (err: Error) => {
+    // A child stream EPIPE (e.g. the child crashed while we were
+    // draining) must not crash the supervisor. Log it and let
+    // `process-manager` handle the actual exit signal.
+    log(`[${label}] (pipe error: ${err.message})`)
+  })
 }
 
 /**

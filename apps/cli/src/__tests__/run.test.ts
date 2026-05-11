@@ -7,6 +7,7 @@ import {
   deriveTitle,
   buildChildEnv,
   formatPortConflictError,
+  pipeToLog,
   runSupervisor,
   submitSpecAndPlan,
   type InstanceStateEntry,
@@ -1012,6 +1013,139 @@ describe('submitSpecAndPlan plan-persistence timeout (v0.8.4.2)', () => {
       errs.length,
       0,
       `recovery message must NOT fire on the happy path; got: ${errs.join('|')}`,
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// pipeToLog: lossless child-output framing under sustained load.
+//
+// Regression test for bug #16. The old implementation buffered raw 'data'
+// chunks and split on '\n', which silently dropped the tail of any line
+// that straddled a chunk boundary. Over a 12h dogfood the consolidated log
+// stopped receiving `[worker]`/`[api]` output around T+3h even though both
+// children were still running — because every long line was being
+// fragmented and the fragments dropped. The fixes verified here:
+//   1. A line split across chunks is reassembled (not dropped).
+//   2. Multi-byte UTF-8 split across chunks survives decoding.
+//   3. Tens of thousands of lines fed in mid-line chunks all surface.
+//   4. A pipe `'error'` is logged, never thrown.
+//
+// We feed `pipeToLog` a `{ stdout, stderr }` shape backed by plain
+// `EventEmitter`s — matching the fake-child pattern the existing
+// supervisor fixture uses — so the test path mirrors how real
+// child_process pipes deliver data.
+// ---------------------------------------------------------------------------
+describe('pipeToLog framing under sustained load', () => {
+  function makeFakeProc() {
+    return {
+      stdout: new EventEmitter() as EventEmitter,
+      stderr: new EventEmitter() as EventEmitter,
+    }
+  }
+
+  it('reassembles a line split across chunk boundaries instead of dropping its tail', () => {
+    const logs: string[] = []
+    const proc = makeFakeProc()
+    pipeToLog(proc, (l) => logs.push(l), 'worker')
+
+    // "hello world\n" fed in three fragments so the separator only
+    // arrives in the third chunk. The old implementation would emit
+    // "hello" and " wor" as separate "lines" and forget "ld".
+    proc.stdout.emit('data', Buffer.from('hello'))
+    proc.stdout.emit('data', Buffer.from(' wor'))
+    proc.stdout.emit('data', Buffer.from('ld\n'))
+
+    assert.deepStrictEqual(
+      logs,
+      ['[worker] hello world'],
+      `expected one reassembled line, got ${JSON.stringify(logs)}`,
+    )
+  })
+
+  it('preserves multi-byte UTF-8 codepoints split across chunks', () => {
+    const logs: string[] = []
+    const proc = makeFakeProc()
+    pipeToLog(proc, (l) => logs.push(l), 'api')
+
+    // 'é' is 0xC3 0xA9 in UTF-8. Split between the two bytes so the
+    // old per-chunk Buffer.toString('utf8') would produce a U+FFFD
+    // replacement on each side. StringDecoder holds the partial
+    // codepoint until the second byte arrives.
+    proc.stdout.emit('data', Buffer.from([0xc3]))
+    proc.stdout.emit('data', Buffer.from([0xa9, 0x0a])) // 0xa9 + '\n'
+
+    assert.deepStrictEqual(
+      logs,
+      ['[api] é'],
+      `expected lossless UTF-8 across chunks, got ${JSON.stringify(logs)}`,
+    )
+  })
+
+  it('keeps emitting every line past a large sustained-output threshold', () => {
+    // Simulates hours of child output: 50k lines fed in 4 KiB chunks
+    // so the chunk boundaries naturally fall mid-line. The old
+    // implementation would drop the tail of every line crossing a
+    // boundary; the new line-buffered pipeline emits every line.
+    const logs: string[] = []
+    const proc = makeFakeProc()
+    pipeToLog(proc, (l) => logs.push(l), 'worker')
+
+    const TOTAL = 50_000
+    const lines: string[] = []
+    for (let i = 0; i < TOTAL; i++) {
+      lines.push(`event ${i} ${'x'.repeat(40)}`)
+    }
+    const payload = lines.join('\n') + '\n'
+
+    const CHUNK = 4096
+    for (let off = 0; off < payload.length; off += CHUNK) {
+      proc.stdout.emit('data', Buffer.from(payload.slice(off, off + CHUNK)))
+    }
+
+    assert.strictEqual(
+      logs.length,
+      TOTAL,
+      `expected every one of ${TOTAL} lines to flow through; got ${logs.length}`,
+    )
+    // Spot-check first, middle, and last to confirm ordering + framing.
+    assert.strictEqual(logs[0], `[worker] event 0 ${'x'.repeat(40)}`)
+    assert.strictEqual(
+      logs[Math.floor(TOTAL / 2)],
+      `[worker] event ${Math.floor(TOTAL / 2)} ${'x'.repeat(40)}`,
+    )
+    assert.strictEqual(
+      logs[TOTAL - 1],
+      `[worker] event ${TOTAL - 1} ${'x'.repeat(40)}`,
+    )
+  })
+
+  it('flushes an unterminated final line on stream end', () => {
+    const logs: string[] = []
+    const proc = makeFakeProc()
+    pipeToLog(proc, (l) => logs.push(l), 'worker')
+
+    proc.stdout.emit('data', Buffer.from('last line no newline'))
+    proc.stdout.emit('end')
+
+    assert.deepStrictEqual(
+      logs,
+      ['[worker] last line no newline'],
+      `expected the final unterminated line to flush on end; got ${JSON.stringify(logs)}`,
+    )
+  })
+
+  it('forwards a stream error without crashing the supervisor', () => {
+    const logs: string[] = []
+    const proc = makeFakeProc()
+    pipeToLog(proc, (l) => logs.push(l), 'worker')
+
+    proc.stdout.emit('data', Buffer.from('partial line')) // no \n
+    proc.stdout.emit('error', new Error('EPIPE'))
+    // The error must be logged, not thrown.
+    assert.ok(
+      logs.some((l) => l.includes('pipe error') && l.includes('EPIPE')),
+      `expected pipe error to be logged; got ${JSON.stringify(logs)}`,
     )
   })
 })
