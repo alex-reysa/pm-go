@@ -19,6 +19,7 @@ import {
 } from "../api/index.js";
 import {
   FIXTURE_BANNER_LABEL,
+  evidenceHappyPath,
   type EvidenceArtifactContent,
   type EvidenceBundleView,
   type FixtureDataset,
@@ -35,11 +36,15 @@ import {
 import { pathForArtifactDetail } from "../router/routes.js";
 
 export interface EvidenceRouteProps {
-  readonly dataset: FixtureDataset<EvidenceBundleView>;
+  readonly dataset?: FixtureDataset<EvidenceBundleView>;
   /** Optional API client override for route-level tests. */
   readonly apiClient?: DesktopApiClient;
   /** Optional selected-run override; production uses the `:planId` route param. */
   readonly planId?: string;
+  /** Optional initial live state for static route tests. */
+  readonly initialLiveState?: LiveEvidenceState;
+  /** Keep fixture rendering for static fixture tests. */
+  readonly forceFixture?: boolean;
 }
 
 type EvidenceGroupId = "audits" | "reviews" | "release" | "other";
@@ -51,6 +56,7 @@ type ArtifactPersistedEvent = Extract<
 >;
 
 interface LiveEvidenceState {
+  readonly requestKey: string | null;
   readonly loading: boolean;
   readonly envelope: ReadModelEnvelope<EvidenceBundleViewModel, unknown> | null;
   readonly errors: readonly RecoverableReadError[];
@@ -170,6 +176,10 @@ function formatReadError(error: RecoverableReadError): string {
     error.status >= 500;
   const label = recoverable ? "Recoverable API read failed" : "API read failed";
   return `${label} (HTTP ${error.status}): ${error.message}`;
+}
+
+function hasDesktopBridge(): boolean {
+  return typeof window !== "undefined" && window.pmGoDesktop !== undefined;
 }
 
 function artifactBodyFromRead(read: ArtifactRead): string | null {
@@ -389,19 +399,32 @@ function auditSummary(audit: NonNullable<EvidenceView["completionAudit"]>): stri
 }
 
 export function Evidence(props: EvidenceRouteProps): React.JSX.Element {
-  const { dataset } = props;
+  const dataset = props.dataset ?? evidenceHappyPath;
   const routeParams = useParams();
   const planId = props.planId ?? routeParams.planId ?? dataset.data.planId;
-  const [liveState, setLiveState] = useState<LiveEvidenceState>({
-    loading: false,
-    envelope: null,
-    errors: [],
-  });
+  const liveReadEnabled =
+    !props.forceFixture &&
+    planId !== "" &&
+    (props.apiClient !== undefined || hasDesktopBridge());
+  const [liveState, setLiveState] = useState<LiveEvidenceState>(
+    props.initialLiveState ?? {
+      requestKey: liveReadEnabled ? planId : null,
+      loading: liveReadEnabled,
+      envelope: null,
+      errors: [],
+    },
+  );
 
   useEffect(() => {
-    if (planId === "") return;
+    if (!liveReadEnabled || planId === "") return;
+    const requestKey = planId;
     let cancelled = false;
-    setLiveState((current) => ({ ...current, loading: true }));
+    setLiveState({
+      requestKey,
+      loading: true,
+      envelope: null,
+      errors: [],
+    });
 
     void (async () => {
       try {
@@ -460,6 +483,7 @@ export function Evidence(props: EvidenceRouteProps): React.JSX.Element {
         });
 
         setLiveState({
+          requestKey,
           loading: false,
           envelope,
           errors: allErrors,
@@ -468,6 +492,7 @@ export function Evidence(props: EvidenceRouteProps): React.JSX.Element {
         if (cancelled) return;
         const readError = recoverableErrorFromUnknown(error);
         setLiveState({
+          requestKey,
           loading: false,
           envelope: buildArtifactEvidence({ planId, error: readError }),
           errors: [readError],
@@ -478,41 +503,50 @@ export function Evidence(props: EvidenceRouteProps): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [planId, props.apiClient]);
+  }, [liveReadEnabled, planId, props.apiClient]);
 
-  const hasLiveRead = liveState.envelope !== null || liveState.loading;
-  const view: EvidenceView = liveState.envelope?.data ?? dataset.data;
+  const activeLiveState =
+    liveReadEnabled && liveState.requestKey === planId ? liveState : null;
+  const liveLoading =
+    liveReadEnabled && (activeLiveState === null || activeLiveState.loading);
+  const liveEnvelope = activeLiveState?.envelope ?? null;
+  const liveErrors = activeLiveState?.errors ?? [];
+  const emptyLiveEnvelope = buildArtifactEvidence({ planId });
+  const hasLiveRead = liveReadEnabled || liveEnvelope !== null || liveLoading;
+  const view: EvidenceView =
+    liveEnvelope?.data ?? (hasLiveRead ? emptyLiveEnvelope.data : dataset.data);
   const artifactRows = useMemo(() => evidenceArtifactRows(view), [view]);
   const groupedArtifacts = useMemo(
     () => artifactsByGroup(artifactRows),
     [artifactRows],
   );
-  const isError = liveState.errors.length > 0 || (!hasLiveRead && dataset.state === "error");
+  const isError = liveErrors.length > 0 || (!hasLiveRead && dataset.state === "error");
   const isEmpty =
-    (hasLiveRead ? liveState.envelope?.state === "empty" : dataset.state === "empty") &&
+    !liveLoading &&
+    (hasLiveRead ? liveEnvelope?.state === "empty" : dataset.state === "empty") &&
     view.completionAudit === null &&
     view.checklist.length === 0 &&
     view.findings.length === 0 &&
     artifactRows.length === 0;
   const sourceLabel = hasLiveRead
-    ? liveState.loading
+    ? liveLoading
       ? "Desktop API live · loading"
       : "Desktop API live"
     : FIXTURE_BANNER_LABEL;
   const errorMessages =
-    liveState.errors.length > 0
-      ? liveState.errors.map(formatReadError)
+    liveErrors.length > 0
+      ? liveErrors.map(formatReadError)
       : dataset.state === "error"
         ? [`Failed to load evidence (HTTP ${dataset.error.status}): ${dataset.error.message}`]
         : [];
-  const limitations = liveState.envelope?.limitations ?? [];
+  const limitations = liveEnvelope?.limitations ?? [];
 
   return (
     <section
       className="evidence"
       data-route="run.evidence"
       data-testid="evidence-route"
-      data-fixture-state={hasLiveRead ? (liveState.envelope?.state ?? "loading") : dataset.state}
+      data-fixture-state={hasLiveRead ? (liveEnvelope?.state ?? "loading") : dataset.state}
       aria-labelledby="evidence-title"
     >
       <header className="evidence__header">
@@ -541,7 +575,7 @@ export function Evidence(props: EvidenceRouteProps): React.JSX.Element {
         </div>
       ) : null}
 
-      {liveState.loading ? (
+      {liveLoading ? (
         <p className="evidence__empty" role="status">
           Loading evidence.
         </p>

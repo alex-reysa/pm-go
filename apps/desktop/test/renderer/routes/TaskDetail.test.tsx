@@ -15,6 +15,10 @@ import {
   TaskDetail,
   type TaskActionKind,
 } from "../../../src/renderer/routes/TaskDetail.js";
+import type { DesktopApiClient } from "../../../src/renderer/api/index.js";
+
+const ROUTE_TASK_ID = "task_01HVQX9003ROUTES0000";
+const STATIC_API_CLIENT = {} as DesktopApiClient;
 
 function renderMarkup(element: React.ReactElement): string {
   const originalError = console.error;
@@ -39,7 +43,7 @@ function renderTaskDetail(element: React.ReactElement): string {
   return renderMarkup(
     <MemoryRouter
       initialEntries={[
-        "/runs/plan_01HVQX7AA4B0EXEC1NG/tasks/task_01HVQX9003ROUTES0000",
+        `/runs/plan_01HVQX7AA4B0EXEC1NG/tasks/${ROUTE_TASK_ID}`,
       ]}
     >
       <Routes>
@@ -100,6 +104,24 @@ describe("TaskDetail route", () => {
     );
     expect(errorHtml).toContain('data-dataset-state="error"');
     expect(errorHtml).toContain('data-testid="task-detail-error"');
+  });
+
+  it("renders live loading instead of fixture task data before the API read resolves", () => {
+    const html = renderTaskDetail(
+      <TaskDetail
+        apiClient={STATIC_API_CLIENT}
+        initialLiveState={{
+          requestKey: ROUTE_TASK_ID,
+          loading: true,
+          envelope: null,
+          errors: [],
+        }}
+      />,
+    );
+
+    expect(html).toContain("Desktop API live · loading");
+    expect(html).toContain("Loading task detail.");
+    expect(html).not.toContain("Wire react-router route shell");
   });
 
   it("renders every mutating action button with label and disabled state", () => {

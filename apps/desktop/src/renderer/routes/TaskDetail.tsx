@@ -119,6 +119,10 @@ function limitedLimitations<T>(value: T | LimitedValue<T>): Limitation[] {
   return isLimitedValue(value) ? value.limitations : [];
 }
 
+function hasDesktopBridge(): boolean {
+  return typeof window !== "undefined" && window.pmGoDesktop !== undefined;
+}
+
 function isTaskDetailViewModel(
   task: TaskDetailModel,
 ): task is TaskDetailViewModel {
@@ -249,6 +253,8 @@ export interface TaskDetailProps {
   readonly apiClient?: DesktopApiClient;
   /** Optional task override; production uses the `:taskId` route param. */
   readonly taskId?: string;
+  /** Optional initial live state for static route tests. */
+  readonly initialLiveState?: LiveTaskState;
 }
 
 type TaskDetailModel = FixtureTaskDetail | TaskDetailViewModel;
@@ -258,6 +264,7 @@ type TaskLeaseDisplay = TaskLeaseRef | WorktreeLease;
 type TaskReviewDisplay = TaskReviewReportRef | ReviewReport | ReviewReportProjection;
 
 interface LiveTaskState {
+  readonly requestKey: string | null;
   readonly loading: boolean;
   readonly envelope: ReadModelEnvelope<TaskDetailViewModel | null, TaskDetailPayload | null> | null;
   readonly errors: readonly RecoverableReadError[];
@@ -433,20 +440,34 @@ export function TaskDetail(props: TaskDetailProps): React.JSX.Element {
   const dataset = props.dataset ?? taskDetailHappyPath;
   const routeParams = useParams();
   const taskId = props.taskId ?? routeParams.taskId ?? null;
+  const liveReadEnabled =
+    taskId !== null &&
+    (props.apiClient !== undefined ||
+      props.dataset === undefined ||
+      hasDesktopBridge());
   const inspector = useRightInspector();
   const [pendingAction, setPendingAction] = useState<TaskActionKind | null>(
     props.initialPendingAction ?? null,
   );
-  const [liveState, setLiveState] = useState<LiveTaskState>({
-    loading: false,
-    envelope: null,
-    errors: [],
-  });
+  const [liveState, setLiveState] = useState<LiveTaskState>(
+    props.initialLiveState ?? {
+      requestKey: liveReadEnabled ? taskId : null,
+      loading: liveReadEnabled,
+      envelope: null,
+      errors: [],
+    },
+  );
 
   useEffect(() => {
-    if (taskId === null) return;
+    if (!liveReadEnabled || taskId === null) return;
+    const requestKey = taskId;
     let cancelled = false;
-    setLiveState((current) => ({ ...current, loading: true }));
+    setLiveState({
+      requestKey,
+      loading: true,
+      envelope: null,
+      errors: [],
+    });
 
     void (async () => {
       try {
@@ -479,6 +500,7 @@ export function TaskDetail(props: TaskDetailProps): React.JSX.Element {
         });
 
         setLiveState({
+          requestKey,
           loading: false,
           envelope,
           errors: [reviewReportsError, agentRunsError].filter(
@@ -489,6 +511,7 @@ export function TaskDetail(props: TaskDetailProps): React.JSX.Element {
         if (cancelled) return;
         const readError = recoverableErrorFromUnknown(error);
         setLiveState({
+          requestKey,
           loading: false,
           envelope: buildTaskDetail({ error: readError }),
           errors: [readError],
@@ -499,32 +522,39 @@ export function TaskDetail(props: TaskDetailProps): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [taskId, props.apiClient]);
+  }, [liveReadEnabled, taskId, props.apiClient]);
 
-  const hasLiveRead = liveState.envelope !== null || liveState.loading;
+  const activeLiveState =
+    liveReadEnabled && liveState.requestKey === taskId ? liveState : null;
+  const liveLoading =
+    liveReadEnabled && (activeLiveState === null || activeLiveState.loading);
+  const liveEnvelope = activeLiveState?.envelope ?? null;
+  const liveErrors = activeLiveState?.errors ?? [];
+
+  const hasLiveRead = liveReadEnabled || liveEnvelope !== null || liveLoading;
   const task: TaskDetailModel | null =
-    liveState.envelope?.data ?? (hasLiveRead ? null : dataset.data);
+    liveEnvelope?.data ?? (hasLiveRead ? null : dataset.data);
   const displayState =
-    liveState.loading && liveState.envelope === null
+    liveLoading && liveEnvelope === null
       ? "loading"
-      : (liveState.envelope?.state ?? dataset.state);
+      : (liveEnvelope?.state ?? dataset.state);
   const sourceLabel = hasLiveRead
-    ? liveState.loading
+    ? liveLoading
       ? "Desktop API live · loading"
       : "Desktop API live"
     : FIXTURE_BANNER_LABEL;
   const errorMessages =
-    liveState.errors.length > 0
-      ? liveState.errors.map(formatReadError)
+    liveErrors.length > 0
+      ? liveErrors.map(formatReadError)
       : !hasLiveRead && dataset.state === "error"
         ? [`Task load failed: ${dataset.error.message}.`]
         : [];
-  const limitations = liveState.envelope?.limitations ?? [];
+  const limitations = liveEnvelope?.limitations ?? [];
 
-  // Empty / error envelope: render the missing-state variant.
   if (task === null) {
     return (
       <TaskDetailMissing
+        sourceLabel={sourceLabel}
         state={
           displayState === "loading"
             ? "loading"
@@ -533,84 +563,86 @@ export function TaskDetail(props: TaskDetailProps): React.JSX.Element {
               : "empty"
         }
         errorMessages={errorMessages}
-        sourceLabel={sourceLabel}
       />
     );
   }
 
-  // Modal copy for the currently-open action. `pendingAction === null`
-  // means no modal — the ConfirmationModal renders `null` when its
-  // `isOpen` prop is false.
-  const pendingLabel =
-    pendingAction !== null ? ACTION_LABELS[pendingAction] : "";
   const pendingDisabledReason =
-    pendingAction !== null ? disabledReasonFor(task, pendingAction) : null;
-  const fixDisabledReason = disabledReasonFor(task, "task.fix");
+    pendingAction === null
+      ? null
+      : disabledReasonFor(task, pendingAction);
+  const branchName = taskBranchName(task);
+  const approvalStatus = taskApprovalStatus(task);
+  const reviewState = taskReviewState(task);
+  const worktreePath = taskWorktreePath(task);
   const latestAgentRun = taskLatestAgentRun(task);
   const latestLease = taskLatestLease(task);
   const latestReview = taskLatestReview(task);
-  const worktreePath = taskWorktreePath(task);
-  const policyDecisions = taskPolicyDecisions(task);
-  const reviewSkippedDecision = taskReviewSkippedDecision(task);
   const reviewReports = taskReviewReports(task);
   const agentRuns = taskAgentRuns(task);
-  const fixCycleCopy =
+  const policyDecisions = taskPolicyDecisions(task);
+  const reviewSkippedDecision = taskReviewSkippedDecision(task);
+  const fileExcludes = fileScopeExcludes(task);
+  const fixCycleLabel =
     latestReview !== null
       ? `Fix cycle: ${reviewCycleLabel(latestReview)} · ${task.status}`
       : `Fix cycle: no review cycle yet · ${task.status}`;
-  const fixStateCopy =
-    fixDisabledReason === null
-      ? "Fix action available."
-      : `Fix action unavailable: ${fixDisabledReason}`;
-
-  const closeModal = (): void => setPendingAction(null);
-  const onConfirm = (): void => {
-    // Reads are live, but mutations still belong behind explicit API
-    // workflows. The modal closes without dispatching a write.
-    closeModal();
-  };
-  const openInspector = (): void => {
-    if (inspector.isAllowedHere) {
-      inspector.setOpen(true);
-    }
-  };
 
   return (
     <>
-      <section
-        className="task-detail"
-        data-testid="task-detail"
-        data-dataset-state={displayState}
-        data-task-id={task.id}
-        aria-labelledby="task-detail-title"
-      >
-        <header className="task-detail__header">
-          <p className="task-detail__fixture-label">{sourceLabel}</p>
-          <h1 id="task-detail-title" className="task-detail__title">
-            {task.title}
-          </h1>
-          <p className="task-detail__identity">
-            {`${task.slug} · ${task.kind} · ${task.riskLevel} risk · ${task.status}`}
-          </p>
-          <p className="task-detail__summary">{task.summary}</p>
-          <button
-            type="button"
-            className="task-detail__inspect-button"
-            data-testid="task-detail-open-inspector"
-            onClick={openInspector}
-          >
-            Inspect task
-          </button>
-          {errorMessages.length > 0 ? (
-            <p
-              className="task-detail__error"
-              data-testid="task-detail-error"
-              role="status"
-            >
-              {errorMessages.join(" · ")}
-            </p>
-          ) : null}
-        </header>
+    <section
+      className="task-detail"
+      data-testid="task-detail"
+      data-dataset-state={hasLiveRead ? displayState : dataset.state}
+      data-task-id={task.id}
+      aria-labelledby="task-detail-title"
+    >
+      <header className="task-detail__header">
+        <p className="task-detail__fixture-label">
+          {sourceLabel}
+          {!hasLiveRead ? ` · ${dataset.label}` : null}
+        </p>
+        <h1 id="task-detail-title" className="task-detail__title">
+          {task.title}
+        </h1>
+        <p className="task-detail__identity">
+          {`${task.slug} · ${task.kind} · ${task.riskLevel} risk · ${task.status}`}
+        </p>
+        <p className="task-detail__summary">{task.summary}</p>
+        <button
+          type="button"
+          className="task-detail__inspect-button"
+          data-testid="task-detail-open-inspector"
+          onClick={() => inspector.setOpen(true)}
+        >
+          Inspect task
+        </button>
+      </header>
+
+      {errorMessages.length > 0 ? (
+        <div className="task-detail__error" role="alert" data-testid="task-detail-error">
+          {errorMessages.map((message) => (
+            <p key={message}>{message}</p>
+          ))}
+        </div>
+      ) : null}
+
+      {limitations.length > 0 ? (
+        <section
+          className="task-detail__limitations"
+          data-testid="task-detail-limitations"
+          aria-label="Read limitations"
+        >
+          <h2>Read limitations</h2>
+          <ul>
+            {limitations.map((limitation) => (
+              <li key={`${limitation.code}-${limitation.field}`}>
+                {limitation.message}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       <section
         className="task-detail__file-scope"
@@ -620,16 +652,16 @@ export function TaskDetail(props: TaskDetailProps): React.JSX.Element {
         <h2 id="task-detail-file-scope-title">File scope</h2>
         <p className="task-detail__file-scope-section-label">Includes</p>
         <ul className="task-detail__file-scope-list">
-          {task.fileScope.includes.map((entry) => (
-            <li key={`include-${entry}`}>{entry}</li>
+          {task.fileScope.includes.map((path) => (
+            <li key={path}>{path}</li>
           ))}
         </ul>
-        {fileScopeExcludes(task).length > 0 ? (
+        {fileExcludes.length > 0 ? (
           <>
             <p className="task-detail__file-scope-section-label">Excludes</p>
             <ul className="task-detail__file-scope-list">
-              {fileScopeExcludes(task).map((entry) => (
-                <li key={`exclude-${entry}`}>{entry}</li>
+              {fileExcludes.map((path) => (
+                <li key={path}>{path}</li>
               ))}
             </ul>
           </>
@@ -643,15 +675,15 @@ export function TaskDetail(props: TaskDetailProps): React.JSX.Element {
       >
         <h2 id="task-detail-acceptance-title">Acceptance criteria</h2>
         <ul className="task-detail__acceptance-list">
-          {task.acceptanceCriteria.map((row) => (
+          {task.acceptanceCriteria.map((criterion) => (
             <li
-              key={row.id}
+              key={criterion.id}
               className="task-detail__acceptance-row"
-              data-testid={`task-detail-acceptance-${row.id}`}
+              data-testid={`task-detail-acceptance-${criterion.id}`}
             >
-              <p className="task-detail__acceptance-title">{row.title}</p>
+              <p className="task-detail__acceptance-title">{criterion.title}</p>
               <p className="task-detail__acceptance-verify">
-                {`verify: ${row.verify}`}
+                {`verify: ${criterion.verify}`}
               </p>
             </li>
           ))}
@@ -664,11 +696,8 @@ export function TaskDetail(props: TaskDetailProps): React.JSX.Element {
         aria-labelledby="task-detail-review-title"
       >
         <h2 id="task-detail-review-title">Latest review / fix state</h2>
-        <p
-          className="task-detail__status-state"
-          data-testid="task-detail-status-state"
-        >
-          {`Task status: ${task.status} · Review: ${taskReviewState(task)} · Approval: ${taskApprovalStatus(task)}`}
+        <p className="task-detail__status-state" data-testid="task-detail-status-state">
+          {`Task status: ${task.status} · Review: ${reviewState} · Approval: ${approvalStatus}`}
         </p>
         {latestAgentRun !== null ? (
           <p
@@ -678,19 +707,11 @@ export function TaskDetail(props: TaskDetailProps): React.JSX.Element {
             {`Latest agent run: ${describeAgentRun(latestAgentRun)}`}
           </p>
         ) : (
-          <p
-            className="task-detail__agent-run"
-            data-testid="task-detail-latest-agent-run"
-          >
-            Latest agent run: none
-          </p>
+          <p data-testid="task-detail-latest-agent-run">Latest agent run: none</p>
         )}
         {latestLease !== null ? (
           <>
-            <p
-              className="task-detail__lease"
-              data-testid="task-detail-latest-lease"
-            >
+            <p className="task-detail__lease" data-testid="task-detail-latest-lease">
               {`Lease: ${describeLease(latestLease)}`}
             </p>
             <p
@@ -700,32 +721,21 @@ export function TaskDetail(props: TaskDetailProps): React.JSX.Element {
               {`Worktree: ${latestLease.worktreePath}`}
             </p>
           </>
-        ) : worktreePath !== null ? (
-          <p
-            className="task-detail__worktree"
-            data-testid="task-detail-worktree"
-          >
-            {`Worktree: ${worktreePath}`}
-          </p>
         ) : (
-          <p
-            className="task-detail__worktree"
-            data-testid="task-detail-worktree"
-          >
-            Lease/worktree: none
-          </p>
+          <>
+            <p data-testid="task-detail-latest-lease">Lease: none</p>
+            <p data-testid="task-detail-worktree">
+              {worktreePath !== null ? `Worktree: ${worktreePath}` : "Worktree: none"}
+            </p>
+          </>
         )}
-        <p
-          className="task-detail__fix-cycle"
-          data-testid="task-detail-fix-cycle"
-        >
-          {fixCycleCopy}
+        <p className="task-detail__fix-cycle" data-testid="task-detail-fix-cycle">
+          {fixCycleLabel}
         </p>
-        <p
-          className="task-detail__fix-state"
-          data-testid="task-detail-fix-state"
-        >
-          {fixStateCopy}
+        <p className="task-detail__fix-state" data-testid="task-detail-fix-state">
+          {disabledReasonFor(task, "task.fix") === null
+            ? "Fix action available"
+            : `Fix action unavailable: ${disabledReasonFor(task, "task.fix")}`}
         </p>
         {latestReview !== null ? (
           <>
@@ -739,96 +749,61 @@ export function TaskDetail(props: TaskDetailProps): React.JSX.Element {
               {`Findings: ${reviewFindingsCount(latestReview)}`}
             </p>
           </>
-        ) : (
-          <p className="task-detail__review-empty">
-            No review report yet.
-          </p>
-        )}
-
+        ) : null}
         <section
           className="task-detail__policy"
           data-testid="task-detail-policy-decisions"
           aria-label="Policy decisions"
         >
           <h3>Policy decisions</h3>
-          {policyDecisions === null ? (
-            <p>Policy decisions were not returned by the API.</p>
-          ) : policyDecisions.length > 0 ? (
+          {policyDecisions !== null && policyDecisions.length > 0 ? (
             <ul>
               {policyDecisions.map((decision) => (
-                <li key={decision.id}>
+                <li key={`${decision.subjectType}-${decision.subjectId}`}>
                   {describePolicyDecision(decision)}
                 </li>
               ))}
             </ul>
+          ) : reviewSkippedDecision !== null ? (
+            <p>{`Review skipped: ${describePolicyDecision(reviewSkippedDecision)}`}</p>
           ) : (
-            <p>No policy decisions returned.</p>
+            <p>Policy decisions were not returned by the API.</p>
           )}
-          {reviewSkippedDecision !== null ? (
-            <p data-testid="task-detail-review-skipped-decision">
-              {`Review skipped: ${describePolicyDecision(reviewSkippedDecision)}`}
-            </p>
-          ) : null}
         </section>
-
         <section
           className="task-detail__review-history"
           data-testid="task-detail-review-history"
           aria-label="Review history"
         >
           <h3>Review history</h3>
-          {reviewReports === null ? (
-            <p>Review history is unavailable.</p>
-          ) : reviewReports.length > 0 ? (
+          {reviewReports !== null && reviewReports.length > 0 ? (
             <ol>
-              {reviewReports.map((report) => (
-                <li key={report.id}>
-                  {`${reviewCycleLabel(report)} · ${report.outcome} · ${reviewCreatedAt(report)} · findings ${reviewFindingsCount(report)}`}
+              {reviewReports.map((review) => (
+                <li key={review.id}>
+                  {`${reviewCycleLabel(review)} · ${review.outcome} · ${reviewCreatedAt(review)} · findings ${reviewFindingsCount(review)}`}
                 </li>
               ))}
             </ol>
           ) : (
-            <p>No review history yet.</p>
+            <p>No review history returned by the API.</p>
           )}
         </section>
-
         <section
           className="task-detail__agent-runs"
           data-testid="task-detail-related-agent-runs"
           aria-label="Related agent runs"
         >
           <h3>Related agent runs</h3>
-          {agentRuns === null ? (
-            <p>Related agent runs are unavailable.</p>
-          ) : agentRuns.length > 0 ? (
+          {agentRuns !== null && agentRuns.length > 0 ? (
             <ul>
               {agentRuns.map((run) => (
                 <li key={run.id}>{describeAgentRun(run)}</li>
               ))}
             </ul>
           ) : (
-            <p>No related agent runs yet.</p>
+            <p>No related agent runs returned by the API.</p>
           )}
         </section>
-
-        {limitations.length > 0 ? (
-          <section
-            className="task-detail__limitations"
-            data-testid="task-detail-limitations"
-            aria-label="Recoverable limitations"
-          >
-            <h3>Recoverable limitations</h3>
-            <ul>
-              {limitations.map((limitation) => (
-                <li
-                  key={`${limitation.code}-${limitation.source}-${limitation.field ?? ""}-${limitation.message}`}
-                >
-                  {limitation.message}
-                </li>
-              ))}
-            </ul>
-          </section>
-        ) : null}
       </section>
 
       <section
@@ -838,13 +813,12 @@ export function TaskDetail(props: TaskDetailProps): React.JSX.Element {
       >
         <h2 id="task-detail-actions-title">Mutating actions</h2>
         <p className="task-detail__actions-note">
-          Each action opens a confirmation modal; server-side workflow
-          mutations remain authoritative.
+          Each action opens a confirmation modal; server-side workflow mutations remain authoritative.
         </p>
         <div className="task-detail__action-row" role="group">
           {TASK_ACTION_KINDS.map((kind) => {
-            const reason = disabledReasonFor(task, kind);
-            const disabled = reason !== null;
+            const disabledReason = disabledReasonFor(task, kind);
+            const disabled = disabledReason !== null;
             return (
               <div
                 key={kind}
@@ -856,18 +830,18 @@ export function TaskDetail(props: TaskDetailProps): React.JSX.Element {
                   className="task-detail__action-button"
                   data-testid={`task-detail-action-${kind}`}
                   data-action={kind}
-                  data-action-disabled={disabled ? "true" : "false"}
+                  data-action-disabled={String(disabled)}
                   aria-disabled={disabled}
                   onClick={() => setPendingAction(kind)}
                 >
                   {ACTION_LABELS[kind]}
                 </button>
-                {reason !== null ? (
+                {disabledReason !== null ? (
                   <span
                     className="task-detail__action-reason"
                     data-testid={`task-detail-action-reason-${kind}`}
                   >
-                    {reason}
+                    {disabledReason}
                   </span>
                 ) : null}
               </div>
@@ -876,26 +850,34 @@ export function TaskDetail(props: TaskDetailProps): React.JSX.Element {
         </div>
       </section>
 
-      <ConfirmationModal
-        isOpen={pendingAction !== null}
-        action={pendingLabel}
-        confirmLabel={pendingLabel}
-        disabledReason={pendingDisabledReason}
-        onConfirm={onConfirm}
-        onCancel={closeModal}
-      >
-        <p
-          className="task-detail__modal-action-label"
-          data-testid="task-detail-modal-action-label"
-        >
-          {`Action: ${pendingLabel}`}
+      {branchName !== null ? (
+        <p className="task-detail__branch" data-testid="task-detail-branch">
+          {`Branch: ${branchName}`}
         </p>
-      </ConfirmationModal>
-      </section>
+      ) : null}
 
-      <RightInspector title="Task inspector">
-        <TaskInspectorBody task={task} />
-      </RightInspector>
+      {pendingAction !== null ? (
+        <ConfirmationModal
+          isOpen={true}
+          action={ACTION_LABELS[pendingAction]}
+          confirmLabel={ACTION_LABELS[pendingAction]}
+          disabledReason={pendingDisabledReason}
+          onConfirm={() => setPendingAction(null)}
+          onCancel={() => setPendingAction(null)}
+        >
+          <p
+            className="task-detail__modal-action-label"
+            data-testid="task-detail-modal-action-label"
+          >
+            {`Action: ${ACTION_LABELS[pendingAction]}`}
+          </p>
+        </ConfirmationModal>
+      ) : null}
+    </section>
+
+    <RightInspector title="Task inspector">
+      <TaskInspectorBody task={task} />
+    </RightInspector>
     </>
   );
 }

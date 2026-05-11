@@ -18,6 +18,7 @@ import {
 } from "../api/index.js";
 import {
   FIXTURE_BANNER_LABEL,
+  artifactDetailHappyPath,
   type ArtifactDetail as ArtifactDetailView,
   type FixtureDataset,
 } from "../fixtures/index.js";
@@ -25,16 +26,21 @@ import type { RecoverableReadError } from "../read-models/index.js";
 import { pathForRunEvidence } from "../router/routes.js";
 
 export interface ArtifactDetailRouteProps {
-  readonly dataset: FixtureDataset<ArtifactDetailView | null>;
+  readonly dataset?: FixtureDataset<ArtifactDetailView | null>;
   /** Optional API client override for route-level tests. */
   readonly apiClient?: DesktopApiClient;
   /** Optional artifact override; production uses the `:artifactId` route param. */
   readonly artifactId?: string;
   /** Optional plan override; production uses the `:planId` route param. */
   readonly planId?: string;
+  /** Optional initial live state for static route tests. */
+  readonly initialLiveState?: LiveArtifactState;
+  /** Keep fixture rendering for static fixture tests. */
+  readonly forceFixture?: boolean;
 }
 
 interface LiveArtifactState {
+  readonly requestKey: string | null;
   readonly loading: boolean;
   readonly artifact: ArtifactRead | null;
   readonly error: RecoverableReadError | null;
@@ -76,6 +82,10 @@ function formatReadError(error: RecoverableReadError): string {
   return `${label} (HTTP ${error.status}): ${error.message}`;
 }
 
+function hasDesktopBridge(): boolean {
+  return typeof window !== "undefined" && window.pmGoDesktop !== undefined;
+}
+
 function textForArtifact(read: ArtifactRead): string {
   switch (read.bodyKind) {
     case "json":
@@ -96,30 +106,44 @@ function byteLengthForArtifact(read: ArtifactRead): number {
 export function ArtifactDetail(
   props: ArtifactDetailRouteProps,
 ): React.JSX.Element {
-  const { dataset } = props;
+  const dataset = props.dataset ?? artifactDetailHappyPath;
   const routeParams = useParams();
   const artifactId = props.artifactId ?? routeParams.artifactId ?? null;
   const planId = props.planId ?? routeParams.planId ?? dataset.data?.planId ?? null;
-  const [liveState, setLiveState] = useState<LiveArtifactState>({
-    loading: false,
-    artifact: null,
-    error: null,
-  });
+  const liveReadEnabled =
+    !props.forceFixture &&
+    artifactId !== null &&
+    (props.apiClient !== undefined || hasDesktopBridge());
+  const [liveState, setLiveState] = useState<LiveArtifactState>(
+    props.initialLiveState ?? {
+      requestKey: liveReadEnabled ? artifactId : null,
+      loading: liveReadEnabled,
+      artifact: null,
+      error: null,
+    },
+  );
 
   useEffect(() => {
-    if (artifactId === null) return;
+    if (!liveReadEnabled || artifactId === null) return;
+    const requestKey = artifactId;
     let cancelled = false;
-    setLiveState((current) => ({ ...current, loading: true }));
+    setLiveState({
+      requestKey,
+      loading: true,
+      artifact: null,
+      error: null,
+    });
 
     void (async () => {
       try {
         const api = await getDesktopApiClient(props.apiClient);
         const artifact = await api.readArtifact(artifactId);
         if (cancelled) return;
-        setLiveState({ loading: false, artifact, error: null });
+        setLiveState({ requestKey, loading: false, artifact, error: null });
       } catch (error) {
         if (cancelled) return;
         setLiveState({
+          requestKey,
           loading: false,
           artifact: null,
           error: recoverableErrorFromUnknown(error),
@@ -130,19 +154,26 @@ export function ArtifactDetail(
     return () => {
       cancelled = true;
     };
-  }, [artifactId, props.apiClient]);
+  }, [liveReadEnabled, artifactId, props.apiClient]);
 
+  const activeLiveState =
+    liveReadEnabled && liveState.requestKey === artifactId ? liveState : null;
+  const liveLoading =
+    liveReadEnabled && (activeLiveState === null || activeLiveState.loading);
+  const liveArtifact = activeLiveState?.artifact ?? null;
+  const error = activeLiveState?.error ?? null;
   const hasLiveRead =
-    liveState.loading || liveState.artifact !== null || liveState.error !== null;
+    liveReadEnabled ||
+    liveLoading ||
+    liveArtifact !== null ||
+    error !== null;
   const artifact = hasLiveRead ? null : dataset.data;
-  const liveArtifact = liveState.artifact;
-  const error = liveState.error;
   const isError = error !== null || (!hasLiveRead && dataset.state === "error");
   const isEmpty =
-    (hasLiveRead && liveArtifact === null && error === null && !liveState.loading) ||
+    (hasLiveRead && liveArtifact === null && error === null && !liveLoading) ||
     (!hasLiveRead && (dataset.state === "empty" || artifact === null));
   const sourceLabel = hasLiveRead
-    ? liveState.loading
+    ? liveLoading
       ? "Desktop API live · loading"
       : "Desktop API live"
     : FIXTURE_BANNER_LABEL;
@@ -215,7 +246,7 @@ export function ArtifactDetail(
         </div>
       ) : null}
 
-      {liveState.loading ? (
+      {liveLoading ? (
         <p className="artifact-detail__empty" role="status">
           Loading artifact content.
         </p>
