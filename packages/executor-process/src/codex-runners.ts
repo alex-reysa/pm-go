@@ -158,7 +158,7 @@ export function createCodexProcessPlannerRunner(
         });
         sessionId = result.sessionId;
         usage = result;
-        const plan = parseJsonText(result.finalText, "Plan");
+        const plan = normalizePlanCandidate(parseJsonText(result.finalText, "Plan"));
         if (!validatePlan(plan)) {
           throw new Error("createCodexProcessPlannerRunner: Plan schema validation failed");
         }
@@ -1015,9 +1015,68 @@ function buildPlannerUserPrompt(input: PlannerRunnerInput): string {
       "Use UUID strings for every id field and ISO-8601 strings for timestamps.",
       "Keep phase.taskIds, phase.mergeOrder, dependency edges, and task.phaseId values internally consistent.",
       "Set reviewerPolicy.reviewerWriteAccess to false.",
+      "For optional fields, omit the property when unknown; never use null for optional properties.",
+      "For full-spec plans, omit decompositionId, milestoneId, and predecessorPlanId unless the runner input explicitly provides milestone context.",
       "Do not wrap the JSON in Markdown fences or explanatory text.",
     ].join(" "),
   ].join("\n");
+}
+
+function normalizePlanCandidate(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const plan = omitNullOptionals({ ...value }, [
+    "autoApproveLowRisk",
+    "decompositionId",
+    "milestoneId",
+    "predecessorPlanId",
+  ]);
+
+  if (Array.isArray(plan.phases)) {
+    plan.phases = plan.phases.map((phase) => {
+      if (!isRecord(phase)) return phase;
+      return omitNullOptionals({ ...phase }, [
+        "phaseAuditReportId",
+        "startedAt",
+        "completedAt",
+      ]);
+    });
+  }
+
+  if (Array.isArray(plan.tasks)) {
+    plan.tasks = plan.tasks.map((task) => {
+      if (!isRecord(task)) return task;
+      const normalizedTask = omitNullOptionals({ ...task }, [
+        "sizeHint",
+        "branchName",
+        "worktreePath",
+      ]);
+      if (isRecord(normalizedTask.fileScope)) {
+        normalizedTask.fileScope = omitNullOptionals(
+          { ...normalizedTask.fileScope },
+          ["excludes", "packageScopes", "maxFiles"],
+        );
+      }
+      if (isRecord(normalizedTask.budget)) {
+        normalizedTask.budget = omitNullOptionals(
+          { ...normalizedTask.budget },
+          ["maxModelCostUsd", "maxPromptTokens"],
+        );
+      }
+      return normalizedTask;
+    });
+  }
+
+  return plan;
+}
+
+function omitNullOptionals<T extends Record<string, unknown>>(
+  value: T,
+  keys: readonly string[],
+): T {
+  for (const key of keys) {
+    if (value[key] === null) delete value[key];
+  }
+  return value;
 }
 
 function buildDecomposerUserPrompt(input: DecomposerRunnerInput): string {
