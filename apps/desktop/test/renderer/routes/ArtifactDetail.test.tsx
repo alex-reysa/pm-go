@@ -12,6 +12,9 @@ import {
 } from "../../../src/renderer/fixtures/index.js";
 import { RunDetailShell } from "../../../src/renderer/layout/RunDetailShell.js";
 import { ArtifactDetail } from "../../../src/renderer/routes/ArtifactDetail.js";
+import type { DesktopApiClient } from "../../../src/renderer/api/index.js";
+
+const STATIC_API_CLIENT = {} as DesktopApiClient;
 
 const originalConsoleError = console.error;
 let consoleErrorSpy: { mockRestore: () => void };
@@ -48,7 +51,7 @@ function renderArtifactDetail(
         >
           <Route
             path="evidence/:artifactId"
-            element={<ArtifactDetail dataset={dataset} />}
+              element={<ArtifactDetail dataset={dataset} forceFixture />}
           />
         </Route>
       </Routes>
@@ -86,5 +89,37 @@ describe("Artifact Detail route", () => {
     expect(html).toContain('data-testid="navbar-link-run.evidence"');
     expect(html).toContain('data-testid="event-drawer-toggle"');
     expect(html).toContain("Show events");
+  });
+
+  it("renders live loading instead of fixture artifact content before the API read resolves", () => {
+    const html = renderToStaticMarkup(
+      <MemoryRouter initialEntries={["/runs/plan_artifacts/evidence/artifact_detail"]}>
+        <Routes>
+          <Route
+            path="/runs/:planId"
+            element={<RunDetailShell currentRouteId="run.artifactDetail" />}
+          >
+            <Route
+              path="evidence/:artifactId"
+              element={
+                <ArtifactDetail
+                  apiClient={STATIC_API_CLIENT}
+                  initialLiveState={{
+                    requestKey: "artifact_detail",
+                    loading: true,
+                    artifact: null,
+                    error: null,
+                  }}
+                />
+              }
+            />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(html).toContain("Desktop API live · loading");
+    expect(html).toContain("Loading artifact content.");
+    expect(html).not.toContain("# Fixture module");
   });
 });

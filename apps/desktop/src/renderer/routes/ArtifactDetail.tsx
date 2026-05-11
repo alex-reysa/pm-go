@@ -1,39 +1,209 @@
 /**
  * Run-scoped Artifact Detail route.
  *
- * M2 renders fixture artifact content inertly as preformatted text.
- * There is intentionally no Markdown renderer, no raw HTML injection,
- * and no remote resource loading in this surface.
+ * Renders artifact content fetched through the Desktop API client.
+ * Text, JSON, and Markdown stay inert inside preformatted text; the
+ * route never injects raw HTML or follows artifact URIs.
  */
 
-import React from "react";
-import { Link } from "react-router-dom";
+import React, { useEffect, useState } from "react";
+import { Link, useParams } from "react-router-dom";
 
 import {
+  ApiConfigurationError,
+  ApiError,
+  createDesktopApiClientFromConfig,
+  type ArtifactRead,
+  type DesktopApiClient,
+} from "../api/index.js";
+import {
   FIXTURE_BANNER_LABEL,
+  artifactDetailHappyPath,
   type ArtifactDetail as ArtifactDetailView,
   type FixtureDataset,
 } from "../fixtures/index.js";
+import type { RecoverableReadError } from "../read-models/index.js";
 import { pathForRunEvidence } from "../router/routes.js";
 
 export interface ArtifactDetailRouteProps {
-  readonly dataset: FixtureDataset<ArtifactDetailView | null>;
+  readonly dataset?: FixtureDataset<ArtifactDetailView | null>;
+  /** Optional API client override for route-level tests. */
+  readonly apiClient?: DesktopApiClient;
+  /** Optional artifact override; production uses the `:artifactId` route param. */
+  readonly artifactId?: string;
+  /** Optional plan override; production uses the `:planId` route param. */
+  readonly planId?: string;
+  /** Optional initial live state for static route tests. */
+  readonly initialLiveState?: LiveArtifactState;
+  /** Keep fixture rendering for static fixture tests. */
+  readonly forceFixture?: boolean;
+}
+
+interface LiveArtifactState {
+  readonly requestKey: string | null;
+  readonly loading: boolean;
+  readonly artifact: ArtifactRead | null;
+  readonly error: RecoverableReadError | null;
+}
+
+async function getDesktopApiClient(
+  override: DesktopApiClient | undefined,
+): Promise<DesktopApiClient> {
+  if (override !== undefined) return override;
+  if (typeof window === "undefined" || window.pmGoDesktop === undefined) {
+    throw new ApiConfigurationError("Desktop bridge is unavailable.");
+  }
+  return createDesktopApiClientFromConfig(await window.pmGoDesktop.getConfig());
+}
+
+function recoverableErrorFromUnknown(error: unknown): RecoverableReadError {
+  if (error instanceof ApiError) {
+    return {
+      status: error.status,
+      message: error.message,
+      body: error.body,
+      ...(error.requestId !== undefined ? { requestId: error.requestId } : {}),
+      raw: error,
+    };
+  }
+  if (error instanceof Error) {
+    return { status: 0, message: error.message, raw: error };
+  }
+  return { status: 0, message: "Unknown Desktop API error.", raw: error };
+}
+
+function formatReadError(error: RecoverableReadError): string {
+  const recoverable =
+    error.status === 403 ||
+    error.status === 404 ||
+    error.status === 409 ||
+    error.status >= 500;
+  const label = recoverable ? "Recoverable artifact read failed" : "Artifact read failed";
+  return `${label} (HTTP ${error.status}): ${error.message}`;
+}
+
+function hasDesktopBridge(): boolean {
+  return typeof window !== "undefined" && window.pmGoDesktop !== undefined;
+}
+
+function textForArtifact(read: ArtifactRead): string {
+  switch (read.bodyKind) {
+    case "json":
+      return JSON.stringify(read.json, null, 2) ?? read.text;
+    case "text":
+      return read.text;
+    case "binary":
+      return `Binary artifact content (${read.bytes.byteLength} bytes) cannot be rendered safely as text.`;
+  }
+}
+
+function byteLengthForArtifact(read: ArtifactRead): number {
+  if (read.contentLength !== null) return read.contentLength;
+  if (read.bodyKind === "binary") return read.bytes.byteLength;
+  return read.text.length;
 }
 
 export function ArtifactDetail(
   props: ArtifactDetailRouteProps,
 ): React.JSX.Element {
-  const { dataset } = props;
-  const artifact = dataset.data;
-  const isError = dataset.state === "error";
-  const isEmpty = dataset.state === "empty" || artifact === null;
+  const dataset = props.dataset ?? artifactDetailHappyPath;
+  const routeParams = useParams();
+  const artifactId = props.artifactId ?? routeParams.artifactId ?? null;
+  const planId = props.planId ?? routeParams.planId ?? dataset.data?.planId ?? null;
+  const liveReadEnabled =
+    !props.forceFixture &&
+    artifactId !== null &&
+    (props.apiClient !== undefined || hasDesktopBridge());
+  const [liveState, setLiveState] = useState<LiveArtifactState>(
+    props.initialLiveState ?? {
+      requestKey: liveReadEnabled ? artifactId : null,
+      loading: liveReadEnabled,
+      artifact: null,
+      error: null,
+    },
+  );
+
+  useEffect(() => {
+    if (!liveReadEnabled || artifactId === null) return;
+    const requestKey = artifactId;
+    let cancelled = false;
+    setLiveState({
+      requestKey,
+      loading: true,
+      artifact: null,
+      error: null,
+    });
+
+    void (async () => {
+      try {
+        const api = await getDesktopApiClient(props.apiClient);
+        const artifact = await api.readArtifact(artifactId);
+        if (cancelled) return;
+        setLiveState({ requestKey, loading: false, artifact, error: null });
+      } catch (error) {
+        if (cancelled) return;
+        setLiveState({
+          requestKey,
+          loading: false,
+          artifact: null,
+          error: recoverableErrorFromUnknown(error),
+        });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [liveReadEnabled, artifactId, props.apiClient]);
+
+  const activeLiveState =
+    liveReadEnabled && liveState.requestKey === artifactId ? liveState : null;
+  const liveLoading =
+    liveReadEnabled && (activeLiveState === null || activeLiveState.loading);
+  const liveArtifact = activeLiveState?.artifact ?? null;
+  const error = activeLiveState?.error ?? null;
+  const hasLiveRead =
+    liveReadEnabled ||
+    liveLoading ||
+    liveArtifact !== null ||
+    error !== null;
+  const artifact = hasLiveRead ? null : dataset.data;
+  const isError = error !== null || (!hasLiveRead && dataset.state === "error");
+  const isEmpty =
+    (hasLiveRead && liveArtifact === null && error === null && !liveLoading) ||
+    (!hasLiveRead && (dataset.state === "empty" || artifact === null));
+  const sourceLabel = hasLiveRead
+    ? liveLoading
+      ? "Desktop API live · loading"
+      : "Desktop API live"
+    : FIXTURE_BANNER_LABEL;
+  const contentBody =
+    liveArtifact !== null
+      ? textForArtifact(liveArtifact)
+      : artifact !== null
+        ? artifact.body
+        : "";
+  const contentType =
+    liveArtifact !== null
+      ? liveArtifact.contentType
+      : artifact !== null
+        ? artifact.contentType
+        : "unknown";
+  const renderedArtifactId =
+    liveArtifact?.artifactId ?? artifact?.id ?? artifactId ?? "unknown";
+  const byteLength =
+    liveArtifact !== null
+      ? byteLengthForArtifact(liveArtifact)
+      : artifact !== null
+        ? artifact.byteLength
+        : 0;
 
   return (
     <section
       className="artifact-detail"
       data-route="run.artifactDetail"
       data-testid="artifact-detail-route"
-      data-fixture-state={dataset.state}
+      data-fixture-state={hasLiveRead ? "live" : dataset.state}
       aria-labelledby="artifact-detail-title"
     >
       <header className="artifact-detail__header">
@@ -42,11 +212,12 @@ export function ArtifactDetail(
           className="artifact-detail__fixture-banner"
           data-testid="artifact-detail-fixture-banner"
         >
-          {FIXTURE_BANNER_LABEL} · {dataset.label}
+          {sourceLabel}
+          {!hasLiveRead ? ` · ${dataset.label}` : null}
         </p>
-        {artifact !== null ? (
+        {planId !== null ? (
           <Link
-            to={pathForRunEvidence(artifact.planId)}
+            to={pathForRunEvidence(planId)}
             data-testid="artifact-detail-back-link"
           >
             Back to evidence
@@ -61,12 +232,24 @@ export function ArtifactDetail(
           data-testid="artifact-detail-error"
         >
           <p className="artifact-detail__error-title">
-            Failed to load artifact (HTTP {dataset.error.status})
+            {error !== null
+              ? formatReadError(error)
+              : `Failed to load artifact (HTTP ${dataset.state === "error" ? dataset.error.status : 0})`}
           </p>
           <p className="artifact-detail__error-message">
-            {dataset.error.message}
+            {error !== null
+              ? "The shell and selected run context remain mounted; retry after the API recovers."
+              : dataset.state === "error"
+                ? dataset.error.message
+                : "Artifact is unavailable."}
           </p>
         </div>
+      ) : null}
+
+      {liveLoading ? (
+        <p className="artifact-detail__empty" role="status">
+          Loading artifact content.
+        </p>
       ) : null}
 
       {isEmpty && !isError ? (
@@ -75,33 +258,36 @@ export function ArtifactDetail(
         </p>
       ) : null}
 
-      {artifact !== null ? (
+      {liveArtifact !== null || artifact !== null ? (
         <article
           className="artifact-detail__body"
           data-testid="artifact-detail-body"
         >
           <header className="artifact-detail__body-header">
-            <h3>{artifact.title}</h3>
+            <h3>
+              {artifact !== null ? artifact.title : `Artifact ${renderedArtifactId}`}
+            </h3>
             <dl>
               <dt>artifact id</dt>
-              <dd data-testid="artifact-detail-id">{artifact.id}</dd>
+              <dd data-testid="artifact-detail-id">{renderedArtifactId}</dd>
               <dt>kind</dt>
-              <dd>{artifact.kind}</dd>
+              <dd>{artifact !== null ? artifact.kind : "not returned by GET /artifacts/:id"}</dd>
               <dt>content type</dt>
               <dd data-testid="artifact-detail-content-type">
-                {artifact.contentType}
+                {contentType}
               </dd>
               <dt>created at</dt>
-              <dd>{artifact.createdAt}</dd>
+              <dd>{artifact !== null ? artifact.createdAt : "not returned by GET /artifacts/:id"}</dd>
               <dt>byte length</dt>
-              <dd>{artifact.byteLength}</dd>
+              <dd>{byteLength}</dd>
             </dl>
           </header>
           <pre
             className="artifact-detail__content"
             data-testid="artifact-detail-content"
+            data-artifact-body-kind={liveArtifact?.bodyKind ?? "fixture"}
           >
-            {artifact.body}
+            {contentBody}
           </pre>
         </article>
       ) : null}

@@ -12,6 +12,9 @@ import {
 } from "../../../src/renderer/fixtures/index.js";
 import { RunDetailShell } from "../../../src/renderer/layout/RunDetailShell.js";
 import { Evidence } from "../../../src/renderer/routes/Evidence.js";
+import type { DesktopApiClient } from "../../../src/renderer/api/index.js";
+
+const STATIC_API_CLIENT = {} as DesktopApiClient;
 
 const originalConsoleError = console.error;
 let consoleErrorSpy: { mockRestore: () => void };
@@ -42,7 +45,7 @@ function renderEvidence(dataset: FixtureDataset<EvidenceBundleView>): string {
           path="/runs/:planId"
           element={<RunDetailShell currentRouteId="run.evidence" />}
         >
-          <Route path="evidence" element={<Evidence dataset={dataset} />} />
+          <Route path="evidence" element={<Evidence dataset={dataset} forceFixture />} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -78,5 +81,37 @@ describe("Evidence route", () => {
     expect(html).toContain('data-testid="navbar-link-run.evidence"');
     expect(html).toContain('data-testid="event-drawer-toggle"');
     expect(html).toContain("Show events");
+  });
+
+  it("renders live loading instead of fixture evidence before API reads resolve", () => {
+    const html = renderToStaticMarkup(
+      <MemoryRouter initialEntries={["/runs/plan_evidence/evidence"]}>
+        <Routes>
+          <Route
+            path="/runs/:planId"
+            element={<RunDetailShell currentRouteId="run.evidence" />}
+          >
+            <Route
+              path="evidence"
+              element={
+                <Evidence
+                  apiClient={STATIC_API_CLIENT}
+                  initialLiveState={{
+                    requestKey: "plan_evidence",
+                    loading: true,
+                    envelope: null,
+                    errors: [],
+                  }}
+                />
+              }
+            />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(html).toContain("Desktop API live · loading");
+    expect(html).toContain("Loading evidence.");
+    expect(html).not.toContain("Completion evidence bundle");
   });
 });
