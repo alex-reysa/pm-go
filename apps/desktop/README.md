@@ -162,3 +162,45 @@ apps/desktop/
   inert preformatted text only. No raw HTML execution, remote resource
   loading, or Markdown runtime dependency is introduced before live
   artifact rendering lands.
+
+## M3 decisions
+
+- **API client location:** Desktop keeps its HTTP client in
+  `apps/desktop/src/main/apiClient.ts` for M3. Renderer code asks the
+  preload bridge for run data; it does not call the API directly, and
+  no shared `@pm-go/api-client` package is introduced until a later
+  milestone proves the Desktop and TUI clients have the same shape.
+- **Query and cache strategy:** M3 uses a plain local query/cache layer
+  in the Desktop main process: request helpers fetch JSON, normalize it
+  to renderer DTOs, and retain the latest successful snapshot in memory
+  per query key. No React Query, IndexedDB, SQLite, or durable cache is
+  added for this milestone. A failed refresh leaves the last good
+  snapshot visible with an error state attached so the renderer can
+  recover without inventing fallback data.
+- **Fixture-to-live boundary:** Fixtures remain renderer-only seed data
+  for unimplemented views. When a live endpoint exists, the main process
+  owns the fetch and the fixture path is disabled for that surface; if an
+  endpoint is missing, the view is documented as fixture-backed or
+  deferred instead of mixing live payloads with partial local
+  reconstruction.
+- **Manual refresh behavior:** M3 refresh is explicit and user-driven.
+  The refresh action re-runs the relevant live query, updates the local
+  cache only after a valid response is parsed, and reports stale/error
+  state through the bridge. Desktop does not poll, retry in the
+  background, or synthesize missing server state during M3.
+- **JSON event replay:** Workflow event replay is stored as JSON event
+  records returned by the API and cached in memory with the rest of the
+  run snapshot. Desktop may parse those records for display, filtering,
+  and inspector selection, but it does not persist a separate replay log
+  or derive authoritative task/run state from replayed events.
+- **New Spec intake:** New Spec is read-only in M3. The renderer may
+  display the intake route, validation copy, and disabled controls, but
+  it must not create plans, write specs, or post mutation requests until
+  the API contract for spec submission is agreed.
+- **Known API gaps:** Missing live run-list filters, artifact body
+  retrieval, approvals mutation, budget/evidence detail shape, event
+  pagination, and New Spec submission are recoverable API gaps or
+  deferred specs. Desktop should surface those gaps as unavailable or
+  fixture-backed states and wait for the API contract rather than
+  bypassing the API with local filesystem reads, inferred mutations, or
+  renderer-owned domain state.
