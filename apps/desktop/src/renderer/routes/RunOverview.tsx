@@ -218,8 +218,9 @@ function LiveRunOverview({ live }: { live: LiveRunResource }): React.JSX.Element
   const cockpit = live.cockpit?.data ?? null;
   const phases = live.phases?.data ?? [];
   const release = liveReleaseFor(cockpit, live);
-  const eventCount = live.events?.data.length ?? 0;
-  const latestEvent = live.events?.data[0] ?? null;
+  const events = live.events?.data ?? [];
+  const eventCount = events.length;
+  const latestEvent = eventCount > 0 ? events[eventCount - 1]! : null;
   const title =
     cockpit?.title ??
     (live.state === "not_found" ? "Run not found" : `Run ${live.planId}`);

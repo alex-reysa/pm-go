@@ -117,7 +117,8 @@ function compareLivePhaseDependencyOrder(
 
 function LivePlanPhases({ live }: { live: LiveRunResource }): React.JSX.Element {
   const phases = [...(live.phases?.data ?? [])].sort(compareLivePhaseDependencyOrder);
-  const primaryError = live.errors[0] ?? null;
+  const primaryError =
+    live.endpointErrors.phases?.[0] ?? live.endpointErrors.tasks?.[0] ?? null;
   const isEmpty = phases.length === 0;
 
   return (
