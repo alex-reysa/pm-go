@@ -18,7 +18,9 @@ export type {
   FileScope,
   LimitedValue,
   Limitation,
+  MergeRunProjection,
   PhaseDetailPayload,
+  PhaseAuditReportProjection,
   PhaseListItem,
   PhaseViewModel,
   PlanDetailPayload,
@@ -27,11 +29,14 @@ export type {
   RecoverableReadError,
   ReleaseReadinessViewModel,
   ReviewReport,
+  ReviewReportProjection,
   RunCockpitViewModel,
   RunSummaryViewModel,
+  TaskBudget,
   TaskDetailPayload,
   TaskDetailViewModel,
   TaskListItem,
+  TaskReviewState,
   TaskSummaryViewModel,
   WorkflowEvent,
 } from "./types.js";
@@ -66,15 +71,17 @@ import type {
   ReadModelEnvelope,
   RecoverableReadError,
   ReleaseReadinessViewModel,
-  ReviewOutcome,
   ReviewReport,
+  ReviewReportProjection,
   RunAttention,
   RunCockpitViewModel,
   RunSummaryViewModel,
+  TaskBudget,
   TaskCountsByStatus,
   TaskDetailPayload,
   TaskDetailViewModel,
   TaskListItem,
+  TaskReviewState,
   TaskStatus,
   TaskSummaryViewModel,
   UUID,
@@ -119,7 +126,7 @@ export interface BuildTaskDetailInput {
   readonly phase?: PhaseListItem | ContractPhase;
   readonly approvals?: readonly ApprovalRequest[];
   readonly budget?: BudgetReport;
-  readonly reviewReports?: readonly ReviewReport[];
+  readonly reviewReports?: readonly ReviewReportProjection[];
   readonly agentRuns?: readonly AgentRun[];
   readonly relatedEvents?: readonly EventItemViewModel[];
   readonly relatedArtifacts?: readonly ArtifactSummaryViewModel[];
@@ -136,7 +143,7 @@ export interface BuildApprovalsInput {
 
 export interface BuildBudgetSnapshotInput {
   readonly budget?: BudgetReport;
-  readonly tasks?: readonly TaskSummaryViewModel[] | readonly TaskListItem[];
+  readonly tasks?: readonly (TaskSummaryViewModel | TaskListItem | ContractTask)[];
   readonly taskDetails?: ReadonlyMap<UUID, TaskDetailPayload>;
   readonly error?: RecoverableReadError;
 }
@@ -293,7 +300,8 @@ export function buildPhases(
   input: BuildPhasesInput,
 ): ReadModelEnvelope<PhaseViewModel[], readonly PhaseListItem[] | readonly ContractPhase[]> {
   const rawPhases = input.phases ?? (input.planDetail?.plan.phases ?? []);
-  const taskCountsByPhase = input.tasks === undefined ? null : countTasksByPhase(input.tasks);
+  const rawTasks = input.tasks ?? input.planDetail?.plan.tasks;
+  const taskCountsByPhase = rawTasks === undefined ? null : countTasksByPhase(rawTasks);
   const data = rawPhases.map((phase) => {
     const detail = input.phaseDetails?.get(phase.id);
     const countLimitations =
@@ -531,7 +539,7 @@ export function buildApprovals(
   const phaseById = mapPhaseLikeById(input.phases ?? []);
   const data = approvals.map((approval) => {
     const task = approval.taskId === undefined ? undefined : taskById.get(approval.taskId);
-    const phaseId = approval.phaseId ?? task?.phaseId;
+    const phaseId = task?.phaseId;
     const phase = phaseId === undefined ? undefined : phaseById.get(phaseId);
     const bulkLimitation = limitation(
       "approval-bulk-policy-server-authority",
@@ -624,9 +632,9 @@ export function buildBudgetSnapshot(
   const perTask = input.budget.perTaskBreakdown.map((row) => {
     const task = taskById.get(row.taskId);
     const detail = input.taskDetails?.get(row.taskId)?.task;
-    const capUsd = detail?.budget.maxModelCostUsd ?? taskBudgetCap(task);
+    const budgetCaps = taskBudgetFrom(task, detail);
     const capLimitations =
-      capUsd === null
+      budgetCaps === null
         ? [
             limitation(
               "budget-task-cap-unavailable",
@@ -652,10 +660,10 @@ export function buildBudgetSnapshot(
       tokens: row.totalTokens,
       wallClockMinutes: row.totalWallClockMinutes,
       overBudget: limited(
-        capUsd === null ? null : row.totalUsd >= capUsd,
+        budgetCaps === null ? null : budgetOverrun(row, budgetCaps),
         capLimitations,
       ),
-      capUsd: limited(capUsd, capLimitations),
+      capUsd: limited(budgetCaps?.maxModelCostUsd ?? null, capLimitations),
       raw: row,
     };
   });
@@ -890,9 +898,7 @@ function buildTaskSummary(
   },
 ): TaskSummaryViewModel {
   const taskDetail = ctx.detailPayload?.task;
-  const approval = ctx.approvals?.find(
-    (row) => row.taskId === task.id && row.status === "pending",
-  );
+  const approval = selectTaskApproval(task.id, ctx.approvals);
   const approvalStatus =
     ctx.approvals === undefined
       ? limited<ApprovalStatus>(null, [
@@ -907,8 +913,8 @@ function buildTaskSummary(
   const latestReviewReport = ctx.detailPayload?.latestReviewReport;
   const reviewState =
     latestReviewReport !== undefined && latestReviewReport !== null
-      ? limited<ReviewOutcome>(latestReviewReport.outcome)
-      : limited<ReviewOutcome>(statusDerivedReview(task.status), [
+      ? limited<TaskReviewState>(latestReviewReport.outcome)
+      : limited<TaskReviewState>(statusDerivedReview(task.status), [
           limitation(
             "task-review-state-unavailable",
             "Task list does not include latest review; status-derived review state is a display hint.",
@@ -916,7 +922,10 @@ function buildTaskSummary(
             "reviewState",
           ),
         ]);
-  const branchName = taskDetail?.branchName ?? ("branchName" in task ? task.branchName : undefined);
+  const branchName =
+    taskDetail?.branchName ??
+    ("branchName" in task ? task.branchName : undefined) ??
+    ctx.detailPayload?.latestLease?.branchName;
   const branchLimitations = branchName === undefined
     ? [
         limitation(
@@ -1072,8 +1081,8 @@ function taskBudgetSpend(
     totalTokens: 0,
     totalWallClockMinutes: 0,
   };
-  const capUsd = taskDetail?.budget.maxModelCostUsd ?? null;
-  const capLimitations = capUsd === null
+  const budgetCaps = taskBudgetFrom(task, taskDetail);
+  const capLimitations = budgetCaps === null
     ? [
         limitation(
           "budget-task-cap-unavailable",
@@ -1087,8 +1096,8 @@ function taskBudgetSpend(
     usd: spend.totalUsd,
     tokens: spend.totalTokens,
     wallClockMinutes: spend.totalWallClockMinutes,
-    overBudget: limited(capUsd === null ? null : spend.totalUsd >= capUsd, capLimitations),
-    capUsd: limited(capUsd, capLimitations),
+    overBudget: limited(budgetCaps === null ? null : budgetOverrun(spend, budgetCaps), capLimitations),
+    capUsd: limited(budgetCaps?.maxModelCostUsd ?? null, capLimitations),
   });
 }
 
@@ -1386,9 +1395,9 @@ function releaseNextAction(state: ReleaseReadinessViewModel["state"]): string {
 function normalizeAcceptanceCriterion(row: AcceptanceCriterion) {
   return {
     id: row.id,
-    title: row.title ?? row.description ?? row.id,
-    verify: row.verify ?? row.verificationCommands?.join(" && ") ?? "",
-    required: row.required ?? true,
+    title: row.description,
+    verify: row.verificationCommands.join(" && "),
+    required: row.required,
   };
 }
 
@@ -1547,8 +1556,8 @@ function mapById<T extends { id: UUID }>(items: readonly T[]): ReadonlyMap<UUID,
 }
 
 function mapTaskLikeById(
-  items: readonly (TaskSummaryViewModel | TaskListItem)[],
-): ReadonlyMap<UUID, TaskSummaryViewModel | TaskListItem> {
+  items: readonly (TaskSummaryViewModel | TaskListItem | ContractTask)[],
+): ReadonlyMap<UUID, TaskSummaryViewModel | TaskListItem | ContractTask> {
   return new Map(items.map((item) => [item.id, item]));
 }
 
@@ -1570,7 +1579,9 @@ function countTasksByStatus(tasks: readonly (TaskListItem | ContractTask)[]): Ta
   return counts;
 }
 
-function countTasksByPhase(tasks: readonly TaskListItem[]): ReadonlyMap<UUID, TaskCountsByStatus> {
+function countTasksByPhase(
+  tasks: readonly (TaskListItem | ContractTask)[],
+): ReadonlyMap<UUID, TaskCountsByStatus> {
   const byPhase = new Map<UUID, TaskCountsByStatus>();
   for (const task of tasks) {
     const counts = byPhase.get(task.phaseId) ?? {};
@@ -1619,7 +1630,25 @@ function nullableIso(value: string | null | undefined): string | null {
   return value ?? null;
 }
 
-function statusDerivedReview(status: TaskStatus): ReviewOutcome | null {
+function selectTaskApproval(
+  taskId: UUID,
+  approvals: readonly ApprovalRequest[] | undefined,
+): ApprovalRequest | undefined {
+  const matches = approvals?.filter((row) => row.taskId === taskId) ?? [];
+  if (matches.length === 0) return undefined;
+  return latestApproval(matches.filter((row) => row.status === "pending")) ?? latestApproval(matches);
+}
+
+function latestApproval(rows: readonly ApprovalRequest[]): ApprovalRequest | undefined {
+  return [...rows].sort((left, right) => approvalTime(right) - approvalTime(left))[0];
+}
+
+function approvalTime(row: ApprovalRequest): number {
+  const parsed = Date.parse(row.decidedAt ?? row.requestedAt);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function statusDerivedReview(status: TaskStatus): TaskReviewState | null {
   if (status === "in_review") return "pending";
   if (status === "ready_to_merge" || status === "merged") return "pass";
   if (status === "fixing") return "changes_requested";
@@ -1627,12 +1656,24 @@ function statusDerivedReview(status: TaskStatus): ReviewOutcome | null {
   return null;
 }
 
-function taskBudgetCap(task: TaskSummaryViewModel | TaskListItem | undefined): number | null {
-  if (task === undefined) return null;
-  if ("budgetSpend" in task) {
-    return task.budgetSpend.value?.capUsd.value ?? null;
-  }
+function taskBudgetFrom(
+  task: TaskSummaryViewModel | TaskListItem | ContractTask | undefined,
+  taskDetail: ContractTask | undefined,
+): TaskBudget | null {
+  if (taskDetail !== undefined) return taskDetail.budget;
+  if (task !== undefined && "budget" in task) return task.budget;
   return null;
+}
+
+function budgetOverrun(
+  spend: Pick<BudgetTaskBreakdown, "totalUsd" | "totalTokens" | "totalWallClockMinutes">,
+  budget: TaskBudget,
+): boolean {
+  return (
+    (budget.maxModelCostUsd !== undefined && spend.totalUsd > budget.maxModelCostUsd) ||
+    (budget.maxPromptTokens !== undefined && spend.totalTokens > budget.maxPromptTokens) ||
+    spend.totalWallClockMinutes > budget.maxWallClockMinutes
+  );
 }
 
 function severityForStatus(status: string): EventItemViewModel["severity"] {
@@ -1654,7 +1695,7 @@ function artifactEventsById(
 }
 
 function isReleaseArtifactKind(kind: ArtifactKind): boolean {
-  return kind === "pr_summary" || kind === "completion_evidence_bundle";
+  return kind === "pr_summary";
 }
 
 function titleForArtifactKind(kind: ArtifactKind): string {

@@ -56,7 +56,10 @@ const plan: ContractPlan = {
       summary: "Foundation phase.",
       status: "completed",
       integrationBranch: "phase-0",
+      baseSnapshotId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
       taskIds: [taskId],
+      dependencyEdges: [],
+      mergeOrder: [taskId],
       startedAt: "2026-05-10T10:00:00.000Z",
       completedAt: "2026-05-10T11:00:00.000Z",
       phaseAuditReportId: "55555555-5555-4555-8555-555555555555",
@@ -88,6 +91,15 @@ const plan: ContractPlan = {
         maxModelCostUsd: 10,
         maxPromptTokens: 100_000,
       },
+      reviewerPolicy: {
+        required: true,
+        strictness: "elevated",
+        maxCycles: 2,
+        reviewerWriteAccess: false,
+        stopOnHighSeverityCount: 1,
+      },
+      requiresHumanApproval: true,
+      maxReviewFixCycles: 2,
       branchName: "task-live",
       worktreePath: "/tmp/task-live",
     },
@@ -102,10 +114,26 @@ const planDetail: PlanDetailPayload = {
   latestCompletionAudit: {
     id: "66666666-6666-4666-8666-666666666666",
     planId,
+    finalPhaseId: phaseId,
+    mergeRunId: "12121212-1212-4121-8121-121212121212",
+    auditorRunId: "13131313-1313-4131-8131-131313131313",
+    auditedHeadSha: "abc123",
     outcome: "pass",
-    checklist: [{ id: "check", status: "passed" }],
+    checklist: [
+      {
+        id: "check",
+        title: "Acceptance evidence",
+        status: "passed",
+        evidenceArtifactIds: [artifactId],
+      },
+    ],
     findings: [],
-    summary: { acceptanceCriteriaPassed: ["ac-live"] },
+    summary: {
+      acceptanceCriteriaPassed: ["ac-live"],
+      acceptanceCriteriaMissing: [],
+      openFindingIds: [],
+      unresolvedPolicyDecisionIds: [],
+    },
     createdAt: "2026-05-10T12:01:00.000Z",
   },
 };
@@ -229,23 +257,35 @@ describe("desktop live read models", () => {
       latestAgentRun: {
         id: "aaaaaaaa-1111-4111-8111-aaaaaaaa1111",
         taskId,
+        planId,
         workflowRunId: "workflow-run",
         role: "implementer",
+        depth: 0,
         status: "completed",
+        riskLevel: "high",
+        executor: "codex",
+        model: "gpt-5",
+        promptVersion: "desktop-read-models-test",
+        permissionMode: "default",
         costUsd: 4,
       },
       latestLease: {
         id: "bbbbbbbb-1111-4111-8111-bbbbbbbb1111",
         taskId,
+        repoRoot: "/repo",
         branchName: "task-live",
         worktreePath: "/tmp/task-live",
         baseSha: "abc123",
+        expiresAt: "2026-05-11T12:00:00.000Z",
+        status: "active",
       },
       latestReviewReport: {
         id: "cccccccc-1111-4111-8111-cccccccc1111",
         taskId,
+        reviewerRunId: "aaaaaaaa-1111-4111-8111-aaaaaaaa1111",
         outcome: "pass",
-        findingsCount: 0,
+        findings: [],
+        createdAt: "2026-05-10T12:00:00.000Z",
       },
       taskPolicyDecisions: [],
     };
@@ -298,6 +338,121 @@ describe("desktop live read models", () => {
     expect(buildPhases({ phases: [], tasks: [] }).data).toEqual([]);
     expect(buildEventReplay({ events: [] }).state).toBe("empty");
     expect(buildApprovals({ approvals: [] }).state).toBe("empty");
+  });
+
+  it("uses plan-detail tasks for phase counts", () => {
+    const phases = buildPhases({ planDetail });
+
+    expect(phases.data[0]?.taskCountsByStatus.value).toEqual({
+      ready_to_merge: 1,
+    });
+    expect(phases.limitations.map((item) => item.code)).not.toContain(
+      "phase-task-counts-unavailable",
+    );
+  });
+
+  it("reflects decided approval rows while preferring a pending row", () => {
+    const approved: ApprovalRequest = {
+      ...approvals[0]!,
+      id: "77777777-7777-4777-8777-777777777778",
+      status: "approved",
+      decidedAt: "2026-05-10T11:45:00.000Z",
+    };
+
+    expect(
+      buildTaskSummaries({
+        tasks: taskList,
+        approvals: [approved],
+      }).data[0]?.approvalStatus.value,
+    ).toBe("approved");
+    expect(
+      buildTaskSummaries({
+        tasks: taskList,
+        approvals: [approved, approvals[0]!],
+      }).data[0]?.approvalStatus.value,
+    ).toBe("pending");
+  });
+
+  it("falls back to latest lease branch names for task summaries", () => {
+    const taskWithoutBranch = { ...plan.tasks[0]! };
+    delete taskWithoutBranch.branchName;
+    const taskDetails = new Map<string, TaskDetailPayload>([
+      [
+        taskId,
+        {
+          task: taskWithoutBranch,
+          latestLease: {
+            id: "bbbbbbbb-2222-4222-8222-bbbbbbbb2222",
+            taskId,
+            repoRoot: "/repo",
+            branchName: "lease-task-live",
+            worktreePath: "/tmp/task-live",
+            baseSha: "abc123",
+            expiresAt: "2026-05-11T12:00:00.000Z",
+            status: "active",
+          },
+        },
+      ],
+    ]);
+
+    const summaries = buildTaskSummaries({
+      tasks: taskList,
+      taskDetails,
+    });
+
+    expect(summaries.data[0]?.branchName.value).toBe("lease-task-live");
+    expect(summaries.data[0]?.branchName.limitations).toEqual([]);
+  });
+
+  it("computes budget overruns from every available cap using strict greater-than", () => {
+    const atCaps: BudgetReport = {
+      ...budget,
+      totalUsd: 10,
+      totalTokens: 100_000,
+      totalWallClockMinutes: 30,
+      perTaskBreakdown: [
+        {
+          taskId,
+          totalUsd: 10,
+          totalTokens: 100_000,
+          totalWallClockMinutes: 30,
+        },
+      ],
+    };
+    const overTokenCap: BudgetReport = {
+      ...budget,
+      totalUsd: 1,
+      totalTokens: 100_001,
+      totalWallClockMinutes: 1,
+      perTaskBreakdown: [
+        {
+          taskId,
+          totalUsd: 1,
+          totalTokens: 100_001,
+          totalWallClockMinutes: 1,
+        },
+      ],
+    };
+
+    expect(
+      buildBudgetSnapshot({
+        budget: atCaps,
+        tasks: plan.tasks,
+      }).data?.perTask[0]?.overBudget.value,
+    ).toBe(false);
+    expect(
+      buildBudgetSnapshot({
+        budget: overTokenCap,
+        tasks: plan.tasks,
+      }).data?.perTask[0]?.overBudget.value,
+    ).toBe(true);
+    expect(
+      buildTaskSummaries({
+        tasks: taskList,
+        budget: overTokenCap,
+        taskDetails: new Map([[taskId, { task: plan.tasks[0]! }]]),
+      }).data[0]?.budgetSpend.value?.overBudget.value,
+    ).toBe(true);
   });
 
   it("marks partial payload gaps as limitations instead of inventing authority", () => {
