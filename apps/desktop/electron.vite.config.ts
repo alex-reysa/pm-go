@@ -30,9 +30,15 @@ export default defineConfig({
   },
   renderer: {
     // The renderer's `index.html` lives at the desktop-app root
-    // (`apps/desktop/index.html`), not under `src/renderer/`, so the
-    // bundler input path mirrors what's checked in. Phase 1
-    // introduces the React plugin here.
+    // (`apps/desktop/index.html`), not under `src/renderer/`.
+    // electron-vite's default renderer root is `<pkg>/src/renderer/`,
+    // which would resolve `index.html` to a path that escapes the
+    // renderer root and trips Rollup's "fileName must not be relative"
+    // check. Pinning `root` to the package directory lines the bundler
+    // up with the actual on-disk layout. Phase 1 will register
+    // `@vitejs/plugin-react` here for fast refresh + the React JSX
+    // runtime once the renderer body grows past pure re-exports.
+    root: ".",
     build: {
       rollupOptions: {
         input: "index.html",
