@@ -18,7 +18,7 @@
     "@pm-go/policy-engine": "workspace:*",
     "@pm-go/repo-intelligence": "workspace:*",
     "@pm-go/worktree-manager": "workspace:*",
-    "@hono/node-server": "^1.13.0",
+    "@hono/node-server": "^2.0.2",
     "@temporalio/client": "^1.11.0",
     "drizzle-orm": "^0.38.0",
     "hono": "^4.7.0"
