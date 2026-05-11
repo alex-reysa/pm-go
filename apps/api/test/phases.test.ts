@@ -334,7 +334,7 @@ describe("POST /phases/:phaseId/override-audit (v0.8.2 Task 2.2)", () => {
   it("409s when the phase is not 'blocked'", async () => {
     const { client } = makeMockTemporal();
     const db = makeMockDbForLookup([
-      [{ id: PHASE_ID, status: "completed" }],
+      [{ id: PHASE_ID, planId: PLAN_ID, index: 0, status: "completed" }],
     ]);
     const app = appWith(db, client);
     const res = await app.request(`/phases/${PHASE_ID}/override-audit`, {
@@ -347,9 +347,15 @@ describe("POST /phases/:phaseId/override-audit (v0.8.2 Task 2.2)", () => {
 
   /**
    * Build a db mock that returns sequential rows for sequential .select()
-   * calls. Captures update payloads. The override-audit handler does
-   * exactly two selects (phase row, latest audit) and two updates
-   * (phase_audit_reports, phases) on the happy path.
+   * calls. Captures update payloads with the target table key so tests
+   * can assert WHICH table got which value, not just the count.
+   *
+   * After the v0.9.x fix that mirrors PhaseAuditWorkflow's happy path,
+   * the override-audit handler does up to FOUR selects on the happy path
+   * — (1) phase row, (2) latest audit, (3) next-phase lookup,
+   * (4) latest merge_run for snapshot stamping — and up to FOUR updates
+   * (phase_audit_reports, phases for the overridden phase, phases for
+   * next-phase baseSnapshotId, phases for next-phase status).
    */
   function makeOverrideAuditMockDb(opts: {
     selectsInOrder: unknown[][];
@@ -381,8 +387,9 @@ describe("POST /phases/:phaseId/override-audit (v0.8.2 Task 2.2)", () => {
     const updateCalls: Array<{ values: unknown }> = [];
     const db = makeOverrideAuditMockDb({
       selectsInOrder: [
-        [{ id: PHASE_ID, status: "blocked" }],
+        [{ id: PHASE_ID, planId: PLAN_ID, index: 0, status: "blocked" }],
         [{ id: "audit-1", outcome: "blocked" }],
+        [], // no next phase — this is the last phase
       ],
       updateCalls,
     });
@@ -414,8 +421,9 @@ describe("POST /phases/:phaseId/override-audit (v0.8.2 Task 2.2)", () => {
     const updateCalls: Array<{ values: unknown }> = [];
     const db = makeOverrideAuditMockDb({
       selectsInOrder: [
-        [{ id: PHASE_ID, status: "blocked" }],
+        [{ id: PHASE_ID, planId: PLAN_ID, index: 0, status: "blocked" }],
         [{ id: "audit-1", outcome: "changes_requested" }],
+        [], // no next phase
       ],
       updateCalls,
     });
@@ -434,7 +442,7 @@ describe("POST /phases/:phaseId/override-audit (v0.8.2 Task 2.2)", () => {
     const updateCalls: Array<{ values: unknown }> = [];
     const db = makeOverrideAuditMockDb({
       selectsInOrder: [
-        [{ id: PHASE_ID, status: "blocked" }],
+        [{ id: PHASE_ID, planId: PLAN_ID, index: 0, status: "blocked" }],
         [], // no audit reports — phase is blocked for some other reason
       ],
       updateCalls,
@@ -456,7 +464,7 @@ describe("POST /phases/:phaseId/override-audit (v0.8.2 Task 2.2)", () => {
     const updateCalls: Array<{ values: unknown }> = [];
     const db = makeOverrideAuditMockDb({
       selectsInOrder: [
-        [{ id: PHASE_ID, status: "blocked" }],
+        [{ id: PHASE_ID, planId: PLAN_ID, index: 0, status: "blocked" }],
         [{ id: "audit-1", outcome: "pass" }],
       ],
       updateCalls,
@@ -471,5 +479,104 @@ describe("POST /phases/:phaseId/override-audit (v0.8.2 Task 2.2)", () => {
     expect(updateCalls.length).toBe(0);
     const body = (await res.json()) as { error: string };
     expect(body.error).toContain("'pass'");
+  });
+
+  // Mirror of PhaseAuditWorkflow's happy path (apps/worker/src/workflows/
+  // phase-audit.ts:147-167): after the overridden phase is marked
+  // `completed`, the next phase (by index+1) must be advanced from
+  // `pending` to `executing`, with `base_snapshot_id` stamped from the
+  // OVERRIDDEN phase's latest merge_run's `post_merge_snapshot_id`.
+  it("advances next pending phase to 'executing' and stamps base_snapshot_id from latest merge_run", async () => {
+    const { client } = makeMockTemporal();
+    const updateCalls: Array<{ values: unknown }> = [];
+    const NEXT_PHASE_ID = "b2c3d4e5-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
+    const POST_MERGE_SNAPSHOT_ID = "c3d4e5f6-7a8b-4c9d-9e1f-2a3b4c5d6e7f";
+    const db = makeOverrideAuditMockDb({
+      selectsInOrder: [
+        [{ id: PHASE_ID, planId: PLAN_ID, index: 0, status: "blocked" }],
+        [{ id: "audit-1", outcome: "blocked" }],
+        [{ id: NEXT_PHASE_ID, status: "pending" }],
+        [
+          {
+            id: MERGE_RUN_ID,
+            postMergeSnapshotId: POST_MERGE_SNAPSHOT_ID,
+          },
+        ],
+      ],
+      updateCalls,
+    });
+    const app = appWith(db, client);
+    const res = await app.request(`/phases/${PHASE_ID}/override-audit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "operator accepts blocked audit" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      phaseId: string;
+      newStatus: string;
+      nextPhaseId?: string;
+      nextPhaseStatus?: string;
+    };
+    expect(body.newStatus).toBe("completed");
+    expect(body.nextPhaseId).toBe(NEXT_PHASE_ID);
+    expect(body.nextPhaseStatus).toBe("executing");
+
+    // 4 updates: phase_audit_reports + overridden phase status + next
+    // phase baseSnapshotId + next phase status.
+    expect(updateCalls.length).toBe(4);
+
+    // Order: audit override stamp, overridden phase -> completed,
+    // next phase baseSnapshotId stamp, next phase -> executing.
+    const overriddenPhaseUpdate = updateCalls[1]!.values as {
+      status: string;
+      completedAt: string;
+    };
+    expect(overriddenPhaseUpdate.status).toBe("completed");
+
+    const nextPhaseSnapshotUpdate = updateCalls[2]!.values as {
+      baseSnapshotId: string;
+    };
+    expect(nextPhaseSnapshotUpdate.baseSnapshotId).toBe(POST_MERGE_SNAPSHOT_ID);
+
+    const nextPhaseStatusUpdate = updateCalls[3]!.values as {
+      status: string;
+      startedAt: string;
+    };
+    expect(nextPhaseStatusUpdate.status).toBe("executing");
+    expect(typeof nextPhaseStatusUpdate.startedAt).toBe("string");
+  });
+
+  // Last-phase case: override returns without nextPhaseId fields and
+  // does NOT mutate any other phase row.
+  it("does not advance any next phase when overriding the last phase", async () => {
+    const { client } = makeMockTemporal();
+    const updateCalls: Array<{ values: unknown }> = [];
+    const db = makeOverrideAuditMockDb({
+      selectsInOrder: [
+        [{ id: PHASE_ID, planId: PLAN_ID, index: 0, status: "blocked" }],
+        [{ id: "audit-1", outcome: "blocked" }],
+        [], // no row at (planId, index=1) — single-phase plan
+      ],
+      updateCalls,
+    });
+    const app = appWith(db, client);
+    const res = await app.request(`/phases/${PHASE_ID}/override-audit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "operator accepts blocked audit" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      newStatus: string;
+      nextPhaseId?: string;
+      nextPhaseStatus?: string;
+    };
+    expect(body.newStatus).toBe("completed");
+    expect(body.nextPhaseId).toBeUndefined();
+    expect(body.nextPhaseStatus).toBeUndefined();
+    // Only audit-report stamp + overridden phase status flip; no
+    // updates on any other phase row.
+    expect(updateCalls.length).toBe(2);
   });
 });

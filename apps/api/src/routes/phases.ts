@@ -394,7 +394,12 @@ export function createPhasesRoute(deps: PhasesRouteDeps) {
         : null;
 
     const [phaseRow] = await deps.db
-      .select({ id: phases.id, status: phases.status })
+      .select({
+        id: phases.id,
+        planId: phases.planId,
+        index: phases.index,
+        status: phases.status,
+      })
       .from(phases)
       .where(eq(phases.id, phaseId))
       .limit(1);
@@ -468,6 +473,66 @@ export function createPhasesRoute(deps: PhasesRouteDeps) {
       .set({ status: "completed", completedAt: overriddenAt })
       .where(eq(phases.id, phaseId));
 
+    // Mirror PhaseAuditWorkflow's happy path (apps/worker/src/workflows/phase-audit.ts):
+    // after marking the overridden phase completed, advance the next
+    // pending phase to `executing` so downstream flow continues without
+    // requiring a manual `psql UPDATE phases SET status='executing'`.
+    // Without this, plans stay stuck at phase_N+1.status='pending'
+    // indefinitely after an audit override.
+    //
+    // Snapshot stamping mirrors `stampPhaseBaseSnapshotId` in
+    // apps/worker/src/activities/integration.ts: read the latest
+    // merge_run for the OVERRIDDEN phase and, if its
+    // post_merge_snapshot_id is set, write it onto the next phase's
+    // base_snapshot_id BEFORE flipping status, so any observer that sees
+    // `executing` also sees a valid base_snapshot_id.
+    const [nextPhaseRow] = await deps.db
+      .select({
+        id: phases.id,
+        status: phases.status,
+      })
+      .from(phases)
+      .where(
+        and(
+          eq(phases.planId, phaseRow.planId),
+          eq(phases.index, phaseRow.index + 1),
+        ),
+      )
+      .limit(1);
+
+    let advancedNextPhaseId: string | null = null;
+    if (nextPhaseRow && nextPhaseRow.status === "pending") {
+      const [latestMergeRunForOverridden] = await deps.db
+        .select({
+          id: mergeRuns.id,
+          postMergeSnapshotId: mergeRuns.postMergeSnapshotId,
+        })
+        .from(mergeRuns)
+        .where(eq(mergeRuns.phaseId, phaseId))
+        .orderBy(desc(mergeRuns.startedAt))
+        .limit(1);
+
+      if (
+        latestMergeRunForOverridden &&
+        latestMergeRunForOverridden.postMergeSnapshotId !== null &&
+        latestMergeRunForOverridden.postMergeSnapshotId !== undefined
+      ) {
+        await deps.db
+          .update(phases)
+          .set({
+            baseSnapshotId: latestMergeRunForOverridden.postMergeSnapshotId,
+          })
+          .where(eq(phases.id, nextPhaseRow.id));
+      }
+
+      await deps.db
+        .update(phases)
+        .set({ status: "executing", startedAt: overriddenAt })
+        .where(eq(phases.id, nextPhaseRow.id));
+
+      advancedNextPhaseId = nextPhaseRow.id;
+    }
+
     return c.json(
       {
         phaseId,
@@ -477,6 +542,9 @@ export function createPhasesRoute(deps: PhasesRouteDeps) {
         reason,
         ...(overriddenBy ? { overriddenBy } : {}),
         overriddenAt,
+        ...(advancedNextPhaseId
+          ? { nextPhaseId: advancedNextPhaseId, nextPhaseStatus: "executing" }
+          : {}),
       },
       200,
     );
