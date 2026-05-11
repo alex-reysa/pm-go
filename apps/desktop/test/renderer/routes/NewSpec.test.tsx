@@ -14,6 +14,7 @@ import {
   openNewSpecConfirmation,
   validateNewSpecForm,
   type NewSpecFormState,
+  type NewSpecFixtureState,
 } from "../../../src/renderer/routes/NewSpec.js";
 
 const VALID_FORM: NewSpecFormState = {
@@ -31,6 +32,10 @@ const NEW_SPEC_ROUTE = path.resolve(
 
 function render(initialState: NewSpecFormState = EMPTY_NEW_SPEC_FORM): string {
   return renderToStaticMarkup(<NewSpec initialState={initialState} />);
+}
+
+function renderVariant(fixtureState: NewSpecFixtureState): string {
+  return renderToStaticMarkup(<NewSpec fixtureState={fixtureState} />);
 }
 
 function tagFor(html: string, testId: string): string {
@@ -127,6 +132,24 @@ describe("NewSpec route", () => {
     expect(html).toContain("Acknowledge");
     expect(html).toContain("Dismiss");
   });
+
+  it.each([
+    ["loading", "new-spec-loading"],
+    ["empty", "new-spec-empty"],
+    ["error", "new-spec-error"],
+  ] satisfies Array<[NewSpecFixtureState, string]>)(
+    "renders the %s fixture variant without mounting the form",
+    (fixtureState, testId) => {
+      const html = renderVariant(fixtureState);
+
+      expect(html).toMatch(new RegExp(`data-fixture-state="${fixtureState}"`));
+      expect(html).toContain(FIXTURE_BANNER_LABEL);
+      expect(html).toMatch(new RegExp(`data-testid="${testId}"`));
+      expect(html).not.toMatch(/data-testid="new-spec-repo-root"/);
+      expect(html).not.toMatch(/data-testid="new-spec-submit"/);
+      expect(html).not.toMatch(/data-testid="confirmation-modal"/);
+    },
+  );
 
   it("does not add direct API or bridge calls from this top-level route", async () => {
     const source = stripComments(await readFile(NEW_SPEC_ROUTE, "utf8"));

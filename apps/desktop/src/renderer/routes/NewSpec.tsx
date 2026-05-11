@@ -91,6 +91,8 @@ export interface NewSpecValidation {
   readonly reason: string | null;
 }
 
+export type NewSpecFixtureState = "happy" | "loading" | "empty" | "error";
+
 /**
  * Pure helper: decide whether the submit button is enabled, and if
  * not, why. Exported so tests can drive it directly without rendering
@@ -158,12 +160,18 @@ export interface NewSpecProps {
    * leave this unset so the route starts from {@link EMPTY_NEW_SPEC_FORM}.
    */
   readonly initialState?: NewSpecFormState;
+  /**
+   * Fixture-state seam for M2 route review. M3 replaces this with live
+   * repository/spec discovery state.
+   */
+  readonly fixtureState?: NewSpecFixtureState;
 }
 
 export function NewSpec(props: NewSpecProps): React.JSX.Element {
   const [form, setForm] = useState<NewSpecFormState>(
     () => props.initialState ?? EMPTY_NEW_SPEC_FORM,
   );
+  const fixtureState = props.fixtureState ?? "happy";
 
   const validation = validateNewSpecForm(form);
   const derivedTitle = deriveTitleFromSpecBody(form.specBody);
@@ -185,6 +193,7 @@ export function NewSpec(props: NewSpecProps): React.JSX.Element {
       className="new-spec"
       data-testid="new-spec-route"
       data-route="runs.new"
+      data-fixture-state={fixtureState}
       data-modal-open={form.modalOpen ? "true" : "false"}
       aria-labelledby="new-spec-title"
     >
@@ -199,6 +208,32 @@ export function NewSpec(props: NewSpecProps): React.JSX.Element {
         {FIXTURE_BANNER_LABEL} · new-spec · mock repo/spec pickers
       </p>
 
+      {fixtureState === "loading" ? (
+        <p
+          className="new-spec__loading"
+          data-testid="new-spec-loading"
+          role="status"
+        >
+          Loading mocked repository roots and spec files...
+        </p>
+      ) : null}
+      {fixtureState === "empty" ? (
+        <p className="new-spec__empty" data-testid="new-spec-empty">
+          No mock repository roots or spec files are available.
+        </p>
+      ) : null}
+      {fixtureState === "error" ? (
+        <p
+          className="new-spec__error"
+          data-testid="new-spec-error"
+          role="alert"
+        >
+          Unable to load mocked repository roots and spec files.
+        </p>
+      ) : null}
+
+      {fixtureState === "happy" ? (
+        <>
       <fieldset className="new-spec__field">
         <legend>Repository root</legend>
         <label htmlFor="new-spec-repo-root">
@@ -326,6 +361,8 @@ export function NewSpec(props: NewSpecProps): React.JSX.Element {
           <dd>{effectiveTitle === "" ? "(empty)" : effectiveTitle}</dd>
         </dl>
       </ConfirmationModal>
+        </>
+      ) : null}
     </section>
   );
 }

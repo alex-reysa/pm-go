@@ -26,6 +26,10 @@ function expectNoRunScopedChrome(html: string): void {
   expect(html).not.toMatch(/data-testid="right-inspector"/);
 }
 
+function escapeTextForStaticMarkup(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 describe("RunsList route", () => {
   it("renders the happy-path fixture with attention indicators and navigation", () => {
     const html = render(runsHappyPath);
@@ -38,7 +42,7 @@ describe("RunsList route", () => {
 
     for (const run of runsHappyPath.data) {
       expect(html).toContain(`data-testid="runs-list-row-${run.id}"`);
-      expect(html).toContain(run.title);
+      expect(html).toContain(escapeTextForStaticMarkup(run.title));
       expect(html).toContain(`href="/runs/${run.id}"`);
     }
 
