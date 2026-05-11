@@ -609,6 +609,8 @@ async function runCodexExec(options: CodexExecOptions): Promise<CodexExecResult>
     "--json",
     "--ephemeral",
     "--skip-git-repo-check",
+    "-c",
+    'approval_policy="never"',
     "--cd",
     options.cwd,
     "--sandbox",
