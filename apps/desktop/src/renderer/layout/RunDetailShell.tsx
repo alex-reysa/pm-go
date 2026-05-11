@@ -30,6 +30,7 @@ import { Outlet, useParams } from "react-router-dom";
 
 import { EventDrawer, EventDrawerToggle } from "./EventDrawer.js";
 import { EventDrawerProvider } from "./drawerContext.js";
+import { useLiveRun } from "./liveDataContext.js";
 import { NavBar, type NavBarItem } from "./NavBar.js";
 import { RightInspectorProvider } from "./inspectorContext.js";
 import { RightInspectorToggle } from "./RightInspector.js";
@@ -127,6 +128,7 @@ export function RunDetailShell(
   // matched but the param parser hasn't populated yet.
   const params = useParams<{ planId: string }>();
   const planId = params.planId ?? "";
+  const liveRun = useLiveRun(planId);
 
   // Inspector state is owned here (the shell), not by the route body,
   // so navigating between run sections preserves the inspector's
@@ -185,6 +187,11 @@ export function RunDetailShell(
           <EventDrawer
             currentRouteId={currentRouteId}
             allowedRouteIds={DRAWER_ALLOWED_ROUTE_IDS}
+            isLive={liveRun !== null}
+            isLoading={liveRun?.isLoading ?? false}
+            errors={liveRun?.errors ?? []}
+            events={liveRun?.events?.data ?? []}
+            {...(liveRun !== null ? { onRefresh: liveRun.refresh } : {})}
           />
         </section>
       </RightInspectorProvider>

@@ -14,6 +14,7 @@
  */
 
 import React from "react";
+import { useParams } from "react-router-dom";
 
 import {
   FIXTURE_BANNER_LABEL,
@@ -22,6 +23,8 @@ import {
   type PhaseSummary,
   phasesHappyPath,
 } from "../fixtures/index.js";
+import { useLiveRun, type LiveApiError, type LiveRunResource } from "../layout/index.js";
+import type { PhaseViewModel } from "../read-models/index.js";
 
 export interface PlanPhasesProps {
   /**
@@ -74,7 +77,154 @@ function comparePhaseDependencyOrder(
   return left.id.localeCompare(right.id);
 }
 
+function describeLivePhaseCounts(phase: PhaseViewModel): string {
+  const counts = phase.taskCountsByStatus.value;
+  if (counts === null) return "Task counts unavailable.";
+  const entries = Object.entries(counts).filter(
+    ([, count]) => typeof count === "number" && count > 0,
+  );
+  if (entries.length === 0) {
+    return "No tasks";
+  }
+  return entries.map(([status, count]) => `${count} ${status}`).join(" · ");
+}
+
+function describeLivePhaseAudit(phase: PhaseViewModel): string {
+  if (phase.latestPhaseAudit !== null) {
+    return `Audit: ${phase.latestPhaseAudit.outcome} — ${phase.latestPhaseAudit.summary}`;
+  }
+  if (phase.latestMergeRun !== null) {
+    return `Merge run ${phase.latestMergeRun.id}`;
+  }
+  if (phase.phaseAuditReportId !== null) {
+    return `Audit report: ${phase.phaseAuditReportId}`;
+  }
+  return "No audit stamped yet.";
+}
+
+function liveErrorLabel(error: LiveApiError): string {
+  const status = error.status > 0 ? `, HTTP ${error.status}` : "";
+  return `${error.kind.replace(/_/g, " ")}${status}: ${error.message}`;
+}
+
+function compareLivePhaseDependencyOrder(
+  left: PhaseViewModel,
+  right: PhaseViewModel,
+): number {
+  const indexDelta = left.index - right.index;
+  return indexDelta === 0 ? left.id.localeCompare(right.id) : indexDelta;
+}
+
+function LivePlanPhases({ live }: { live: LiveRunResource }): React.JSX.Element {
+  const phases = [...(live.phases?.data ?? [])].sort(compareLivePhaseDependencyOrder);
+  const primaryError = live.errors[0] ?? null;
+  const isEmpty = phases.length === 0;
+
+  return (
+    <section
+      className="plan-phases"
+      data-testid="plan-phases"
+      data-source="live"
+      data-live-state={live.state}
+      data-dataset-state={live.state}
+      aria-labelledby="plan-phases-title"
+    >
+      <header className="plan-phases__header">
+        <h1 id="plan-phases-title" className="plan-phases__title">
+          Plan / Phases
+        </h1>
+        <p className="plan-phases__summary">
+          {`${phases.length} phase${phases.length === 1 ? "" : "s"} in dependency order.`}
+        </p>
+        <button
+          type="button"
+          className="plan-phases__refresh"
+          data-testid="plan-phases-refresh"
+          onClick={live.refresh}
+        >
+          Refresh
+        </button>
+        {live.isLoading || live.isRefreshing ? (
+          <p
+            className="plan-phases__loading"
+            data-testid="plan-phases-loading"
+            role="status"
+          >
+            {live.isRefreshing ? "Refreshing live phases." : "Loading live phases."}
+          </p>
+        ) : null}
+        {primaryError !== null ? (
+          <div
+            className="plan-phases__error"
+            data-testid="plan-phases-error"
+            data-error-kind={primaryError.kind}
+            role="alert"
+          >
+            <p>{`Phases load incomplete: ${liveErrorLabel(primaryError)}`}</p>
+            <button type="button" onClick={live.refresh}>
+              Retry
+            </button>
+          </div>
+        ) : null}
+      </header>
+
+      {isEmpty ? (
+        <p
+          className="plan-phases__empty"
+          data-testid="plan-phases-empty"
+        >
+          {live.state === "loading"
+            ? "Loading phases from the live API."
+            : "Planner has not emitted phases yet."}
+        </p>
+      ) : (
+        <ol className="plan-phases__list" data-testid="plan-phases-list">
+          {phases.map((phase) => (
+            <li
+              key={phase.id}
+              className="plan-phases__row"
+              data-testid={`plan-phases-row-${phase.id}`}
+              data-phase-status={phase.status}
+            >
+              <header className="plan-phases__row-header">
+                <span className="plan-phases__row-index">
+                  {`Phase ${phase.index}`}
+                </span>
+                <span className="plan-phases__row-title">{phase.title}</span>
+                <span
+                  className="plan-phases__row-status"
+                  data-testid={`plan-phases-row-status-${phase.id}`}
+                >
+                  {phase.status}
+                </span>
+              </header>
+              <p className="plan-phases__row-summary">{phase.summary}</p>
+              <p className="plan-phases__row-counts">
+                {describeLivePhaseCounts(phase)}
+              </p>
+              <p className="plan-phases__row-audit">
+                {describeLivePhaseAudit(phase)}
+              </p>
+              {phase.integrationBranch !== null ? (
+                <p className="plan-phases__row-branch">
+                  {`Integration branch: ${phase.integrationBranch}`}
+                </p>
+              ) : null}
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
 export function PlanPhases(props: PlanPhasesProps): React.JSX.Element {
+  const params = useParams<{ planId: string }>();
+  const live = useLiveRun(params.planId);
+  if (props.dataset === undefined && live !== null) {
+    return <LivePlanPhases live={live} />;
+  }
+
   const dataset = props.dataset ?? phasesHappyPath;
   const phases = [...dataset.data].sort(comparePhaseDependencyOrder);
   const errorMessage = dataset.state === "error" ? dataset.error.message : null;
