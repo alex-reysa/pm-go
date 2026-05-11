@@ -476,6 +476,29 @@ export async function runSupervisor(
     return 1
   }
 
+  // The `claude` runtime selects @pm-go/executor-process's Claude CLI
+  // process runner, which is a stub today (decomposer and other
+  // activities throw on first invocation). Booting the supervisor with
+  // this mode produces a worker crash a few seconds after startup that
+  // tears the whole stack down — a hostile UX for any operator who
+  // tried the obvious `--runtime claude` flag for Claude Code. Refuse
+  // it up-front with a pointer at the working knob (`--runtime sdk`
+  // uses the same Claude Code OAuth credentials via the Anthropic SDK).
+  // Bypass via PM_GO_ALLOW_CLAUDE_CLI_RUNNER=1 once the CLI runner ships.
+  if (
+    options.runtime === 'claude' &&
+    process.env.PM_GO_ALLOW_CLAUDE_CLI_RUNNER !== '1'
+  ) {
+    errLog(
+      '--runtime claude selects the Claude CLI process runner, which is a stub today\n' +
+        '(decomposer and other activities throw on first invocation, taking the worker\n' +
+        'and supervisor down). Use --runtime sdk for Claude Code via the Anthropic SDK\n' +
+        '(uses ~/.claude/.credentials.json OAuth), or --runtime auto to let pm-go pick.\n' +
+        'Bypass once the CLI runner lands with PM_GO_ALLOW_CLAUDE_CLI_RUNNER=1.',
+    )
+    return 1
+  }
+
   // 1. Docker stack.
   if (!options.skipDocker) {
     // Pre-flight host ports BEFORE we run any docker command. The

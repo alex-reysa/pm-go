@@ -483,6 +483,38 @@ describe('runSupervisor port pre-flight + state file', () => {
     )
   })
 
+  it('refuses --runtime claude up front (CLI process runner is a stub)', async () => {
+    delete process.env.PM_GO_ALLOW_CLAUDE_CLI_RUNNER
+    const fixture = makeSupervisorFixture({
+      options: { runtime: 'claude', skipDocker: true, skipMigrate: true },
+    })
+    const code = await runSupervisor(fixture.options, fixture.deps, async () => 0)
+    assert.strictEqual(code, 1)
+    const errs = fixture.errs.join('\n')
+    assert.match(errs, /--runtime claude/)
+    assert.match(errs, /stub/)
+    assert.match(errs, /--runtime sdk/)
+    // Must refuse BEFORE spawning the worker/api children.
+    assert.strictEqual(
+      fixture.writeStateCalls.length,
+      0,
+      'no instance-state writes should fire when the runtime is refused',
+    )
+  })
+
+  it('--runtime claude with PM_GO_ALLOW_CLAUDE_CLI_RUNNER=1 escape hatch boots', async () => {
+    process.env.PM_GO_ALLOW_CLAUDE_CLI_RUNNER = '1'
+    try {
+      const fixture = makeSupervisorFixture({
+        options: { runtime: 'claude', skipDocker: true, skipMigrate: true },
+      })
+      const code = await runSupervisor(fixture.options, fixture.deps, async () => 0)
+      assert.strictEqual(code, 0)
+    } finally {
+      delete process.env.PM_GO_ALLOW_CLAUDE_CLI_RUNNER
+    }
+  })
+
   it('invokes checkPorts with [5432, 7233, 8233, apiPort] BEFORE any docker compose up', async () => {
     let portsArg: readonly number[] | undefined
     let portsCheckOrder: number = -1
