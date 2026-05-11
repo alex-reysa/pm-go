@@ -311,17 +311,20 @@ export function AppRoutes(): React.JSX.Element {
         <Route path={ROUTES.runs.path} element={<RunsPlaceholder />} />
         <Route path={ROUTES["runs.new"].path} element={<NewSpecRoute />} />
         <Route path={ROUTES.settings.path} element={<SettingsRoute />} />
-      </Route>
-      <Route path="/runs/:planId" element={<RunDetailShellLayout />}>
-        <Route index element={<RunOverviewRoute />} />
-        <Route path="phases" element={<RunPhasesRoute />} />
-        <Route path="tasks" element={<RunTasksRoute />} />
-        <Route path="tasks/:taskId" element={<TaskDetailRoute />} />
-        <Route path="approvals" element={<RunApprovalsRoute />} />
-        <Route path="budget" element={<RunBudgetRoute />} />
-        <Route path="evidence" element={<RunEvidenceRoute />} />
-        <Route path="evidence/:artifactId" element={<ArtifactDetailRoute />} />
-        <Route path="release" element={<RunReleaseRoute />} />
+        <Route path="/runs/:planId" element={<RunDetailShellLayout />}>
+          <Route index element={<RunOverviewRoute />} />
+          <Route path="phases" element={<RunPhasesRoute />} />
+          <Route path="tasks" element={<RunTasksRoute />} />
+          <Route path="tasks/:taskId" element={<TaskDetailRoute />} />
+          <Route path="approvals" element={<RunApprovalsRoute />} />
+          <Route path="budget" element={<RunBudgetRoute />} />
+          <Route path="evidence" element={<RunEvidenceRoute />} />
+          <Route
+            path="evidence/:artifactId"
+            element={<ArtifactDetailRoute />}
+          />
+          <Route path="release" element={<RunReleaseRoute />} />
+        </Route>
       </Route>
       <Route path="*" element={<RouteNotFound />} />
     </Routes>
