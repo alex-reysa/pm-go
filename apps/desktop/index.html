@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+    />
+    <title>pm-go</title>
+  </head>
+  <body>
+    <!-- Phase 1 will mount the React tree into #root. M0 only needs
+         the bundler to find this file. -->
+    <div id="root"></div>
+    <script type="module" src="./src/renderer/index.tsx"></script>
+  </body>
+</html>

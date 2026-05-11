@@ -1,0 +1,22 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./out",
+    "rootDir": "./src",
+    "jsx": "react-jsx",
+    // The renderer targets the browser (DOM globals available via
+    // Electron's Chromium runtime); the main + preload entrypoints
+    // target Node. Pulling in both lib sets keeps the typecheck step
+    // honest across all three entrypoints without requiring per-file
+    // tsconfigs at the M0 scaffold stage. Phase 1 may split these into
+    // tsconfig.main.json / tsconfig.renderer.json once each surface
+    // grows beyond a stub.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["dist", "out", "node_modules", "test", "**/*.test.ts", "**/*.test.tsx"]
+}

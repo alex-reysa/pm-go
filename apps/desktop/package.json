@@ -1,0 +1,23 @@
+{
+  "name": "@pm-go/desktop",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "pm-go desktop shell (Electron + React). M0 scaffold: shared attach contracts, stub main/preload/renderer entrypoints; phase 1 fills in the bodies.",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "electron": "^33.2.1",
+    "electron-vite": "^2.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.4.11"
+  }
+}

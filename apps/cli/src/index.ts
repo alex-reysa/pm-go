@@ -66,7 +66,7 @@ import {
   IMPLEMENT_USAGE,
   type ImplementCliDeps,
 } from './implement.js'
-import { applyDotenv } from './lib/dotenv.js'
+import { applyDotenv, type ApplyDotenvResult } from './lib/dotenv.js'
 import {
   runCli,
   runSupervisor,
@@ -203,6 +203,53 @@ export function resolveCliDispatch(argv: readonly string[]): CliDispatch {
   return { kind: 'unknown', subcommand: first }
 }
 
+export interface LoadDotenvForAgentDeps {
+  applyDotenv: (path: string, deps: {
+    readFile: (p: string) => Promise<string>
+    fileExists: (p: string) => Promise<boolean>
+    env: NodeJS.ProcessEnv
+    log: (line: string) => void
+  }) => Promise<ApplyDotenvResult>
+  readFile: (p: string) => Promise<string>
+  fileExists: (p: string) => Promise<boolean>
+  env: NodeJS.ProcessEnv
+  log: (line: string) => void
+  errLog: (line: string) => void
+}
+
+/**
+ * Load `<monorepoRoot>/.env` for the agent dispatch path. Mirrors the
+ * legacy `runCli` flow: when the file is present, apply its keys to
+ * `deps.env` (existing vars win), print a single banner line with
+ * counts, and forward any parser warnings to stderr. When the file is
+ * absent this is a silent no-op, matching dotenv convention.
+ *
+ * Exported so tests can drive the loader with stubbed I/O without
+ * spinning up the whole `main()` dispatcher.
+ */
+export async function loadDotenvForAgent(
+  monorepoRoot: string,
+  deps: LoadDotenvForAgentDeps,
+): Promise<ApplyDotenvResult> {
+  const result = await deps.applyDotenv(path.join(monorepoRoot, '.env'), {
+    readFile: deps.readFile,
+    fileExists: deps.fileExists,
+    env: deps.env,
+    // Forward parser-side warnings (issued by applyDotenv) to stderr
+    // so they show up alongside the banner we emit below.
+    log: deps.errLog,
+  })
+  if (result.loaded) {
+    deps.log(
+      `[pm-go] loaded .env (${result.applied.length} applied, ${result.skipped.length} pre-set in shell)`,
+    )
+    for (const w of result.warnings) {
+      deps.errLog(`[pm-go] .env: ${w}`)
+    }
+  }
+  return result
+}
+
 async function main(): Promise<number> {
   const dispatch = resolveCliDispatch(process.argv.slice(2))
   if (dispatch.kind === 'root-help') {
@@ -213,6 +260,28 @@ async function main(): Promise<number> {
     if (dispatch.compatibilityLog) {
       console.log(dispatch.compatibilityLog)
     }
+    // Load .env BEFORE invoking agentCli so worker-bound env vars
+    // (PLANNER_BUDGET_USD, ANTHROPIC_API_KEY, DATABASE_URL, ...) reach
+    // child processes the agent spawns. Without this the worker fell
+    // back to the planner's $0.50 default budget and bailed on real
+    // spec planning. Legacy paths load .env in their own dispatchers
+    // (run.ts, implement.ts) — don't double-load there.
+    const monorepoRoot = resolveMonorepoRoot()
+    await loadDotenvForAgent(monorepoRoot, {
+      applyDotenv,
+      readFile: (p) => readFile(p, 'utf8'),
+      fileExists: async (p) => {
+        try {
+          await access(p)
+          return true
+        } catch {
+          return false
+        }
+      },
+      env: process.env,
+      log: (l) => console.log(l),
+      errLog: (l) => console.error(l),
+    })
     const userCwd = process.env.INIT_CWD ?? process.cwd()
     const agentCliDeps: AgentCliDeps = {
       argv: dispatch.argv,
