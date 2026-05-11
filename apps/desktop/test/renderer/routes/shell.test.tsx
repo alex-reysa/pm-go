@@ -18,6 +18,10 @@ import {
   AppRoutes,
   POST_ATTACH_LANDING_PATH,
 } from "../../../src/renderer/App.js";
+import type {
+  PmGoDesktopBridge,
+  ProbeResult,
+} from "../../../src/renderer/bridge.js";
 import {
   ALL_ROUTES,
   ROUTES,
@@ -31,6 +35,17 @@ interface RouteCase {
   readonly routeId: RouteId;
 }
 
+const CONNECTED_PROBE: ProbeResult = {
+  kind: "connected",
+  envelope: {
+    status: "ok",
+    service: "pm-go-api",
+    version: "0.8.8.0",
+    instance: "primary",
+    port: 3001,
+  },
+};
+
 const TOP_LEVEL_ROUTE_CASES: readonly RouteCase[] = [
   { label: "Attach", path: ROUTES.attach.path, routeId: "attach" },
   { label: "Runs List", path: ROUTES.runs.path, routeId: "runs" },
@@ -38,10 +53,18 @@ const TOP_LEVEL_ROUTE_CASES: readonly RouteCase[] = [
   { label: "Settings", path: ROUTES.settings.path, routeId: "settings" },
 ];
 
+function makeBridge(): PmGoDesktopBridge {
+  return {
+    getConfig: async () => ({ apiBaseUrl: "http://localhost:3001" }),
+    setApiBaseUrl: async (apiBaseUrl: string) => ({ apiBaseUrl }),
+    probeHealth: async () => CONNECTED_PROBE,
+  };
+}
+
 function renderRoute(path: string): string {
   return renderToStaticMarkup(
     <StaticRouter location={path}>
-      <AppRoutes />
+      <AppRoutes bridge={makeBridge()} />
     </StaticRouter>,
   );
 }
@@ -54,6 +77,28 @@ function concretePath(descriptor: RouteDescriptor): string {
 }
 
 function expectedRouteMarker(routeId: RouteId): string {
+  const markers: Readonly<Record<RouteId, string>> = {
+    attach: 'data-testid="route-attach"',
+    runs: 'data-testid="runs-list-route"',
+    "runs.new": 'data-testid="new-spec-route"',
+    settings: 'data-testid="settings-route"',
+    "run.overview": 'data-testid="run-overview"',
+    "run.phases": 'data-testid="plan-phases"',
+    "run.tasks": 'data-testid="tasks"',
+    "run.taskDetail": 'data-testid="task-detail"',
+    "run.approvals": 'data-testid="approvals-route"',
+    "run.budget": 'data-testid="budget-route"',
+    "run.evidence": 'data-testid="evidence-route"',
+    "run.artifactDetail": 'data-testid="artifact-detail-route"',
+    "run.release": 'data-testid="release-route"',
+  };
+  return markers[routeId];
+}
+
+function legacyPlaceholderMarker(routeId: RouteId): string | null {
+  if (routeId === "attach") {
+    return null;
+  }
   if (routeId === "runs") {
     return 'data-testid="runs-placeholder"';
   }
@@ -85,7 +130,7 @@ describe("phase-0 route shell", () => {
     expect(POST_ATTACH_LANDING_PATH).toBe(ROUTES.runs.path);
     expect(POST_ATTACH_LANDING_PATH).not.toMatch(/dashboard/i);
     const html = renderRoute(POST_ATTACH_LANDING_PATH);
-    expect(html).toContain('data-testid="runs-placeholder"');
+    expect(html).toContain('data-testid="runs-list-route"');
     expect(html).not.toMatch(/Dashboard/i);
   });
 
@@ -103,6 +148,10 @@ describe("phase-0 route shell", () => {
       const path = concretePath(descriptor);
       const html = renderRoute(path);
       expect(html, descriptor.id).toContain(expectedRouteMarker(descriptor.id));
+      const legacyMarker = legacyPlaceholderMarker(descriptor.id);
+      if (legacyMarker !== null) {
+        expect(html, descriptor.id).not.toContain(legacyMarker);
+      }
       expect(html, descriptor.id).not.toContain(
         'data-testid="route-not-found"',
       );

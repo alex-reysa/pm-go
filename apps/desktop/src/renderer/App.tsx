@@ -44,13 +44,31 @@ import { AttachScreen } from "./AttachScreen.js";
 import type { AttachContext, AttachEvent } from "./attachMachine.js";
 import { initialContext, reduce, runProbe } from "./attachMachine.js";
 import type { PmGoDesktopBridge } from "./bridge.js";
-import { RunsPlaceholder } from "./RunsPlaceholder.js";
+import {
+  approvalsHappyPath,
+  artifactDetailHappyPath,
+  budgetHappyPath,
+  evidenceHappyPath,
+  releaseHappyPath,
+} from "./fixtures/index.js";
 import { AppShell, RunDetailShell } from "./layout/index.js";
 import {
   ALL_ROUTES,
   ROUTES,
   type RouteId,
 } from "./router/index.js";
+import { Approvals } from "./routes/Approvals.js";
+import { ArtifactDetail } from "./routes/ArtifactDetail.js";
+import { Budget } from "./routes/Budget.js";
+import { Evidence } from "./routes/Evidence.js";
+import { NewSpec } from "./routes/NewSpec.js";
+import { PlanPhases } from "./routes/PlanPhases.js";
+import { Release } from "./routes/Release.js";
+import { RunOverview } from "./routes/RunOverview.js";
+import { RunsList } from "./routes/RunsList.js";
+import { Settings } from "./routes/Settings.js";
+import { TaskDetail } from "./routes/TaskDetail.js";
+import { Tasks } from "./routes/Tasks.js";
 
 /**
  * Canonical post-attach landing path. Exported so shell smokes can
@@ -74,6 +92,10 @@ export interface AppProps {
    * `renderToStaticMarkup`.
    */
   postAttachRouter?: (routes: React.ReactNode) => React.JSX.Element;
+}
+
+export interface AppRoutesProps {
+  readonly bridge: PmGoDesktopBridge;
 }
 
 /**
@@ -129,129 +151,19 @@ function RunDetailShellLayout(): React.JSX.Element {
   return <RunDetailShell currentRouteId={routeId} />;
 }
 
-/**
- * Inert placeholder body. Phase-0 routes don't yet talk to the API
- * (M3+ will wire fixtures, M5+ will wire real data). Each route just
- * renders a labelled `<section>` so smoke tests can assert "this
- * route mounts" without depending on data shapes.
- *
- * Bodies live as small named components inside this file so they
- * stay close to the route table — the router config is the only
- * place that has to know about each route's existence.
- */
-function PlaceholderRouteBody(props: {
-  routeId: RouteId;
-  title: string;
-}): React.JSX.Element {
-  return (
-    <section
-      className={`route-${props.routeId.replace(/\./g, "-")}`}
-      data-testid={`route-${props.routeId}`}
-      data-route-id={props.routeId}
-      aria-labelledby={`route-${props.routeId}-title`}
-    >
-      <h2 id={`route-${props.routeId}-title`}>{props.title}</h2>
-      <p>Phase-0 placeholder. Route body wires up in later milestones.</p>
-    </section>
-  );
-}
-
 function AttachRoute(): React.JSX.Element {
   return (
-    <PlaceholderRouteBody routeId="attach" title={ROUTES.attach.title} />
-  );
-}
-
-function NewSpecRoute(): React.JSX.Element {
-  return (
-    <PlaceholderRouteBody routeId="runs.new" title={ROUTES["runs.new"].title} />
-  );
-}
-
-function SettingsRoute(): React.JSX.Element {
-  return (
-    <PlaceholderRouteBody routeId="settings" title={ROUTES.settings.title} />
-  );
-}
-
-function RunOverviewRoute(): React.JSX.Element {
-  return (
-    <PlaceholderRouteBody
-      routeId="run.overview"
-      title={ROUTES["run.overview"].title}
-    />
-  );
-}
-
-function RunPhasesRoute(): React.JSX.Element {
-  return (
-    <PlaceholderRouteBody
-      routeId="run.phases"
-      title={ROUTES["run.phases"].title}
-    />
-  );
-}
-
-function RunTasksRoute(): React.JSX.Element {
-  return (
-    <PlaceholderRouteBody
-      routeId="run.tasks"
-      title={ROUTES["run.tasks"].title}
-    />
-  );
-}
-
-function TaskDetailRoute(): React.JSX.Element {
-  return (
-    <PlaceholderRouteBody
-      routeId="run.taskDetail"
-      title={ROUTES["run.taskDetail"].title}
-    />
-  );
-}
-
-function RunApprovalsRoute(): React.JSX.Element {
-  return (
-    <PlaceholderRouteBody
-      routeId="run.approvals"
-      title={ROUTES["run.approvals"].title}
-    />
-  );
-}
-
-function RunBudgetRoute(): React.JSX.Element {
-  return (
-    <PlaceholderRouteBody
-      routeId="run.budget"
-      title={ROUTES["run.budget"].title}
-    />
-  );
-}
-
-function RunEvidenceRoute(): React.JSX.Element {
-  return (
-    <PlaceholderRouteBody
-      routeId="run.evidence"
-      title={ROUTES["run.evidence"].title}
-    />
-  );
-}
-
-function ArtifactDetailRoute(): React.JSX.Element {
-  return (
-    <PlaceholderRouteBody
-      routeId="run.artifactDetail"
-      title={ROUTES["run.artifactDetail"].title}
-    />
-  );
-}
-
-function RunReleaseRoute(): React.JSX.Element {
-  return (
-    <PlaceholderRouteBody
-      routeId="run.release"
-      title={ROUTES["run.release"].title}
-    />
+    <section
+      className="route-attach"
+      data-testid="route-attach"
+      data-route-id="attach"
+      aria-labelledby="route-attach-title"
+    >
+      <h2 id="route-attach-title">{ROUTES.attach.title}</h2>
+      <p>
+        Attach status and API configuration remain available above the router.
+      </p>
+    </section>
   );
 }
 
@@ -296,10 +208,10 @@ function RouteNotFound(): React.JSX.Element {
  *     `DRAWER_ALLOWED_ROUTE_IDS` / `INSPECTOR_ALLOWED_ROUTE_IDS`.
  *   - `RunsPlaceholder` is the body of the `/runs` route (it stays a
  *     compatibility export so any downstream consumer that imported it
- *     for its testid keeps working — the M2 router replaced its role
- *     as the post-attach gate).
+ *     fixture-driven route body. The legacy RunsPlaceholder export
+ *     remains for compatibility, but the shell no longer mounts it.
  */
-export function AppRoutes(): React.JSX.Element {
+export function AppRoutes({ bridge }: AppRoutesProps): React.JSX.Element {
   return (
     <Routes>
       <Route element={<AppShellLayout />}>
@@ -308,22 +220,34 @@ export function AppRoutes(): React.JSX.Element {
           element={<Navigate to={POST_ATTACH_LANDING_PATH} replace />}
         />
         <Route path={ROUTES.attach.path} element={<AttachRoute />} />
-        <Route path={ROUTES.runs.path} element={<RunsPlaceholder />} />
-        <Route path={ROUTES["runs.new"].path} element={<NewSpecRoute />} />
-        <Route path={ROUTES.settings.path} element={<SettingsRoute />} />
+        <Route path={ROUTES.runs.path} element={<RunsList />} />
+        <Route path={ROUTES["runs.new"].path} element={<NewSpec />} />
+        <Route
+          path={ROUTES.settings.path}
+          element={<Settings bridge={bridge} />}
+        />
         <Route path="/runs/:planId" element={<RunDetailShellLayout />}>
-          <Route index element={<RunOverviewRoute />} />
-          <Route path="phases" element={<RunPhasesRoute />} />
-          <Route path="tasks" element={<RunTasksRoute />} />
-          <Route path="tasks/:taskId" element={<TaskDetailRoute />} />
-          <Route path="approvals" element={<RunApprovalsRoute />} />
-          <Route path="budget" element={<RunBudgetRoute />} />
-          <Route path="evidence" element={<RunEvidenceRoute />} />
+          <Route index element={<RunOverview />} />
+          <Route path="phases" element={<PlanPhases />} />
+          <Route path="tasks" element={<Tasks />} />
+          <Route path="tasks/:taskId" element={<TaskDetail />} />
+          <Route
+            path="approvals"
+            element={<Approvals dataset={approvalsHappyPath} />}
+          />
+          <Route path="budget" element={<Budget dataset={budgetHappyPath} />} />
+          <Route
+            path="evidence"
+            element={<Evidence dataset={evidenceHappyPath} />}
+          />
           <Route
             path="evidence/:artifactId"
-            element={<ArtifactDetailRoute />}
+            element={<ArtifactDetail dataset={artifactDetailHappyPath} />}
           />
-          <Route path="release" element={<RunReleaseRoute />} />
+          <Route
+            path="release"
+            element={<Release dataset={releaseHappyPath} />}
+          />
         </Route>
       </Route>
       <Route path="*" element={<RouteNotFound />} />
@@ -388,7 +312,7 @@ export function App({
   return (
     <div className="app-root" data-testid="app-root">
       <AttachScreen ctx={ctx} dispatch={dispatch} bridge={bridge} />
-      {showRouter ? postAttachRouter(<AppRoutes />) : null}
+      {showRouter ? postAttachRouter(<AppRoutes bridge={bridge} />) : null}
     </div>
   );
 }

@@ -97,7 +97,7 @@ function renderPostProbe(ctx: AttachContext, bridge: PmGoDesktopBridge): string 
       <AttachScreen ctx={ctx} dispatch={dispatch} bridge={bridge} />
       {showRouter ? (
         <StaticRouter location={POST_ATTACH_LANDING_PATH}>
-          <AppRoutes />
+          <AppRoutes bridge={bridge} />
         </StaticRouter>
       ) : null}
     </div>,
@@ -114,7 +114,7 @@ describe("App — post-attach phase-0 router gating", () => {
     const html = renderPostProbe(ctx, bridge);
     expect(html).toMatch(/data-testid="app-shell"/);
     expect(html).toMatch(/data-current-route="runs"/);
-    expect(html).toMatch(/data-testid="runs-placeholder"/);
+    expect(html).toMatch(/data-testid="runs-list-route"/);
     expect(html).toContain("Runs");
     expect(html).not.toMatch(/Dashboard/i);
   });
@@ -129,7 +129,7 @@ describe("App — post-attach phase-0 router gating", () => {
     expect(ctx.state).toBe("foreign_service");
     expect(shouldMountPostAttachRouter(ctx)).toBe(false);
     const html = renderPostProbe(ctx, bridge);
-    expect(html).not.toMatch(/data-testid="runs-placeholder"/);
+    expect(html).not.toMatch(/data-testid="runs-list-route"/);
     expect(html).not.toMatch(/data-testid="app-shell"/);
   });
 
@@ -139,7 +139,7 @@ describe("App — post-attach phase-0 router gating", () => {
     expect(ctx.state).toBe("api_unreachable");
     expect(shouldMountPostAttachRouter(ctx)).toBe(false);
     const html = renderPostProbe(ctx, bridge);
-    expect(html).not.toMatch(/data-testid="runs-placeholder"/);
+    expect(html).not.toMatch(/data-testid="runs-list-route"/);
     expect(html).not.toMatch(/data-testid="app-shell"/);
   });
 
@@ -149,7 +149,7 @@ describe("App — post-attach phase-0 router gating", () => {
     expect(ctx.state).toBe("api_error");
     expect(shouldMountPostAttachRouter(ctx)).toBe(false);
     const html = renderPostProbe(ctx, bridge);
-    expect(html).not.toMatch(/data-testid="runs-placeholder"/);
+    expect(html).not.toMatch(/data-testid="runs-list-route"/);
     expect(html).not.toMatch(/data-testid="app-shell"/);
   });
 
@@ -161,7 +161,7 @@ describe("App — post-attach phase-0 router gating", () => {
     expect(ctx.state).toBe("not_configured");
     expect(shouldMountPostAttachRouter(ctx)).toBe(false);
     const html = renderPostProbe(ctx, bridge);
-    expect(html).not.toMatch(/data-testid="runs-placeholder"/);
+    expect(html).not.toMatch(/data-testid="runs-list-route"/);
     expect(html).not.toMatch(/data-testid="app-shell"/);
     // The probe was never dispatched against the bridge.
     expect(bridge.probeHealth).not.toHaveBeenCalled();
@@ -182,7 +182,7 @@ describe("App — post-attach phase-0 router gating", () => {
       />,
     );
     expect(html).toMatch(/data-attach-state="probing"/);
-    expect(html).not.toMatch(/data-testid="runs-placeholder"/);
+    expect(html).not.toMatch(/data-testid="runs-list-route"/);
     expect(html).not.toMatch(/data-testid="app-shell"/);
     expect(postAttachRouter).not.toHaveBeenCalled();
   });
