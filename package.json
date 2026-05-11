@@ -22,6 +22,7 @@
     "dev": "pnpm -r --if-present build && pnpm pm-go run --repo .",
     "dev:worker": "pnpm --filter @pm-go/worker dev",
     "dev:api": "pnpm --filter @pm-go/api dev",
+    "dev:desktop": "pnpm --filter @pm-go/desktop dev",
     "start:worker": "pnpm --filter @pm-go/worker start",
     "start:api": "pnpm --filter @pm-go/api start",
     "tui": "pnpm --filter @pm-go/tui dev",
