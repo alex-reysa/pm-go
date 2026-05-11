@@ -24,6 +24,7 @@
 
 import React, { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
+import type { PolicyDecision, WorktreeLease } from "@pm-go/contracts";
 
 import {
   ApiConfigurationError,
@@ -40,14 +41,12 @@ import {
   type AgentRun,
   type LimitedValue,
   type Limitation,
-  type PolicyDecision,
   type ReadModelEnvelope,
   type RecoverableReadError,
   type ReviewReport,
   type ReviewReportProjection,
   type TaskDetailPayload,
   type TaskDetailViewModel,
-  type WorktreeLease,
 } from "../read-models/index.js";
 import {
   FIXTURE_BANNER_LABEL,
@@ -120,6 +119,12 @@ function limitedLimitations<T>(value: T | LimitedValue<T>): Limitation[] {
   return isLimitedValue(value) ? value.limitations : [];
 }
 
+function isTaskDetailViewModel(
+  task: TaskDetailModel,
+): task is TaskDetailViewModel {
+  return "raw" in task;
+}
+
 async function getDesktopApiClient(
   override: DesktopApiClient | undefined,
 ): Promise<DesktopApiClient> {
@@ -173,15 +178,24 @@ function taskWorktreePath(task: TaskDetailModel): string | null {
 }
 
 function taskLatestAgentRun(task: TaskDetailModel): TaskAgentRunDisplay | null {
-  return limitedValue(task.latestAgentRun);
+  if (isTaskDetailViewModel(task)) {
+    return task.latestAgentRun.value;
+  }
+  return task.latestAgentRun;
 }
 
 function taskLatestLease(task: TaskDetailModel): TaskLeaseDisplay | null {
-  return limitedValue(task.latestLease);
+  if (isTaskDetailViewModel(task)) {
+    return task.latestLease.value;
+  }
+  return task.latestLease;
 }
 
 function taskLatestReview(task: TaskDetailModel): TaskReviewDisplay | null {
-  return limitedValue(task.latestReviewReport);
+  if (isTaskDetailViewModel(task)) {
+    return task.latestReviewReport.value;
+  }
+  return task.latestReviewReport;
 }
 
 function taskReviewReports(task: TaskDetailModel): readonly TaskReviewDisplay[] | null {
@@ -350,8 +364,8 @@ function reviewCreatedAt(review: TaskReviewDisplay): string {
 
 function reviewCycleLabel(review: TaskReviewDisplay): string {
   return "cycleNumber" in review && typeof review.cycleNumber === "number"
-    ? `Cycle #${review.cycleNumber}`
-    : "Cycle unknown";
+    ? `review cycle #${review.cycleNumber}`
+    : "review cycle unknown";
 }
 
 function reviewSummary(review: TaskReviewDisplay): string {
