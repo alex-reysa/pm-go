@@ -203,7 +203,7 @@ const releaseEvent: WorkflowEvent = {
   payload: {
     artifactId,
     artifactKind: "pr_summary",
-    uri: "file:///tmp/artifacts/pr.md",
+    uri: "artifact://local/pr.md",
   },
   createdAt: "2026-05-10T12:03:00.000Z",
 };
@@ -331,6 +331,26 @@ describe("desktop live read models", () => {
     });
     expect(evidence.data.releaseArtifacts[0]?.kind.value).toBe("pr_summary");
     expect(evidence.data.artifactContents[0]?.body).toBe("# Release\n");
+  });
+
+  it("includes fetched artifacts even when no artifact id list or event references them", () => {
+    const fetchedOnlyArtifactId = "55555555-5555-4555-8555-555555555555";
+
+    const evidence = buildArtifactEvidence({
+      planId,
+      fetches: [
+        {
+          id: fetchedOnlyArtifactId,
+          contentType: "application/json",
+          body: "{\"ok\":true}",
+          byteLength: 11,
+        },
+      ],
+    });
+
+    expect(evidence.data.artifactContents).toHaveLength(1);
+    expect(evidence.data.artifactContents[0]?.id).toBe(fetchedOnlyArtifactId);
+    expect(evidence.data.artifactContents[0]?.body).toBe("{\"ok\":true}");
   });
 
   it("returns explicit empty states for empty API collections", () => {

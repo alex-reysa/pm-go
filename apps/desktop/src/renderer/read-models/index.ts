@@ -732,6 +732,9 @@ export function buildArtifactEvidence(
   const fetchById = new Map(fetches.map((fetch) => [fetch.id, fetch]));
   const releaseArtifactIds = new Set<UUID>();
   const allIds = new Set<UUID>(artifactIds);
+  for (const fetch of fetches) {
+    allIds.add(fetch.id);
+  }
   for (const [id, event] of eventByArtifactId) {
     allIds.add(id);
     if (isReleaseArtifactKind(event.payload.artifactKind)) {
