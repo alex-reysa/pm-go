@@ -45,6 +45,10 @@ export interface EvidenceRouteProps {
 type EvidenceGroupId = "audits" | "reviews" | "release" | "other";
 
 type EvidenceView = EvidenceBundleView | EvidenceBundleViewModel;
+type ArtifactPersistedEvent = Extract<
+  WorkflowEvent,
+  { kind: "artifact_persisted" }
+>;
 
 interface LiveEvidenceState {
   readonly loading: boolean;
@@ -242,8 +246,52 @@ function liveArtifactRow(artifact: ArtifactSummaryViewModel): EvidenceArtifactRo
   };
 }
 
+function titleForArtifactKind(kind: string): string {
+  return kind.replace(/_/g, " ");
+}
+
+function artifactEventRowsById(
+  events: readonly WorkflowEvent[],
+  fetches: readonly ArtifactFetchPayload[],
+): Map<string, EvidenceArtifactRow> {
+  const fetchById = new Map(fetches.map((fetch) => [fetch.id, fetch]));
+  const rows = new Map<string, EvidenceArtifactRow>();
+
+  for (const event of events) {
+    if (event.kind !== "artifact_persisted") continue;
+
+    const artifactEvent: ArtifactPersistedEvent = event;
+    const fetch = fetchById.get(artifactEvent.payload.artifactId);
+    const limitations =
+      fetch === undefined
+        ? ["Artifact content was not returned by GET /artifacts/:id."]
+        : fetch.error === undefined
+          ? []
+          : ["Artifact content read failed; metadata was preserved from the event stream."];
+
+    rows.set(artifactEvent.payload.artifactId, {
+      id: artifactEvent.payload.artifactId,
+      kind: artifactEvent.payload.artifactKind,
+      title: titleForArtifactKind(artifactEvent.payload.artifactKind),
+      contentType: fetch?.contentType ?? null,
+      fetchedAt: artifactEvent.createdAt,
+      body: fetch?.body ?? null,
+      error: fetch?.error ?? null,
+      limitations,
+    });
+  }
+
+  return rows;
+}
+
 function liveArtifactRows(view: EvidenceBundleViewModel): EvidenceArtifactRow[] {
   const byId = new Map<string, EvidenceArtifactRow>();
+  for (const [id, row] of artifactEventRowsById(
+    view.raw.events,
+    view.raw.artifactFetches,
+  )) {
+    byId.set(id, row);
+  }
   for (const artifact of [...view.releaseArtifacts, ...view.artifactContents]) {
     byId.set(artifact.id, liveArtifactRow(artifact));
   }
