@@ -45,6 +45,7 @@ export interface DoctorDeps {
 export type ResolutionKind =
   | 'anthropic-sdk'
   | 'claude-cli'
+  | 'codex-cli'
   | 'openrouter-sdk'
   | 'openai-sdk'
   | 'none'
@@ -74,9 +75,10 @@ export interface ResolveAutoRuntimeOpts {
  *   1. ANTHROPIC_API_KEY set                    → anthropic-sdk
  *   2. Claude Code OAuth session present        → anthropic-sdk (oauth)
  *   3. claude CLI on PATH                       → claude-cli
- *   4. OPENROUTER_API_KEY                       → openrouter-sdk
- *   5. OPENAI_API_KEY                           → openai-sdk
- *   6. nothing                                  → none
+ *   4. codex CLI on PATH                        → codex-cli
+ *   5. OPENROUTER_API_KEY                       → openrouter-sdk
+ *   6. OPENAI_API_KEY                           → openai-sdk
+ *   7. nothing                                  → none
  */
 export function resolveAutoRuntime(
   env: Record<string, string | undefined>,
@@ -94,6 +96,9 @@ export function resolveAutoRuntime(
   }
   if (runtimes.some((r) => r.adapter.cliCommand === 'claude')) {
     return { kind: 'claude-cli', reason: 'claude CLI found on PATH' }
+  }
+  if (runtimes.some((r) => r.adapter.cliCommand === 'codex')) {
+    return { kind: 'codex-cli', reason: 'codex CLI found on PATH' }
   }
   if (env['OPENROUTER_API_KEY']) {
     return { kind: 'openrouter-sdk', reason: 'OPENROUTER_API_KEY is set' }

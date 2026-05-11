@@ -54,7 +54,7 @@ export interface ImplementOptions {
   /** Title for the spec document. */
   title: string | undefined
   /** Runtime mode for every agent role. */
-  runtime: 'auto' | 'stub' | 'sdk' | 'claude'
+  runtime: 'auto' | 'stub' | 'sdk' | 'claude' | 'codex'
   /** API port. */
   apiPort: number
   /** DATABASE_URL override. */
@@ -128,7 +128,7 @@ export function parseImplementArgv(
         break
       case '--runtime': {
         if (!value) return { ok: false, error: `${flag} requires a value` }
-        const allowed = ['auto', 'stub', 'sdk', 'claude'] as const
+        const allowed = ['auto', 'stub', 'sdk', 'claude', 'codex'] as const
         if (!allowed.includes(value as (typeof allowed)[number])) {
           return {
             ok: false,
@@ -229,7 +229,7 @@ Options:
   --repo, -r <path>      Target repository root (default: cwd).
   --spec, -s <path>      Spec markdown to submit + drive. REQUIRED.
   --title <string>       Title for the spec doc (default: first H1 in body).
-  --runtime <mode>       auto | stub | sdk | claude (default: auto).
+  --runtime <mode>       auto | stub | sdk | claude | codex (default: auto).
   --port, -p <n>         API port (default: 3001 or $API_PORT).
   --database-url <url>   Override DATABASE_URL.
   --skip-docker          Skip docker compose; assume stack is up.

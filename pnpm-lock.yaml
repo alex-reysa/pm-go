@@ -151,6 +151,9 @@ importers:
       '@pm-go/executor-claude':
         specifier: workspace:*
         version: link:../../packages/executor-claude
+      '@pm-go/executor-process':
+        specifier: workspace:*
+        version: link:../../packages/executor-process
       '@pm-go/observability':
         specifier: workspace:*
         version: link:../../packages/observability

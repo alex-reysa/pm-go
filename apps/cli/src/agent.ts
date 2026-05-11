@@ -1,4 +1,4 @@
-export type AgentRuntime = 'auto' | 'stub' | 'sdk' | 'claude'
+export type AgentRuntime = 'auto' | 'stub' | 'sdk' | 'claude' | 'codex'
 export type AgentApprovalMode = 'all' | 'none' | 'interactive'
 
 export interface AgentOptions {
@@ -33,7 +33,7 @@ Options:
   -r, --repo <path>              Repository root (default: current directory).
   -s, --spec <path>              Spec file to implement.
       --title <title>            Human-readable session title.
-      --runtime <mode>           Runtime: auto, stub, sdk, claude (default auto).
+      --runtime <mode>           Runtime: auto, stub, sdk, claude, codex (default auto).
       --approve <mode>           Approvals: all, none, interactive.
       --yes                      Accept default confirmations.
       --resume <session>         Resume an existing operator session.
@@ -45,7 +45,7 @@ type ParseAgentResult =
   | { ok: true; options: AgentOptions }
   | { ok: false; error: string }
 
-const RUNTIMES = new Set<AgentRuntime>(['auto', 'stub', 'sdk', 'claude'])
+const RUNTIMES = new Set<AgentRuntime>(['auto', 'stub', 'sdk', 'claude', 'codex'])
 const APPROVAL_MODES = new Set<AgentApprovalMode>([
   'all',
   'none',
@@ -103,7 +103,7 @@ export function parseAgentArgv(
         if (!RUNTIMES.has(value as AgentRuntime)) {
           return {
             ok: false,
-            error: '--runtime must be one of: auto, stub, sdk, claude',
+            error: '--runtime must be one of: auto, stub, sdk, claude, codex',
           }
         }
         runtime = value as AgentRuntime

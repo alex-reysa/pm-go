@@ -111,7 +111,7 @@ export function createPmGoSdkTools(input: PmGoSdkToolsInput) {
       "Ensure the pm-go API/control plane is reachable for this repo and runtime.",
       {
         repoRoot: z.string().optional(),
-        runtime: z.enum(["auto", "stub", "sdk", "claude"]).optional(),
+        runtime: z.enum(["auto", "stub", "sdk", "claude", "codex"]).optional(),
       },
       runtime.wrap("pmgo_ensure_stack", async (args) => {
         const repoRoot = resolveScopedRepoRoot(input.options, args.repoRoot);

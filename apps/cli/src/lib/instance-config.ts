@@ -34,7 +34,7 @@
 // Types
 // ---------------------------------------------------------------------------
 
-export type RuntimeMode = 'auto' | 'stub' | 'sdk' | 'claude'
+export type RuntimeMode = 'auto' | 'stub' | 'sdk' | 'claude' | 'codex'
 
 export interface InstanceConfig {
   /** Logical name. CLI uses "default" when --instance is omitted. */
@@ -76,7 +76,7 @@ export interface InstanceConfigDeps {
 const DEFAULT_INSTANCE_NAME = 'default'
 const MAX_NAME_LEN = 64
 
-const RUNTIME_VALUES: readonly RuntimeMode[] = ['auto', 'stub', 'sdk', 'claude']
+const RUNTIME_VALUES: readonly RuntimeMode[] = ['auto', 'stub', 'sdk', 'claude', 'codex']
 
 const DEFAULT_API_PORT = 3001
 const DEFAULT_DATABASE_URL = 'postgres://pmgo:pmgo@localhost:5432/pm_go'
@@ -350,7 +350,7 @@ export function validateInstanceConfig(value: unknown): ValidationResult {
   const runtimeRaw = value.runtime
   let runtime: RuntimeMode | undefined
   if (typeof runtimeRaw !== 'string') {
-    errors.push('field runtime must be one of auto|stub|sdk|claude')
+    errors.push('field runtime must be one of auto|stub|sdk|claude|codex')
   } else if (!RUNTIME_VALUES.includes(runtimeRaw as RuntimeMode)) {
     errors.push(
       `field runtime must be one of ${RUNTIME_VALUES.join('|')}, got ${runtimeRaw}`,

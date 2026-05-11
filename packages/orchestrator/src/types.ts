@@ -1,6 +1,6 @@
 import type { AgentStopReason, UUID } from "@pm-go/contracts";
 
-export type RuntimeMode = "auto" | "stub" | "sdk" | "claude";
+export type RuntimeMode = "auto" | "stub" | "sdk" | "claude" | "codex";
 export type ApprovalMode = "all" | "none" | "interactive";
 
 export interface OperatorAgentOptions {

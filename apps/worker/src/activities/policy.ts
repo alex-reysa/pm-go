@@ -5,6 +5,7 @@ import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type {
   AgentRun,
   AgentPermissionMode,
+  AgentExecutor,
   AgentRole,
   AgentRunStatus,
   AgentStopReason,
@@ -490,7 +491,7 @@ function rowToAgentRun(row: typeof agentRuns.$inferSelect): AgentRun {
     depth: row.depth as 0 | 1 | 2,
     status: row.status as AgentRunStatus,
     riskLevel: row.riskLevel,
-    executor: "claude",
+    executor: row.executor as AgentExecutor,
     model: row.model,
     promptVersion: row.promptVersion,
     ...(row.sessionId !== null ? { sessionId: row.sessionId } : {}),

@@ -18,6 +18,8 @@ export type AgentRunStatus =
   | "timed_out"
   | "canceled";
 
+export type AgentExecutor = "claude" | "codex";
+
 export type WorktreeLeaseStatus = "active" | "expired" | "released" | "revoked";
 
 /**
@@ -81,7 +83,7 @@ export interface AgentRun {
   depth: 0 | 1 | 2;
   status: AgentRunStatus;
   riskLevel: RiskLevel;
-  executor: "claude";
+  executor: AgentExecutor;
   model: string;
   promptVersion: string;
   sessionId?: string;

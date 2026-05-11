@@ -36,6 +36,14 @@ import {
   type StubPhaseAuditorSequenceEntry,
   type StubReviewerSequenceEntry,
 } from "@pm-go/executor-claude";
+import {
+  createCodexProcessCompletionAuditorRunner,
+  createCodexProcessDecomposerRunner,
+  createCodexProcessImplementerRunner,
+  createCodexProcessPhaseAuditorRunner,
+  createCodexProcessPlannerRunner,
+  createCodexProcessReviewerRunner,
+} from "@pm-go/executor-process";
 
 import { createCompletionAuditActivities } from "./activities/completion-audit.js";
 import { createEventActivities } from "./activities/events.js";
@@ -80,6 +88,20 @@ async function detectClaudeCliAvailable(): Promise<boolean> {
 }
 
 /**
+ * Detect whether the `codex` CLI binary is available on PATH. This is
+ * intentionally a binary probe, matching `pm-go doctor` / runtime-detector;
+ * model/auth failures are surfaced by the Codex subprocess at activity time.
+ */
+async function detectCodexCliAvailable(): Promise<boolean> {
+  try {
+    await execFileAsync("codex", ["--version"], { timeout: 5_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Returns true when the Anthropic SDK can authenticate:
  *   1. `ANTHROPIC_API_KEY` is set (API key path), OR
  *   2. An OAuth session credentials file is present on disk.
@@ -104,22 +126,25 @@ function hasSdkAccess(): boolean {
  *   1. `sdk`   — require SDK access (API key or OAuth); throw with `pm-go doctor`
  *                hint if unavailable.
  *   2. `claude`— require `claude --version` to succeed; throw if unavailable.
- *   3. `auto`  — prefer SDK when `ANTHROPIC_API_KEY` is set or OAuth session
+ *   3. `codex` — require `codex --version` to succeed; throw if unavailable.
+ *   4. `auto`  — prefer SDK when `ANTHROPIC_API_KEY` is set or OAuth session
  *                is detected (step 3 of spec).
- *   4. `auto`  — fall back to Claude CLI runner if the binary is on PATH
+ *   5. `auto`  — fall back to Claude CLI runner if the binary is on PATH
  *                (step 4 of spec).
- *   5. else    — throw at boot with an actionable error (step 5 of spec).
+ *   6. else    — throw at boot with an actionable error.
  *
- * @param runtimeValue  The raw value of the env var (e.g. "sdk", "claude", "auto").
+ * @param runtimeValue  The raw value of the env var (e.g. "sdk", "claude", "codex", "auto").
  * @param varName       The env var name, used in error messages.
  * @param sdkFactory    Thunk that creates the SDK-backed runner.
  * @param processFactory Thunk that creates the CLI process-backed runner.
+ * @param codexFactory  Thunk that creates the Codex CLI process-backed runner.
  */
 async function resolveRuntimeRunner<T>(
   runtimeValue: string,
   varName: string,
   sdkFactory: () => T,
   processFactory: () => T,
+  codexFactory: () => T,
 ): Promise<T> {
   // Step 1: explicit sdk — require SDK access.
   if (runtimeValue === "sdk") {
@@ -151,7 +176,20 @@ async function resolveRuntimeRunner<T>(
     return processFactory();
   }
 
-  // Steps 3-5: auto — try SDK first, then CLI, then fail.
+  // Step 3: explicit codex — require codex CLI on PATH.
+  if (runtimeValue === "codex") {
+    const available = await detectCodexCliAvailable();
+    if (!available) {
+      throw new Error(
+        `${varName}=codex requires the \`codex\` CLI on PATH ` +
+          `(run \`codex --version\` to verify). ` +
+          `Run \`pm-go doctor\` to diagnose your configuration.`,
+      );
+    }
+    return codexFactory();
+  }
+
+  // Auto — try SDK first, then Claude CLI, then Codex CLI, then fail.
   if (runtimeValue === "auto") {
     // Step 3: prefer SDK when credentials are available.
     if (hasSdkAccess()) {
@@ -168,18 +206,26 @@ async function resolveRuntimeRunner<T>(
       );
       return processFactory();
     }
-    // Step 5: no runtime available — throw actionable error.
+    const codexAvailable = await detectCodexCliAvailable();
+    if (codexAvailable) {
+      console.warn(
+        `WARN: ${varName}=auto fell back to Codex CLI process runner ` +
+          `(no Anthropic SDK credentials or Claude CLI found).`,
+      );
+      return codexFactory();
+    }
+    // No runtime available — throw actionable error.
     throw new Error(
       `${varName}=auto: no runtime is available. ` +
         `Set ANTHROPIC_API_KEY (or run \`claude login\`) for the SDK runtime, ` +
-        `or install the \`claude\` CLI for the process runtime. ` +
+        `or install the \`claude\` or \`codex\` CLI for a process runtime. ` +
         `Run \`pm-go doctor\` to diagnose your configuration.`,
     );
   }
 
   throw new Error(
     `${varName}: unknown value '${runtimeValue}'. ` +
-      `Valid values: sdk, claude, auto.`,
+      `Valid values: sdk, claude, codex, auto.`,
   );
 }
 
@@ -393,6 +439,8 @@ async function main() {
           "PLANNER_RUNTIME",
           () => createClaudePlannerRunner({ onFailure: onAgentRunFailure }),
           () => createProcessPlannerRunner({ onFailure: onAgentRunFailure }),
+          () =>
+            createCodexProcessPlannerRunner({ onFailure: onAgentRunFailure }),
         )
       : plannerMode === "live"
         ? createClaudePlannerRunner({ onFailure: onAgentRunFailure })
@@ -417,6 +465,10 @@ async function main() {
                 "Set PLANNER_RUNTIME=sdk or fall back to the executor-mode stub.",
             );
           },
+          () =>
+            createCodexProcessDecomposerRunner({
+              onFailure: onAgentRunFailure,
+            }),
         )
       : plannerMode === "live"
         ? createClaudeDecomposerRunner({ onFailure: onAgentRunFailure })
@@ -431,6 +483,10 @@ async function main() {
           "IMPLEMENTER_RUNTIME",
           () => createClaudeImplementerRunner({ onFailure: onAgentRunFailure }),
           () => createProcessImplementerRunner({ onFailure: onAgentRunFailure }),
+          () =>
+            createCodexProcessImplementerRunner({
+              onFailure: onAgentRunFailure,
+            }),
         )
       : implementerMode === "live"
         ? createClaudeImplementerRunner({ onFailure: onAgentRunFailure })
@@ -452,6 +508,8 @@ async function main() {
               onSchemaValidationFailure: onSchemaValidationDiagnostic,
             }),
           () => createProcessReviewerRunner({ onFailure: onAgentRunFailure }),
+          () =>
+            createCodexProcessReviewerRunner({ onFailure: onAgentRunFailure }),
         )
       : reviewerMode === "live"
         ? createClaudeReviewerRunner({
@@ -476,6 +534,10 @@ async function main() {
             }),
           () =>
             createProcessPhaseAuditorRunner({ onFailure: onAgentRunFailure }),
+          () =>
+            createCodexProcessPhaseAuditorRunner({
+              onFailure: onAgentRunFailure,
+            }),
         )
       : phaseAuditorMode === "live"
         ? createClaudePhaseAuditorRunner({
@@ -500,6 +562,10 @@ async function main() {
             }),
           () =>
             createProcessCompletionAuditorRunner({
+              onFailure: onAgentRunFailure,
+            }),
+          () =>
+            createCodexProcessCompletionAuditorRunner({
               onFailure: onAgentRunFailure,
             }),
         )

@@ -99,7 +99,7 @@ export const KNOWN_ADAPTERS: readonly RuntimeAdapter[] = [
   }),
   makeAdapter('codex', 'codex', {
     streamJson: true,
-    structuredOutput: false,
+    structuredOutput: true,
     mcpTools: false,
   }),
   makeAdapter('gemini', 'gemini', {

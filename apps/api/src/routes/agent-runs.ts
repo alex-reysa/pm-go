@@ -5,6 +5,7 @@ import { and, asc, desc, eq } from "drizzle-orm";
 
 import type {
   AgentPermissionMode,
+  AgentExecutor,
   AgentRole,
   AgentRunStatus,
   AgentStopReason,
@@ -48,6 +49,7 @@ const RUN_STATUSES = new Set<AgentRunStatus>([
   "canceled",
 ]);
 const RISK_LEVELS = new Set<RiskLevel>(["low", "medium", "high"]);
+const AGENT_EXECUTORS = new Set<AgentExecutor>(["claude", "codex"]);
 const PERMISSION_MODES = new Set<AgentPermissionMode>([
   "default",
   "acceptEdits",
@@ -242,10 +244,12 @@ function parseAgentRunBody(raw: unknown, requireCreateFields: boolean) {
     }
     values.riskLevel = body.riskLevel;
   }
-  if (body.executor !== undefined && body.executor !== "claude") {
-    return { error: "executor must be claude" } as const;
+  if (body.executor !== undefined) {
+    if (!AGENT_EXECUTORS.has(body.executor as AgentExecutor)) {
+      return { error: "executor must be claude or codex" } as const;
+    }
+    values.executor = body.executor;
   }
-  if (body.executor !== undefined) values.executor = "claude";
   if (body.permissionMode !== undefined) {
     if (!PERMISSION_MODES.has(body.permissionMode as AgentPermissionMode)) {
       return { error: "permissionMode must be a known AgentPermissionMode" } as const;

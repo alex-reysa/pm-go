@@ -29,6 +29,12 @@ export default defineConfig({
           import.meta.url,
         ),
       ),
+      "@pm-go/executor-process": fileURLToPath(
+        new URL(
+          "../../packages/executor-process/src/index.ts",
+          import.meta.url,
+        ),
+      ),
       "@pm-go/worktree-manager": fileURLToPath(
         new URL(
           "../../packages/worktree-manager/src/index.ts",

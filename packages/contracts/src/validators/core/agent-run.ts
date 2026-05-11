@@ -81,7 +81,7 @@ export const AgentRunSchema = Type.Object(
     depth: AgentDepthSchema,
     status: AgentRunStatusSchema,
     riskLevel: RiskLevelSchema,
-    executor: Type.Literal("claude"),
+    executor: Type.Union([Type.Literal("claude"), Type.Literal("codex")]),
     model: Type.String(),
     promptVersion: Type.String(),
     sessionId: Type.Optional(Type.String()),

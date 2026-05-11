@@ -36,10 +36,17 @@ describe("AgentRun contract", () => {
     expect(validateAgentRun(fixture)).toBe(false);
   });
 
-  it("rejects a fixture whose `executor` is not the literal 'claude'", () => {
+  it("rejects a fixture whose `executor` is not a known executor", () => {
     const fixture = loadFixture() as Record<string, unknown>;
     fixture["executor"] = "openai";
     expect(validateAgentRun(fixture)).toBe(false);
+  });
+
+  it("accepts codex as an executor", () => {
+    const fixture = loadFixture() as Record<string, unknown>;
+    fixture["executor"] = "codex";
+    fixture["model"] = "codex-cli-default";
+    expect(validateAgentRun(fixture)).toBe(true);
   });
 
   it("rejects a fixture missing the required `permissionMode`", () => {

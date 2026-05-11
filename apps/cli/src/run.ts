@@ -48,7 +48,7 @@ export interface RunOptions {
   /** Title for the spec document. Falls back to first H1 or filename. */
   title: string | undefined
   /** Runtime mode for every agent role. */
-  runtime: 'auto' | 'stub' | 'sdk' | 'claude'
+  runtime: 'auto' | 'stub' | 'sdk' | 'claude' | 'codex'
   /** Override the default API port (3001). */
   apiPort: number
   /** Override DATABASE_URL when stack is already running externally. */
@@ -196,7 +196,7 @@ export function parseRunArgv(
         break
       case '--runtime': {
         if (!value) return { ok: false, error: `${flag} requires a value` }
-        const allowed = ['auto', 'stub', 'sdk', 'claude'] as const
+        const allowed = ['auto', 'stub', 'sdk', 'claude', 'codex'] as const
         if (!allowed.includes(value as (typeof allowed)[number])) {
           return {
             ok: false,
@@ -294,13 +294,12 @@ function DEFAULT_APR_PORT_FALLBACK(): number {
 }
 
 /**
- * Describe the auth source the worker will use, in priority order
- * matching `hasSdkAccess()` in apps/worker:
+ * Describe the auth source the worker will use. Explicit CLI runtimes are
+ * reported directly; sdk/auto follow the SDK auth priority in apps/worker:
  *
  *   1. ANTHROPIC_API_KEY env var → SDK
  *   2. ~/.claude/.credentials.json present → SDK (Claude Code OAuth)
- *   3. claude CLI on PATH → CLI runner
- *   4. otherwise → none (will throw on first activity)
+ *   3. otherwise → none (will throw unless a CLI fallback is available)
  *
  * `--runtime stub` short-circuits to "stub" since the worker won't
  * call any auth-dependent factory.
@@ -313,6 +312,8 @@ async function describeAuthSource(
   runtime: RunOptions['runtime'],
 ): Promise<string> {
   if (runtime === 'stub') return 'stub mode (no Claude calls)'
+  if (runtime === 'codex') return 'Codex CLI (codex)'
+  if (runtime === 'claude') return 'Claude CLI (claude)'
   if (process.env.ANTHROPIC_API_KEY) return 'ANTHROPIC_API_KEY (env)'
   const home = process.env.HOME ?? process.env.USERPROFILE
   if (home) {
@@ -321,8 +322,8 @@ async function describeAuthSource(
       return 'Claude Code OAuth (~/.claude/.credentials.json)'
     }
   }
-  // We can't easily detect `claude --version` here (would shell out
-  // and slow boot); the worker will fall back to CLI / fail loudly.
+  // We can't easily detect CLI availability here (would shell out and
+  // slow boot); the worker will fall back to CLI / fail loudly for auto.
   return 'none detected — worker will fail unless --runtime stub'
 }
 
@@ -815,7 +816,7 @@ const EXECUTOR_MODE_ENV_KEYS = [
  * every agent role.
  *
  * Precedence:
- *   - For `--runtime sdk|claude|auto`: explicit shell-exported
+ *   - For `--runtime sdk|claude|codex|auto`: explicit shell-exported
  *     `*_RUNTIME=...` wins (advanced users mixing roles); otherwise
  *     the flag fans out to every role.
  *   - For `--runtime stub`: the explicit flag ALWAYS wins. BOTH
@@ -1175,7 +1176,7 @@ Options:
   --repo, -r <path>         Target repository root (default: cwd).
   --spec, -s <path>         Spec markdown to submit + start a plan for.
   --title <string>          Title for the spec doc (default: first H1 in body).
-  --runtime <mode>          auto | stub | sdk | claude (default: auto).
+  --runtime <mode>          auto | stub | sdk | claude | codex (default: auto).
   --port, -p <n>            API port (default: 3001).
   --database-url <url>      Override DATABASE_URL.
   --skip-docker             Skip docker compose; assume stack is up.

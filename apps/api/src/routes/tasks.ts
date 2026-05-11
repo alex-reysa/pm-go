@@ -7,6 +7,7 @@ import { WorkflowNotFoundError } from "@temporalio/client";
 
 import type {
   AgentRun,
+  AgentExecutor,
   AgentPermissionMode,
   AgentRole,
   AgentRunStatus,
@@ -288,7 +289,7 @@ export function createTasksRoute(deps: TasksRouteDeps) {
           depth: agentRunRow.depth as 0 | 1 | 2,
           status: agentRunRow.status as AgentRunStatus,
           riskLevel: agentRunRow.riskLevel,
-          executor: "claude",
+          executor: agentRunRow.executor as AgentExecutor,
           model: agentRunRow.model,
           promptVersion: agentRunRow.promptVersion,
           ...(agentRunRow.sessionId !== null
