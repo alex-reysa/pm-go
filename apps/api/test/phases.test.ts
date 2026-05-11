@@ -265,6 +265,7 @@ describe("GET /phases/:phaseId", () => {
       baseSha: "a".repeat(40),
       mergedTaskIds: ["t1"],
       failedTaskId: null,
+      failureReason: null,
       integrationHeadSha: "b".repeat(40),
       postMergeSnapshotId: "snap-1",
       integrationLeaseId: "lease-1",
@@ -277,12 +278,55 @@ describe("GET /phases/:phaseId", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       phase: { id: string };
-      latestMergeRun: { id: string } | null;
+      latestMergeRun: { id: string; failureReason: string | null } | null;
       latestPhaseAudit: unknown;
     };
     expect(body.phase.id).toBe(PHASE_ID);
     expect(body.latestMergeRun?.id).toBe(MERGE_RUN_ID);
+    expect(body.latestMergeRun?.failureReason).toBeNull();
     expect(body.latestPhaseAudit).toBeNull();
+  });
+
+  it("exposes merge_run.failureReason on the latest run when set", async () => {
+    const { client } = makeMockTemporal();
+    const phaseRow = {
+      id: PHASE_ID,
+      planId: PLAN_ID,
+      index: 0,
+      title: "Phase 0",
+      summary: "",
+      status: "blocked",
+      integrationBranch: "integration/x/phase-0",
+      baseSnapshotId: "snap-0",
+      taskIdsOrdered: [],
+      mergeOrder: [],
+      phaseAuditReportId: null,
+      startedAt: null,
+      completedAt: null,
+    };
+    const mergeRunRow = {
+      id: MERGE_RUN_ID,
+      planId: PLAN_ID,
+      phaseId: PHASE_ID,
+      integrationBranch: "integration/x/phase-0",
+      baseSha: "a".repeat(40),
+      mergedTaskIds: [],
+      failedTaskId: "11111111-1111-1111-1111-111111111111",
+      failureReason: "validation failed for task t1:\n$ pnpm test\nFAILED\nTests 1 failed (1)",
+      integrationHeadSha: "b".repeat(40),
+      postMergeSnapshotId: null,
+      integrationLeaseId: "lease-1",
+      startedAt: "2026-04-19T00:00:00.000Z",
+      completedAt: "2026-04-19T00:05:00.000Z",
+    };
+    const db = makeMockDbForLookup([[phaseRow], [mergeRunRow], []]);
+    const app = appWith(db, client);
+    const res = await app.request(`/phases/${PHASE_ID}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      latestMergeRun: { failureReason: string | null } | null;
+    };
+    expect(body.latestMergeRun?.failureReason).toContain("validation failed");
   });
 });
 
