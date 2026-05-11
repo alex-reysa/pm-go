@@ -24,6 +24,10 @@ export const MergeRunSchema = Type.Object(
     mergedTaskIds: Type.Array(UuidSchema),
     failedTaskId: Type.Optional(UuidSchema),
     integrationHeadSha: Type.Optional(GitSha1Schema),
+    // Bug #14 fix — captured tail of `validatePostMergeState` logs on
+    // failure; undefined on success. Plain string, no length cap at the
+    // contract level — the activity caps before writing.
+    failureReason: Type.Optional(Type.String()),
     startedAt: Iso8601Schema,
     completedAt: Type.Optional(Iso8601Schema),
   },

@@ -237,6 +237,15 @@ export interface MergeRun {
   mergedTaskIds: UUID[];
   failedTaskId?: UUID;
   integrationHeadSha?: string;
+  /**
+   * Captured trailing chunk of `validatePostMergeState` logs when the
+   * merge run failed validation (Bug #14 fix). Operators read this to
+   * tell apart `pnpm install` / `pnpm -r build` / per-task testCommand /
+   * post-step `git reset` failures, none of which are otherwise
+   * distinguishable from `failedTaskId` alone. Undefined on success —
+   * happy-path runs do not bloat the row.
+   */
+  failureReason?: string;
   startedAt: string;
   completedAt?: string;
 }

@@ -512,6 +512,12 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
               failedTaskId: run.failedTaskId ?? null,
               integrationHeadSha: run.integrationHeadSha ?? null,
               postMergeSnapshotId: run.postMergeSnapshotId ?? null,
+              // Bug #14 fix — persist the captured validation-log tail
+              // alongside `failedTaskId` so operators can tell whether
+              // the failure was install / build / per-task testCommand /
+              // post-step git reset. Null on success (happy-path rows
+              // stay slim).
+              failureReason: run.failureReason ?? null,
               startedAt: run.startedAt,
               completedAt: run.completedAt ?? null,
             })
@@ -527,6 +533,7 @@ export function createIntegrationActivities(deps: IntegrationActivityDeps) {
                 mergedTaskIds: run.mergedTaskIds,
                 failedTaskId: run.failedTaskId ?? null,
                 integrationHeadSha: run.integrationHeadSha ?? null,
+                failureReason: run.failureReason ?? null,
                 completedAt: run.completedAt ?? null,
               },
             });
@@ -889,6 +896,10 @@ function rowToMergeRunContract(row: MergeRunRow): StoredMergeRun {
     ...(row.integrationLeaseId !== null
       ? { integrationLeaseId: row.integrationLeaseId }
       : {}),
+    // Bug #14 fix — expose `failureReason` to consumers via the contract
+    // shape so any merge_runs read path (e.g. /merge-runs/:id) surfaces
+    // the cause of a validation failure automatically.
+    ...(row.failureReason !== null ? { failureReason: row.failureReason } : {}),
     startedAt: row.startedAt,
     ...(row.completedAt !== null ? { completedAt: row.completedAt } : {}),
   };

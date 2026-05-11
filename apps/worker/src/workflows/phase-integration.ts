@@ -258,11 +258,26 @@ export async function PhaseIntegrationWorkflow(
   const mergeRunId: UUID = uuid4();
   let lease: WorktreeLease | undefined;
 
+  // Bug #15 fix: capture `startedAt` at the TOP of the integration loop
+  // (before createIntegrationLease + per-task integrateTask), not right
+  // before the final persistMergeRun. Prior placement set
+  // started_at == completed_at, making integration-duration metrics
+  // meaningless. `completedAt` is stamped at the end (also `new
+  // Date().toISOString()`), so the row now reflects the real wall-clock
+  // window the loop occupied.
+  const startedAt = new Date().toISOString();
+
   try {
     lease = await createIntegrationLease({ phaseId: input.phaseId });
 
     const mergedTaskIds: UUID[] = [];
     let failedTaskId: UUID | undefined;
+    // Bug #14 fix: when validatePostMergeState fails we keep the
+    // captured logs (truncated tail) so the merge_runs row records
+    // which step blew up — install, build, per-task testCommand, or
+    // the post-step git reset. Cleared on a passing run so happy-path
+    // rows stay slim.
+    let failureReason: string | undefined;
 
     for (const taskId of phase.mergeOrder) {
       const task = await loadTask({ taskId });
@@ -288,6 +303,18 @@ export async function PhaseIntegrationWorkflow(
 
       if (!mergeResult || mergeResult.status !== "merged") {
         failedTaskId = taskId;
+        // Capture the merge-side error (conflict paths or other_error
+        // message) so the failure_reason column distinguishes a merge
+        // failure from a validation failure.
+        if (mergeResult?.status === "conflict") {
+          failureReason = truncateFailureReason(
+            `merge conflict for task ${taskId}: ${mergeResult.conflictedPaths.join(", ")}`,
+          );
+        } else if (mergeResult?.status === "other_error") {
+          failureReason = truncateFailureReason(
+            `merge other_error for task ${taskId}: ${mergeResult.message}`,
+          );
+        }
         break;
       }
 
@@ -297,6 +324,13 @@ export async function PhaseIntegrationWorkflow(
       });
       if (!validation.passed) {
         failedTaskId = taskId;
+        // Bug #14 fix: persist the trailing chunk of the captured
+        // logs. The activity caps its own log buffer and returns the
+        // full list; we keep the tail so the final command/step that
+        // exited non-zero is always present.
+        failureReason = truncateFailureReason(
+          `validation failed for task ${taskId}:\n${validation.logs.join("\n")}`,
+        );
         break;
       }
 
@@ -311,7 +345,10 @@ export async function PhaseIntegrationWorkflow(
       worktreePath: lease.worktreePath,
     });
 
-    const startedAt = new Date().toISOString();
+    // Bug #15 fix: stamp completedAt distinct from startedAt so
+    // duration metrics are meaningful. completedAt only — startedAt
+    // was captured at workflow entry above.
+    const completedAt = new Date().toISOString();
     // Persist the merge_run row FIRST so that the subsequent snapshot
     // stamp has a row to UPDATE. Prior ordering (capture-then-persist)
     // lost the linkage because capturePostMergeSnapshotAndStamp's
@@ -324,10 +361,11 @@ export async function PhaseIntegrationWorkflow(
       baseSha: lease.baseSha,
       mergedTaskIds,
       ...(failedTaskId !== undefined ? { failedTaskId } : {}),
+      ...(failureReason !== undefined ? { failureReason } : {}),
       integrationHeadSha,
       integrationLeaseId: lease.id,
       startedAt,
-      completedAt: startedAt,
+      completedAt,
     };
     await persistMergeRun(storedRun);
 
@@ -407,7 +445,29 @@ function storedRunToContract(run: StoredMergeRun): MergeRun {
     ...(run.integrationHeadSha !== undefined
       ? { integrationHeadSha: run.integrationHeadSha }
       : {}),
+    // Bug #14 fix — propagate the captured failure reason into the
+    // contract surface so any caller that consumes the workflow result
+    // (API responses, audit-evidence builders) sees the same field
+    // that's persisted in the merge_runs row.
+    ...(run.failureReason !== undefined
+      ? { failureReason: run.failureReason }
+      : {}),
     startedAt: run.startedAt,
     ...(run.completedAt !== undefined ? { completedAt: run.completedAt } : {}),
   };
+}
+
+/**
+ * Bug #14: cap the persisted `failure_reason` payload so a multi-MB
+ * pnpm log dump doesn't push the merge_runs row through Postgres'
+ * default toast threshold for no operator gain. ~8 KiB keeps the last
+ * failed step + stderr tail in full; older lines (typically the
+ * successful prelude) get dropped from the head.
+ */
+const FAILURE_REASON_MAX_LEN = 8 * 1024;
+function truncateFailureReason(text: string): string {
+  if (text.length <= FAILURE_REASON_MAX_LEN) return text;
+  return `...[truncated ${text.length - FAILURE_REASON_MAX_LEN} chars]...\n${text.slice(
+    text.length - FAILURE_REASON_MAX_LEN,
+  )}`;
 }

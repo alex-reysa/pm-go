@@ -54,6 +54,17 @@ export const mergeRuns = pgTable(
       .default([]),
     failedTaskId: uuid("failed_task_id"),
     integrationHeadSha: text("integration_head_sha"),
+    // Bug #14 (v0.8.8.x): when `validatePostMergeState` returns
+    // `passed: false` the workflow used to discard the captured logs,
+    // so the only signal on a failed merge_run was `failed_task_id`.
+    // Operators had no way to tell whether the failure was `pnpm
+    // install`, `pnpm -r build`, a per-task testCommand, or the
+    // post-step git reset. We now persist the trailing chunk of the
+    // captured validation logs (last failed step + tail) here on
+    // failure, and leave NULL on success. The column is plain TEXT so
+    // any existing API endpoint that selects merge_runs picks it up
+    // automatically — no new GET surface required.
+    failureReason: text("failure_reason"),
     // The RepoSnapshot captured after the integration merge completed.
     // Null while the run is in flight; non-null on success.
     postMergeSnapshotId: uuid("post_merge_snapshot_id").references(

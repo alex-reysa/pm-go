@@ -416,4 +416,194 @@ describe("PhaseIntegrationWorkflow", () => {
     expect(result.mergeRun.failedTaskId).toBe(TASK_A);
     expect(activityFns.markTaskMerged).not.toHaveBeenCalled();
   });
+
+  describe("Bug #14: persist validation logs as merge_run.failure_reason", () => {
+    it("captures validatePostMergeState logs onto the persisted merge_run when validation fails", async () => {
+      const phase = makePhase([TASK_A]);
+      const lease = makeLease();
+      activityFns.loadPhase.mockResolvedValue(phase);
+      activityFns.runPhasePartitionChecks.mockResolvedValue({
+        ok: true,
+        reasons: [],
+      });
+      activityFns.createIntegrationLease.mockResolvedValue(lease);
+      activityFns.loadTask.mockImplementation((input: { taskId: string }) =>
+        Promise.resolve(makeTask(input.taskId)),
+      );
+      activityFns.integrateTask.mockResolvedValue({
+        status: "merged",
+        mergedHeadSha: "b".repeat(40),
+      });
+      activityFns.validatePostMergeState.mockResolvedValue({
+        passed: false,
+        logs: [
+          "$ pnpm install --no-frozen-lockfile\nok",
+          "$ pnpm test\nFAILED\nE: oh no",
+        ],
+      });
+      activityFns.readIntegrationWorktreeHeadSha.mockResolvedValue("a".repeat(40));
+
+      const result = await PhaseIntegrationWorkflow({
+        planId: PLAN_ID,
+        phaseId: PHASE_ID,
+      });
+
+      // Workflow result surface carries the failureReason so any
+      // downstream caller (API responses, audit-evidence builders)
+      // sees the same string we persist into merge_runs.failure_reason.
+      expect(result.mergeRun.failedTaskId).toBe(TASK_A);
+      expect(result.mergeRun.failureReason).toBeDefined();
+      expect(result.mergeRun.failureReason).toContain("validation failed");
+      expect(result.mergeRun.failureReason).toContain("FAILED");
+      expect(result.mergeRun.failureReason).toContain("oh no");
+
+      // persistMergeRun must receive the same failureReason — the DB
+      // row is the operator-facing artifact.
+      const persistArg = activityFns.persistMergeRun.mock.calls[0]![0] as {
+        failureReason?: string;
+      };
+      expect(persistArg.failureReason).toBeDefined();
+      expect(persistArg.failureReason).toContain("FAILED");
+    });
+
+    it("captures merge-conflict cause onto the persisted merge_run when retries exhaust", async () => {
+      const phase = makePhase([TASK_A]);
+      const lease = makeLease();
+      activityFns.loadPhase.mockResolvedValue(phase);
+      activityFns.runPhasePartitionChecks.mockResolvedValue({
+        ok: true,
+        reasons: [],
+      });
+      activityFns.createIntegrationLease.mockResolvedValue(lease);
+      activityFns.loadTask.mockImplementation((input: { taskId: string }) =>
+        Promise.resolve(makeTask(input.taskId)),
+      );
+      activityFns.integrateTask.mockResolvedValue({
+        status: "conflict",
+        conflictedPaths: ["src/a.ts", "src/b.ts"],
+      });
+      activityFns.readIntegrationWorktreeHeadSha.mockResolvedValue("a".repeat(40));
+
+      const result = await PhaseIntegrationWorkflow({
+        planId: PLAN_ID,
+        phaseId: PHASE_ID,
+      });
+
+      expect(result.mergeRun.failedTaskId).toBe(TASK_A);
+      expect(result.mergeRun.failureReason).toContain("merge conflict");
+      expect(result.mergeRun.failureReason).toContain("src/a.ts");
+      expect(result.mergeRun.failureReason).toContain("src/b.ts");
+    });
+
+    it("leaves failureReason undefined on a fully-successful merge run (no row bloat)", async () => {
+      const phase = makePhase();
+      const lease = makeLease();
+      activityFns.loadPhase.mockResolvedValue(phase);
+      activityFns.runPhasePartitionChecks.mockResolvedValue({
+        ok: true,
+        reasons: [],
+      });
+      activityFns.createIntegrationLease.mockResolvedValue(lease);
+      activityFns.loadTask.mockImplementation((input: { taskId: string }) =>
+        Promise.resolve(makeTask(input.taskId)),
+      );
+      activityFns.integrateTask.mockResolvedValue({
+        status: "merged",
+        mergedHeadSha: "b".repeat(40),
+      });
+      activityFns.validatePostMergeState.mockResolvedValue({
+        passed: true,
+        logs: [],
+      });
+      activityFns.readIntegrationWorktreeHeadSha.mockResolvedValue("c".repeat(40));
+      activityFns.capturePostMergeSnapshotAndStamp.mockResolvedValue({
+        snapshotId: "snap-1",
+      });
+
+      const result = await PhaseIntegrationWorkflow({
+        planId: PLAN_ID,
+        phaseId: PHASE_ID,
+      });
+
+      expect(result.mergeRun.failedTaskId).toBeUndefined();
+      expect(result.mergeRun.failureReason).toBeUndefined();
+      const persistArg = activityFns.persistMergeRun.mock.calls[0]![0] as {
+        failureReason?: string;
+      };
+      expect(persistArg.failureReason).toBeUndefined();
+    });
+  });
+
+  describe("Bug #15: merge_run startedAt captured before the integration loop", () => {
+    it("records startedAt distinctly earlier than completedAt so duration metrics are meaningful", async () => {
+      const phase = makePhase();
+      const lease = makeLease();
+      activityFns.loadPhase.mockResolvedValue(phase);
+      activityFns.runPhasePartitionChecks.mockResolvedValue({
+        ok: true,
+        reasons: [],
+      });
+      activityFns.createIntegrationLease.mockResolvedValue(lease);
+      activityFns.loadTask.mockImplementation((input: { taskId: string }) =>
+        Promise.resolve(makeTask(input.taskId)),
+      );
+      activityFns.integrateTask.mockResolvedValue({
+        status: "merged",
+        mergedHeadSha: "b".repeat(40),
+      });
+      activityFns.validatePostMergeState.mockResolvedValue({
+        passed: true,
+        logs: [],
+      });
+      activityFns.readIntegrationWorktreeHeadSha.mockResolvedValue("c".repeat(40));
+      activityFns.capturePostMergeSnapshotAndStamp.mockResolvedValue({
+        snapshotId: "snap-1",
+      });
+
+      // Drive deterministic clock progression: each `new Date()` returns
+      // a strictly-increasing value so we can assert startedAt < completedAt
+      // even though no real time elapses inside the awaited mocks.
+      const realDate = Date;
+      let tick = 0;
+      class MockDate extends realDate {
+        constructor() {
+          super(2024, 0, 1, 0, 0, ++tick);
+        }
+      }
+      (globalThis as { Date: typeof Date }).Date =
+        MockDate as unknown as typeof Date;
+
+      try {
+        const result = await PhaseIntegrationWorkflow({
+          planId: PLAN_ID,
+          phaseId: PHASE_ID,
+        });
+
+        expect(result.mergeRun.startedAt).toBeDefined();
+        expect(result.mergeRun.completedAt).toBeDefined();
+        // Bug #15 fix: startedAt is captured at workflow entry; the
+        // pre-fix behavior stamped startedAt and completedAt from the
+        // same `new Date()` call right before persist, making them
+        // identical.
+        expect(result.mergeRun.startedAt).not.toEqual(result.mergeRun.completedAt);
+        expect(
+          new Date(result.mergeRun.startedAt).getTime(),
+        ).toBeLessThan(
+          new Date(result.mergeRun.completedAt as string).getTime(),
+        );
+
+        // Sanity check: every Date() call between startedAt capture
+        // (before createIntegrationLease) and completedAt capture (after
+        // the loop) advanced the tick, so completedAt must be strictly
+        // later than startedAt by AT LEAST one tick.
+        const persistArg = activityFns.persistMergeRun.mock.calls[0]![0] as {
+          startedAt: string;
+          completedAt: string;
+        };
+        expect(persistArg.startedAt).not.toEqual(persistArg.completedAt);
+      } finally {
+        (globalThis as { Date: typeof Date }).Date = realDate;
+      }
+    });
+  });
 });
