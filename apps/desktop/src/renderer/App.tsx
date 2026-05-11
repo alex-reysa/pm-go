@@ -70,6 +70,8 @@ import {
   type LiveApiError,
   type LiveDataContextValue,
   type LiveResourceState,
+  type LiveRunEndpoint,
+  type LiveRunEndpointErrors,
   type LiveRunResource,
   type LiveRunsResource,
 } from "./layout/index.js";
@@ -142,7 +144,7 @@ export interface AppRoutesProps {
 
 type EndpointResult<T> = { ok: true; data: T } | { ok: false; error: LiveApiError };
 
-interface LiveRunSnapshot
+export interface LiveRunSnapshot
   extends Omit<LiveRunResource, "isLoading" | "isRefreshing" | "refresh"> {}
 
 interface LiveRunsSnapshot
@@ -153,7 +155,7 @@ interface StoredLiveRunsResource extends LiveRunsSnapshot {
   readonly isRefreshing: boolean;
 }
 
-interface StoredLiveRunResource extends LiveRunSnapshot {
+export interface StoredLiveRunResource extends LiveRunSnapshot {
   readonly isLoading: boolean;
   readonly isRefreshing: boolean;
 }
@@ -174,6 +176,7 @@ function disabledLiveRun(planId: string): StoredLiveRunResource {
     isLoading: false,
     isRefreshing: false,
     errors: [],
+    endpointErrors: {},
     lastUpdatedAt: null,
     cockpit: null,
     phases: null,
@@ -270,6 +273,32 @@ function firstError(results: readonly EndpointResult<unknown>[]): LiveApiError |
     ?.error;
 }
 
+function endpointErrorsFrom(
+  entries: readonly [LiveRunEndpoint, EndpointResult<unknown>][],
+): LiveRunEndpointErrors {
+  const endpointErrors: Partial<Record<LiveRunEndpoint, readonly LiveApiError[]>> = {};
+  for (const [endpoint, result] of entries) {
+    if (!result.ok) {
+      endpointErrors[endpoint] = [result.error];
+    }
+  }
+  return endpointErrors;
+}
+
+function hasEndpointError(
+  endpointErrors: LiveRunEndpointErrors,
+  endpoint: LiveRunEndpoint,
+): boolean {
+  return (endpointErrors[endpoint]?.length ?? 0) > 0;
+}
+
+function hasAnyEndpointError(
+  endpointErrors: LiveRunEndpointErrors,
+  endpoints: readonly LiveRunEndpoint[],
+): boolean {
+  return endpoints.some((endpoint) => hasEndpointError(endpointErrors, endpoint));
+}
+
 function stateFromErrorsAndData(
   errors: readonly LiveApiError[],
   hasData: boolean,
@@ -319,6 +348,7 @@ export async function readLiveRunSnapshot(
       planId,
       state: error.kind,
       errors: [error],
+      endpointErrors: { plan: [error] },
       lastUpdatedAt: null,
       cockpit: buildRunCockpit({ error: recoverable }),
       phases: buildPhases({ error: recoverable }),
@@ -348,6 +378,13 @@ export async function readLiveRunSnapshot(
     budgetResult,
     eventsResult,
   ].flatMap((result) => (result.ok ? [] : [result.error]));
+  const endpointErrors = endpointErrorsFrom([
+    ["phases", phasesResult],
+    ["tasks", tasksResult],
+    ["approvals", approvalsResult],
+    ["budget", budgetResult],
+    ["events", eventsResult],
+  ]);
   const primaryError = firstError([
     phasesResult,
     tasksResult,
@@ -362,6 +399,8 @@ export async function readLiveRunSnapshot(
   const approvals = approvalsResult.ok ? approvalsResult.data : undefined;
   const budget = budgetResult.ok ? budgetResult.data : undefined;
   const events = eventsResult.ok ? eventsResult.data : undefined;
+  const eventReplayError =
+    eventsResult.ok ? undefined : recoverableError(eventsResult.error);
 
   const phaseModels = buildPhases({
     planDetail,
@@ -386,7 +425,7 @@ export async function readLiveRunSnapshot(
     planId,
     planDetail,
     ...(events !== undefined ? { events } : {}),
-    ...(primaryRecoverable !== undefined ? { error: primaryRecoverable } : {}),
+    ...(eventReplayError !== undefined ? { error: eventReplayError } : {}),
   });
   const cockpit = buildRunCockpit({
     planDetail,
@@ -413,13 +452,14 @@ export async function readLiveRunSnapshot(
     artifactIds: planDetail.artifactIds,
     planDetail,
     ...(events !== undefined ? { events } : {}),
-    ...(primaryRecoverable !== undefined ? { error: primaryRecoverable } : {}),
+    ...(eventReplayError !== undefined ? { error: eventReplayError } : {}),
   });
 
   return {
     planId,
     state: stateFromErrorsAndData(errors, cockpit.data !== null, false),
     errors,
+    endpointErrors,
     lastUpdatedAt: nowIso(),
     cockpit,
     phases: phaseModels,
@@ -535,14 +575,18 @@ function mergeRunsSnapshot(
 function preserveEnvelopeOnError<T>(
   previous: ReadModelEnvelope<T> | null,
   next: ReadModelEnvelope<T> | null,
+  preservePrevious: boolean,
 ): ReadModelEnvelope<T> | null {
+  if (preservePrevious && previous !== null) {
+    return previous;
+  }
   if (next === null || next.state !== "error") {
     return next;
   }
   return previous ?? next;
 }
 
-function mergeRunSnapshot(
+export function mergeRunSnapshot(
   previous: StoredLiveRunResource | undefined,
   next: LiveRunSnapshot,
 ): StoredLiveRunResource {
@@ -550,7 +594,35 @@ function mergeRunSnapshot(
     return { ...next, isLoading: false, isRefreshing: false };
   }
 
-  const hasFreshCockpit = next.cockpit !== null && next.cockpit.data !== null;
+  const planInputFailed = hasEndpointError(next.endpointErrors, "plan");
+  const cockpitInputFailed = hasAnyEndpointError(next.endpointErrors, [
+    "plan",
+    "phases",
+    "tasks",
+    "approvals",
+    "budget",
+    "events",
+  ]);
+  const phasesInputFailed =
+    planInputFailed || hasAnyEndpointError(next.endpointErrors, ["phases", "tasks"]);
+  const tasksInputFailed =
+    planInputFailed ||
+    hasAnyEndpointError(next.endpointErrors, ["tasks", "phases", "approvals", "budget"]);
+  const approvalsInputFailed =
+    planInputFailed ||
+    hasAnyEndpointError(next.endpointErrors, ["approvals", "tasks", "phases"]);
+  const budgetInputFailed =
+    planInputFailed || hasAnyEndpointError(next.endpointErrors, ["budget", "tasks"]);
+  const eventsInputFailed = planInputFailed || hasEndpointError(next.endpointErrors, "events");
+  const hasPreviousCockpit = previous.cockpit !== null && previous.cockpit.data !== null;
+  const hasFreshCockpit =
+    !cockpitInputFailed && next.cockpit !== null && next.cockpit.data !== null;
+  const cockpit =
+    cockpitInputFailed && hasPreviousCockpit
+      ? previous.cockpit
+      : hasFreshCockpit
+        ? next.cockpit
+        : (previous.cockpit ?? next.cockpit);
   if (next.errors.length === 0) {
     return { ...next, isLoading: false, isRefreshing: false };
   }
@@ -558,18 +630,20 @@ function mergeRunSnapshot(
   return {
     ...next,
     state:
-      hasFreshCockpit || (previous.cockpit !== null && previous.cockpit.data !== null)
-        ? "partial"
-        : next.state,
+      cockpit !== null && cockpit.data !== null ? "partial" : next.state,
     lastUpdatedAt: next.lastUpdatedAt ?? previous.lastUpdatedAt,
-    cockpit: hasFreshCockpit ? next.cockpit : (previous.cockpit ?? next.cockpit),
-    phases: preserveEnvelopeOnError(previous.phases, next.phases),
-    tasks: preserveEnvelopeOnError(previous.tasks, next.tasks),
-    approvals: preserveEnvelopeOnError(previous.approvals, next.approvals),
-    budget: preserveEnvelopeOnError(previous.budget, next.budget),
-    events: preserveEnvelopeOnError(previous.events, next.events),
-    evidence: preserveEnvelopeOnError(previous.evidence, next.evidence),
-    release: preserveEnvelopeOnError(previous.release, next.release),
+    cockpit,
+    phases: preserveEnvelopeOnError(previous.phases, next.phases, phasesInputFailed),
+    tasks: preserveEnvelopeOnError(previous.tasks, next.tasks, tasksInputFailed),
+    approvals: preserveEnvelopeOnError(
+      previous.approvals,
+      next.approvals,
+      approvalsInputFailed,
+    ),
+    budget: preserveEnvelopeOnError(previous.budget, next.budget, budgetInputFailed),
+    events: preserveEnvelopeOnError(previous.events, next.events, eventsInputFailed),
+    evidence: preserveEnvelopeOnError(previous.evidence, next.evidence, eventsInputFailed),
+    release: preserveEnvelopeOnError(previous.release, next.release, eventsInputFailed),
     isLoading: false,
     isRefreshing: false,
   };
@@ -660,6 +734,7 @@ function useLiveDataController(apiBaseUrl?: string): LiveDataContextValue | null
             ...disabledLiveRun(planId),
             state: error.kind,
             errors: [error],
+            endpointErrors: { plan: [error] },
           },
         }));
         return;

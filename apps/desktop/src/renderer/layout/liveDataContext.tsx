@@ -36,6 +36,18 @@ export interface LiveApiError {
   >;
 }
 
+export type LiveRunEndpoint =
+  | "plan"
+  | "phases"
+  | "tasks"
+  | "approvals"
+  | "budget"
+  | "events";
+
+export type LiveRunEndpointErrors = Partial<
+  Record<LiveRunEndpoint, readonly LiveApiError[]>
+>;
+
 export interface LiveRunsResource {
   readonly state: LiveResourceState;
   readonly isLoading: boolean;
@@ -52,6 +64,7 @@ export interface LiveRunResource {
   readonly isLoading: boolean;
   readonly isRefreshing: boolean;
   readonly errors: readonly LiveApiError[];
+  readonly endpointErrors: LiveRunEndpointErrors;
   readonly lastUpdatedAt: string | null;
   readonly cockpit: ReadModelEnvelope<RunCockpitViewModel | null> | null;
   readonly phases: ReadModelEnvelope<PhaseViewModel[]> | null;

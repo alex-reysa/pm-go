@@ -189,7 +189,7 @@ export function RunDetailShell(
             allowedRouteIds={DRAWER_ALLOWED_ROUTE_IDS}
             isLive={liveRun !== null}
             isLoading={liveRun?.isLoading ?? false}
-            errors={liveRun?.errors ?? []}
+            errors={liveRun?.endpointErrors.events ?? []}
             events={liveRun?.events?.data ?? []}
             {...(liveRun !== null ? { onRefresh: liveRun.refresh } : {})}
           />

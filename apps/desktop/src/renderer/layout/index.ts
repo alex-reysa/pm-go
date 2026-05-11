@@ -49,6 +49,8 @@ export {
   type LiveDataContextValue,
   type LiveDataProviderProps,
   type LiveResourceState,
+  type LiveRunEndpoint,
+  type LiveRunEndpointErrors,
   type LiveRunResource,
   type LiveRunsResource,
 } from "./liveDataContext.js";

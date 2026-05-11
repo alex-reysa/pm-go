@@ -213,7 +213,7 @@ function formatLiveErrorKind(kind: string): string {
 
 function LiveRunsList({ live }: { live: LiveRunsResource }): React.JSX.Element {
   const hasRows = live.data.length > 0;
-  const showEmptyMessage = live.state === "empty" || (!hasRows && live.errors.length === 0);
+  const showEmptyMessage = live.state === "empty";
   const primaryError = live.errors[0] ?? null;
 
   return (
