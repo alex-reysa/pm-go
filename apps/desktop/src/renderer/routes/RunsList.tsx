@@ -40,6 +40,8 @@ import {
   type RunsList as RunsListData,
   runsHappyPath,
 } from "../fixtures/index.js";
+import { useLiveRuns, type LiveRunsResource } from "../layout/index.js";
+import type { RunSummaryViewModel } from "../read-models/index.js";
 import { ROUTES, pathForRunOverview } from "../router/index.js";
 
 export interface RunsListProps {
@@ -50,6 +52,7 @@ export interface RunsListProps {
    * dataset hook.
    */
   readonly fixture?: FixtureDataset<RunsListData>;
+  readonly live?: LiveRunsResource;
 }
 
 /**
@@ -126,7 +129,175 @@ function RunRow({ run }: { run: RunSummary }): React.JSX.Element {
   );
 }
 
+function describeLiveAttention(attention: RunSummaryViewModel["attention"]): string {
+  const parts: string[] = [];
+  const pendingApprovals = attention.pendingApprovals.value;
+  const blockedTasks = attention.blockedTasks.value;
+  const failedTasks = attention.failedTasks.value;
+  const blockedPhases = attention.blockedPhases.value;
+  const releaseReady = attention.releaseReady.value;
+
+  if (pendingApprovals !== null && pendingApprovals > 0) {
+    parts.push(
+      `${pendingApprovals} pending approval${pendingApprovals === 1 ? "" : "s"}`,
+    );
+  }
+  if (blockedTasks !== null && blockedTasks > 0) {
+    parts.push(`${blockedTasks} blocked task${blockedTasks === 1 ? "" : "s"}`);
+  }
+  if (failedTasks !== null && failedTasks > 0) {
+    parts.push(`${failedTasks} failed task${failedTasks === 1 ? "" : "s"}`);
+  }
+  if (blockedPhases !== null && blockedPhases > 0) {
+    parts.push(`${blockedPhases} blocked phase${blockedPhases === 1 ? "" : "s"}`);
+  }
+  if (releaseReady === true) {
+    parts.push("release ready");
+  }
+
+  if (parts.length > 0) return parts.join(" · ");
+  return [
+    pendingApprovals,
+    blockedTasks,
+    failedTasks,
+    blockedPhases,
+    releaseReady,
+  ].every((value) => value === null)
+    ? "attention unavailable until run detail loads"
+    : "no attention items";
+}
+
+function LiveRunRow({ run }: { run: RunSummaryViewModel }): React.JSX.Element {
+  return (
+    <li
+      className="runs-list__row"
+      data-testid={`runs-list-row-${run.id}`}
+      data-plan-id={run.id}
+      data-status={run.status}
+    >
+      <Link
+        to={pathForRunOverview(run.id)}
+        className="runs-list__link"
+        data-testid={`runs-list-link-${run.id}`}
+      >
+        <span className="runs-list__title">{run.title}</span>
+        <span
+          className="runs-list__status-badge"
+          data-testid={`runs-list-status-${run.id}`}
+        >
+          {run.status}
+        </span>
+      </Link>
+      <p className="runs-list__summary">{run.summary}</p>
+      <p
+        className="runs-list__attention"
+        data-testid={`runs-list-attention-${run.id}`}
+      >
+        {describeLiveAttention(run.attention)}
+      </p>
+      {run.riskLevels.length > 0 ? (
+        <p
+          className="runs-list__risks"
+          data-testid={`runs-list-risks-${run.id}`}
+        >
+          risk: {run.riskLevels.join(", ")}
+        </p>
+      ) : null}
+    </li>
+  );
+}
+
+function formatLiveErrorKind(kind: string): string {
+  return kind.replace(/_/g, " ");
+}
+
+function LiveRunsList({ live }: { live: LiveRunsResource }): React.JSX.Element {
+  const hasRows = live.data.length > 0;
+  const showEmptyMessage = live.state === "empty";
+  const primaryError = live.errors[0] ?? null;
+
+  return (
+    <section
+      className="runs-list"
+      data-testid="runs-list-route"
+      data-route="runs"
+      data-source="live"
+      data-live-state={live.state}
+      aria-labelledby="runs-list-title"
+    >
+      <header className="runs-list__header">
+        <h1 id="runs-list-title">{ROUTES.runs.title}</h1>
+        <Link
+          to={ROUTES["runs.new"].path}
+          className="runs-list__new-spec"
+          data-testid="runs-list-new-spec-link"
+        >
+          {ROUTES["runs.new"].title}
+        </Link>
+        <button
+          type="button"
+          className="runs-list__refresh"
+          data-testid="runs-list-refresh"
+          onClick={live.refresh}
+        >
+          Refresh
+        </button>
+      </header>
+      {live.isLoading || live.isRefreshing ? (
+        <p
+          className="runs-list__loading"
+          data-testid="runs-list-loading"
+          role="status"
+        >
+          {live.isRefreshing ? "Refreshing live runs." : "Loading live runs."}
+        </p>
+      ) : null}
+      {primaryError !== null ? (
+        <div
+          className="runs-list__error"
+          role="alert"
+          data-testid="runs-list-error"
+          data-error-kind={primaryError.kind}
+        >
+          <p>
+            Unable to load live runs ({formatLiveErrorKind(primaryError.kind)}
+            {primaryError.status > 0 ? `, HTTP ${primaryError.status}` : ""}):{" "}
+            {primaryError.message}
+          </p>
+          <button type="button" onClick={live.refresh}>
+            Retry
+          </button>
+        </div>
+      ) : null}
+      {showEmptyMessage ? (
+        <p className="runs-list__empty" data-testid="runs-list-empty">
+          No runs yet. Start a plan from{" "}
+          <Link to={ROUTES["runs.new"].path} data-testid="runs-list-empty-new-spec-link">
+            New Spec
+          </Link>
+          .
+        </p>
+      ) : null}
+      {hasRows ? (
+        <ul className="runs-list__rows" data-testid="runs-list-rows">
+          {live.data.map((run) => (
+            <LiveRunRow key={run.id} run={run} />
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
 export function RunsList(props: RunsListProps): React.JSX.Element {
+  const liveFromContext = useLiveRuns();
+  if (props.fixture === undefined) {
+    const live = props.live ?? liveFromContext;
+    if (live !== null) {
+      return <LiveRunsList live={live} />;
+    }
+  }
+
   const fixture = props.fixture ?? runsHappyPath;
   const showEmptyMessage =
     fixture.state === "empty" || (fixture.state === "error" && fixture.data.length === 0);

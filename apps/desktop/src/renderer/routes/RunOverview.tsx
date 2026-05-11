@@ -29,6 +29,7 @@
  */
 
 import React from "react";
+import { useParams } from "react-router-dom";
 
 import {
   FIXTURE_BANNER_LABEL,
@@ -40,6 +41,13 @@ import {
   planHappyPath,
   releaseEmptyState,
 } from "../fixtures/index.js";
+import { useLiveRun, type LiveApiError, type LiveRunResource } from "../layout/index.js";
+import type {
+  LimitedValue,
+  PhaseViewModel,
+  ReleaseReadinessViewModel,
+  RunCockpitViewModel,
+} from "../read-models/index.js";
 
 export interface RunOverviewProps {
   /**
@@ -152,7 +160,249 @@ function defaultReleaseDatasetFor(
   };
 }
 
+function liveErrorLabel(error: LiveApiError): string {
+  const kind = error.kind.replace(/_/g, " ");
+  return `${kind}${error.status > 0 ? `, HTTP ${error.status}` : ""}`;
+}
+
+function formatLimitedCount(value: LimitedValue<number>, label: string): string {
+  return value.value === null ? `unknown ${label}` : `${value.value} ${label}`;
+}
+
+function describeLivePhaseCounts(phase: PhaseViewModel): string {
+  const counts = phase.taskCountsByStatus.value;
+  if (counts === null) return "Task counts unavailable.";
+  const entries = Object.entries(counts).filter(
+    ([, count]) => typeof count === "number" && count > 0,
+  );
+  return entries.length === 0
+    ? "No tasks"
+    : entries.map(([status, count]) => `${count} ${status}`).join(" · ");
+}
+
+function LiveRunErrorList({
+  errors,
+  onRetry,
+}: {
+  readonly errors: readonly LiveApiError[];
+  readonly onRetry: () => void;
+}): React.JSX.Element | null {
+  const primaryError = errors[0] ?? null;
+  if (primaryError === null) return null;
+  return (
+    <div className="run-overview__error" role="alert" data-testid="run-overview-live-error">
+      <p>
+        Live run data is incomplete: {liveErrorLabel(primaryError)} —{" "}
+        {primaryError.message}
+      </p>
+      {errors.length > 1 ? (
+        <p className="run-overview__error-count">
+          {`${errors.length - 1} additional read${errors.length === 2 ? "" : "s"} failed.`}
+        </p>
+      ) : null}
+      <button type="button" onClick={onRetry}>
+        Retry
+      </button>
+    </div>
+  );
+}
+
+function liveReleaseFor(
+  cockpit: RunCockpitViewModel | null,
+  live: LiveRunResource,
+): ReleaseReadinessViewModel | null {
+  return live.release?.data ?? cockpit?.release ?? null;
+}
+
+function LiveRunOverview({ live }: { live: LiveRunResource }): React.JSX.Element {
+  const cockpit = live.cockpit?.data ?? null;
+  const phases = live.phases?.data ?? [];
+  const release = liveReleaseFor(cockpit, live);
+  const events = live.events?.data ?? [];
+  const eventCount = events.length;
+  const latestEvent = eventCount > 0 ? events[eventCount - 1]! : null;
+  const title =
+    cockpit?.title ??
+    (live.state === "not_found" ? "Run not found" : `Run ${live.planId}`);
+  const summary =
+    cockpit?.summary ??
+    (live.state === "loading"
+      ? "Loading live plan detail, phases, tasks, approvals, budget, and event replay."
+      : "Live data is unavailable; retry to re-read the selected run.");
+  const phaseCount =
+    cockpit === null
+      ? `${phases.length} phase${phases.length === 1 ? "" : "s"}`
+      : formatLimitedCount(cockpit.currentState.phaseCount, "phases");
+  const taskCount =
+    cockpit === null
+      ? "unknown tasks"
+      : formatLimitedCount(cockpit.currentState.taskCount, "tasks");
+
+  return (
+    <section
+      className="run-overview"
+      data-testid="run-overview"
+      data-source="live"
+      data-live-state={live.state}
+      data-plan-status={cockpit?.status ?? ""}
+      data-dataset-state={live.state}
+      aria-labelledby="run-overview-title"
+    >
+      <header className="run-overview__banner" data-testid="run-overview-banner">
+        <h1 id="run-overview-title" className="run-overview__title">
+          {title}
+        </h1>
+        <p className="run-overview__summary">{summary}</p>
+        <button
+          type="button"
+          className="run-overview__refresh"
+          data-testid="run-overview-refresh"
+          onClick={live.refresh}
+        >
+          Refresh
+        </button>
+        {live.isLoading || live.isRefreshing ? (
+          <p
+            className="run-overview__loading"
+            data-testid="run-overview-loading"
+            role="status"
+          >
+            {live.isRefreshing ? "Refreshing live run data." : "Loading live run data."}
+          </p>
+        ) : null}
+        <LiveRunErrorList errors={live.errors} onRetry={live.refresh} />
+      </header>
+
+      <div
+        className="run-overview__cockpit"
+        data-testid="run-overview-cockpit"
+        aria-label="Run cockpit summary"
+      >
+        <section
+          className="run-overview__section"
+          data-testid="run-overview-current-state"
+          aria-labelledby="run-overview-current-state-title"
+        >
+          <h2 id="run-overview-current-state-title">Current state</h2>
+          <p className="run-overview__state-status">
+            Plan status: <strong>{cockpit?.status ?? live.state}</strong>
+          </p>
+          <p className="run-overview__state-description">
+            {cockpit?.currentState.description ?? "Waiting for plan detail."}
+          </p>
+          <p className="run-overview__state-counts">
+            {`${phaseCount} · ${taskCount}`}
+          </p>
+        </section>
+
+        <section
+          className="run-overview__section"
+          data-testid="run-overview-blocker-next-action"
+          aria-labelledby="run-overview-blocker-title"
+        >
+          <h2 id="run-overview-blocker-title">Blocker / next action</h2>
+          <p className="run-overview__blocker" data-testid="run-overview-blocker">
+            {cockpit?.blocker.message ?? "No blocker context loaded yet."}
+          </p>
+          <p
+            className="run-overview__next-action"
+            data-testid="run-overview-next-action"
+          >
+            {`Next action: ${cockpit?.nextAction ?? "Refresh live run data."}`}
+          </p>
+        </section>
+
+        <section
+          className="run-overview__section"
+          data-testid="run-overview-release-readiness"
+          aria-labelledby="run-overview-release-title"
+        >
+          <h2 id="run-overview-release-title">Release readiness</h2>
+          <p className="run-overview__release-status">
+            Release status: <strong>{release?.state ?? "unknown"}</strong>
+          </p>
+          <p className="run-overview__release-audit">
+            {`Completion audit: ${release?.completionAuditOutcome ?? "not yet stamped"}`}
+          </p>
+          <p className="run-overview__release-artifacts">
+            {`Release artifacts: ${release?.releaseArtifactIds.length ?? 0}`}
+          </p>
+        </section>
+      </div>
+
+      <section
+        className="run-overview__detail"
+        data-testid="run-overview-detail"
+        aria-labelledby="run-overview-detail-title"
+      >
+        <h2 id="run-overview-detail-title">Per-phase detail</h2>
+        {phases.length === 0 ? (
+          <p
+            className="run-overview__detail-empty"
+            data-testid="run-overview-detail-empty"
+          >
+            {live.state === "loading" ? "Loading phases." : "No phases to show."}
+          </p>
+        ) : (
+          <ul className="run-overview__phase-strip">
+            {phases.map((phase) => (
+              <li
+                key={phase.id}
+                className="run-overview__phase"
+                data-testid={`run-overview-phase-${phase.id}`}
+                data-phase-status={phase.status}
+              >
+                <span className="run-overview__phase-index">
+                  {`Phase ${phase.index}`}
+                </span>
+                <span className="run-overview__phase-title">{phase.title}</span>
+                <span className="run-overview__phase-status">{phase.status}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section
+        className="run-overview__audit-context"
+        data-testid="run-overview-audit-context"
+        aria-labelledby="run-overview-audit-context-title"
+      >
+        <h2 id="run-overview-audit-context-title">Audit context</h2>
+        <dl>
+          <dt>event replay</dt>
+          <dd data-testid="run-overview-event-count">{eventCount}</dd>
+          <dt>latest event</dt>
+          <dd>{latestEvent?.label ?? "No replayed events loaded."}</dd>
+          <dt>completion audit id</dt>
+          <dd>{release?.completionAuditId ?? "not stamped"}</dd>
+        </dl>
+        {phases.length > 0 ? (
+          <ul className="run-overview__audit-phases">
+            {phases.map((phase) => (
+              <li key={phase.id} data-testid={`run-overview-audit-phase-${phase.id}`}>
+                {`${phase.title}: ${describeLivePhaseCounts(phase)}`}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </section>
+    </section>
+  );
+}
+
 export function RunOverview(props: RunOverviewProps): React.JSX.Element {
+  const params = useParams<{ planId: string }>();
+  const live = useLiveRun(params.planId);
+  if (
+    props.planDataset === undefined &&
+    props.phasesDataset === undefined &&
+    props.releaseDataset === undefined &&
+    live !== null
+  ) {
+    return <LiveRunOverview live={live} />;
+  }
+
   const planDataset = props.planDataset ?? planHappyPath;
   const phasesDataset = props.phasesDataset ?? phasesHappyPath;
   const plan = planDataset.data;

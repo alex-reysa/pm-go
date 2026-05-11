@@ -25,7 +25,9 @@
 import React from "react";
 
 import { useEventDrawer } from "./drawerContext.js";
+import type { EventItemViewModel } from "../read-models/index.js";
 import type { RouteId } from "../router/types.js";
+import type { LiveApiError } from "./liveDataContext.js";
 
 export interface EventDrawerProps {
   /**
@@ -39,6 +41,11 @@ export interface EventDrawerProps {
    * `DRAWER_ALLOWED_ROUTE_IDS` for the canonical IA allow-list.
    */
   readonly allowedRouteIds: readonly RouteId[];
+  readonly isLive?: boolean;
+  readonly isLoading?: boolean;
+  readonly errors?: readonly LiveApiError[];
+  readonly events?: readonly EventItemViewModel[];
+  readonly onRefresh?: () => void;
 }
 
 /**
@@ -59,8 +66,78 @@ function EventDrawerEmptyState(): React.JSX.Element {
   );
 }
 
+function EventDrawerLiveBody({
+  events,
+  errors,
+  isLoading,
+  onRefresh,
+}: {
+  readonly events: readonly EventItemViewModel[];
+  readonly errors: readonly LiveApiError[];
+  readonly isLoading: boolean;
+  readonly onRefresh?: () => void;
+}): React.JSX.Element {
+  const primaryError = errors[0] ?? null;
+  return (
+    <div className="event-drawer__live" data-testid="event-drawer-live">
+      {isLoading ? (
+        <p className="event-drawer__loading" data-testid="event-drawer-loading" role="status">
+          Loading event replay.
+        </p>
+      ) : null}
+      {primaryError !== null ? (
+        <div
+          className="event-drawer__error"
+          data-testid="event-drawer-error"
+          data-error-kind={primaryError.kind}
+          role="alert"
+        >
+          <p>
+            Event replay failed
+            {primaryError.status > 0 ? ` (HTTP ${primaryError.status})` : ""}:{" "}
+            {primaryError.message}
+          </p>
+          {onRefresh !== undefined ? (
+            <button type="button" onClick={onRefresh}>
+              Retry
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {events.length === 0 ? (
+        <p className="event-drawer__empty" data-testid="event-drawer-empty">
+          No replayed events for this run.
+        </p>
+      ) : (
+        <ol className="event-drawer__events" data-testid="event-drawer-events">
+          {events.map((event) => (
+            <li
+              key={event.id}
+              className="event-drawer__event"
+              data-testid={`event-drawer-event-${event.id}`}
+              data-event-kind={event.kind}
+              data-event-severity={event.severity}
+            >
+              <span className="event-drawer__event-time">{event.createdAt}</span>
+              <span className="event-drawer__event-label">{event.label}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
 export function EventDrawer(props: EventDrawerProps): React.JSX.Element | null {
-  const { currentRouteId, allowedRouteIds } = props;
+  const {
+    currentRouteId,
+    allowedRouteIds,
+    isLive = false,
+    isLoading = false,
+    errors = [],
+    events = [],
+    onRefresh,
+  } = props;
   const { isOpen, setOpen } = useEventDrawer();
 
   // Allow-list gate: if we're on a route that doesn't allow the
@@ -98,7 +175,16 @@ export function EventDrawer(props: EventDrawerProps): React.JSX.Element | null {
           Close
         </button>
       </header>
-      <EventDrawerEmptyState />
+      {isLive ? (
+        <EventDrawerLiveBody
+          events={events}
+          errors={errors}
+          isLoading={isLoading}
+          {...(onRefresh !== undefined ? { onRefresh } : {})}
+        />
+      ) : (
+        <EventDrawerEmptyState />
+      )}
     </aside>
   );
 }

@@ -29,7 +29,14 @@
  * location without depending on `window.location`.
  */
 
-import React, { useEffect, useReducer } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import {
   HashRouter,
   Navigate,
@@ -43,6 +50,11 @@ import type { Config } from "../shared/config.js";
 import { AttachScreen } from "./AttachScreen.js";
 import type { AttachContext, AttachEvent } from "./attachMachine.js";
 import { initialContext, reduce, runProbe } from "./attachMachine.js";
+import {
+  ApiError,
+  createDesktopApiClient,
+  type DesktopApiClient,
+} from "./api/index.js";
 import type { PmGoDesktopBridge } from "./bridge.js";
 import {
   approvalsHappyPath,
@@ -51,7 +63,38 @@ import {
   evidenceHappyPath,
   releaseHappyPath,
 } from "./fixtures/index.js";
-import { AppShell, RunDetailShell } from "./layout/index.js";
+import {
+  AppShell,
+  LiveDataProvider,
+  RunDetailShell,
+  type LiveApiError,
+  type LiveDataContextValue,
+  type LiveResourceState,
+  type LiveRunEndpoint,
+  type LiveRunEndpointErrors,
+  type LiveRunResource,
+  type LiveRunsResource,
+} from "./layout/index.js";
+import {
+  buildApprovals,
+  buildArtifactEvidence,
+  buildBudgetSnapshot,
+  buildEventReplay,
+  buildPhases,
+  buildReleaseReadiness,
+  buildRunCockpit,
+  buildRunSummaries,
+  buildTaskSummaries,
+  type ApprovalRequest,
+  type BudgetReport,
+  type PhaseListItem,
+  type PlanDetailPayload,
+  type ReadModelEnvelope,
+  type PlanListItem,
+  type RecoverableReadError,
+  type TaskListItem,
+  type WorkflowEvent,
+} from "./read-models/index.js";
 import {
   ALL_ROUTES,
   ROUTES,
@@ -96,6 +139,62 @@ export interface AppProps {
 
 export interface AppRoutesProps {
   readonly bridge: PmGoDesktopBridge;
+  readonly apiBaseUrl?: string;
+}
+
+type EndpointResult<T> = { ok: true; data: T } | { ok: false; error: LiveApiError };
+
+export interface LiveRunSnapshot
+  extends Omit<LiveRunResource, "isLoading" | "isRefreshing" | "refresh"> {}
+
+interface LiveRunsSnapshot
+  extends Omit<LiveRunsResource, "isLoading" | "isRefreshing" | "refresh"> {}
+
+interface StoredLiveRunsResource extends LiveRunsSnapshot {
+  readonly isLoading: boolean;
+  readonly isRefreshing: boolean;
+}
+
+export interface StoredLiveRunResource extends LiveRunSnapshot {
+  readonly isLoading: boolean;
+  readonly isRefreshing: boolean;
+}
+
+const DISABLED_LIVE_RUNS: StoredLiveRunsResource = {
+  state: "disabled",
+  isLoading: false,
+  isRefreshing: false,
+  data: [],
+  errors: [],
+  lastUpdatedAt: null,
+};
+
+function disabledLiveRun(planId: string): StoredLiveRunResource {
+  return {
+    planId,
+    state: "disabled",
+    isLoading: false,
+    isRefreshing: false,
+    errors: [],
+    endpointErrors: {},
+    lastUpdatedAt: null,
+    cockpit: null,
+    phases: null,
+    tasks: null,
+    approvals: null,
+    budget: null,
+    events: null,
+    evidence: null,
+    release: null,
+  };
+}
+
+function loadingLiveRun(planId: string): StoredLiveRunResource {
+  return {
+    ...disabledLiveRun(planId),
+    state: "loading",
+    isLoading: true,
+  };
 }
 
 /**
@@ -105,6 +204,272 @@ export interface AppRoutesProps {
  */
 function initContextFromConfig(config: Config): AttachContext {
   return initialContext(config);
+}
+
+function classifyLiveErrorStatus(status: number): LiveApiError["kind"] {
+  if (status === 403) return "forbidden";
+  if (status === 404) return "not_found";
+  if (status === 409) return "conflict";
+  if (status >= 500 || status === 0) return "server_error";
+  return "error";
+}
+
+function errorMessageForKind(kind: LiveApiError["kind"]): string {
+  switch (kind) {
+    case "forbidden":
+      return "The API refused access to this resource.";
+    case "conflict":
+      return "The API reported a conflict with the current workflow state.";
+    case "not_found":
+      return "The requested live resource was not found.";
+    case "server_error":
+      return "The API returned a server error.";
+    case "error":
+      return "The live API request failed.";
+  }
+}
+
+function liveErrorFromUnknown(err: unknown): LiveApiError {
+  if (err instanceof ApiError) {
+    const kind = classifyLiveErrorStatus(err.status);
+    return {
+      status: err.status,
+      message: err.message || errorMessageForKind(kind),
+      ...(err.body !== undefined ? { body: err.body } : {}),
+      ...(err.requestId !== undefined ? { requestId: err.requestId } : {}),
+      kind,
+    };
+  }
+  const message =
+    err instanceof Error && err.message.trim() !== ""
+      ? err.message
+      : "Unable to read live API data.";
+  return {
+    status: 0,
+    message,
+    kind: "server_error",
+  };
+}
+
+function recoverableError(error: LiveApiError): RecoverableReadError {
+  return {
+    status: error.status,
+    message: error.message,
+    ...(error.body !== undefined ? { body: error.body } : {}),
+    ...(error.requestId !== undefined ? { requestId: error.requestId } : {}),
+  };
+}
+
+async function readEndpoint<T>(read: () => Promise<T>): Promise<EndpointResult<T>> {
+  try {
+    return { ok: true, data: await read() };
+  } catch (err) {
+    return { ok: false, error: liveErrorFromUnknown(err) };
+  }
+}
+
+function firstError(results: readonly EndpointResult<unknown>[]): LiveApiError | undefined {
+  return results.find((result): result is { ok: false; error: LiveApiError } => !result.ok)
+    ?.error;
+}
+
+function endpointErrorsFrom(
+  entries: readonly [LiveRunEndpoint, EndpointResult<unknown>][],
+): LiveRunEndpointErrors {
+  const endpointErrors: Partial<Record<LiveRunEndpoint, readonly LiveApiError[]>> = {};
+  for (const [endpoint, result] of entries) {
+    if (!result.ok) {
+      endpointErrors[endpoint] = [result.error];
+    }
+  }
+  return endpointErrors;
+}
+
+function hasEndpointError(
+  endpointErrors: LiveRunEndpointErrors,
+  endpoint: LiveRunEndpoint,
+): boolean {
+  return (endpointErrors[endpoint]?.length ?? 0) > 0;
+}
+
+function hasAnyEndpointError(
+  endpointErrors: LiveRunEndpointErrors,
+  endpoints: readonly LiveRunEndpoint[],
+): boolean {
+  return endpoints.some((endpoint) => hasEndpointError(endpointErrors, endpoint));
+}
+
+function stateFromErrorsAndData(
+  errors: readonly LiveApiError[],
+  hasData: boolean,
+  emptyWhenNoError: boolean,
+): LiveResourceState {
+  if (errors.length > 0) {
+    return hasData ? "partial" : (errors[0]?.kind ?? "error");
+  }
+  return emptyWhenNoError ? "empty" : "ready";
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+export async function readLiveRunsSnapshot(
+  api: DesktopApiClient,
+): Promise<LiveRunsSnapshot> {
+  const result = await readEndpoint<readonly PlanListItem[]>(async () => api.listPlans());
+  if (!result.ok) {
+    return {
+      state: result.error.kind,
+      data: [],
+      errors: [result.error],
+      lastUpdatedAt: null,
+    };
+  }
+
+  const runs = buildRunSummaries({ plans: result.data });
+  return {
+    state: runs.data.length === 0 ? "empty" : "ready",
+    data: runs.data,
+    errors: [],
+    lastUpdatedAt: nowIso(),
+  };
+}
+
+export async function readLiveRunSnapshot(
+  api: DesktopApiClient,
+  planId: string,
+): Promise<LiveRunSnapshot> {
+  const planResult = await readEndpoint<PlanDetailPayload>(() => api.getPlan(planId));
+  if (!planResult.ok) {
+    const error = planResult.error;
+    const recoverable = recoverableError(error);
+    return {
+      planId,
+      state: error.kind,
+      errors: [error],
+      endpointErrors: { plan: [error] },
+      lastUpdatedAt: null,
+      cockpit: buildRunCockpit({ error: recoverable }),
+      phases: buildPhases({ error: recoverable }),
+      tasks: buildTaskSummaries({ error: recoverable }),
+      approvals: buildApprovals({ error: recoverable }),
+      budget: buildBudgetSnapshot({ error: recoverable }),
+      events: buildEventReplay({ error: recoverable }),
+      evidence: buildArtifactEvidence({ planId, error: recoverable }),
+      release: buildReleaseReadiness({ planId, error: recoverable }),
+    };
+  }
+
+  const planDetail = planResult.data;
+  const [phasesResult, tasksResult, approvalsResult, budgetResult, eventsResult] =
+    await Promise.all([
+      readEndpoint<readonly PhaseListItem[]>(async () => api.listPhases(planId)),
+      readEndpoint<readonly TaskListItem[]>(async () => api.listTasks({ planId })),
+      readEndpoint<readonly ApprovalRequest[]>(async () => api.listApprovals(planId)),
+      readEndpoint<BudgetReport>(async () => api.getBudgetReport(planId)),
+      readEndpoint<readonly WorkflowEvent[]>(async () => (await api.replayEvents(planId)).events),
+    ]);
+
+  const errors = [
+    phasesResult,
+    tasksResult,
+    approvalsResult,
+    budgetResult,
+    eventsResult,
+  ].flatMap((result) => (result.ok ? [] : [result.error]));
+  const endpointErrors = endpointErrorsFrom([
+    ["phases", phasesResult],
+    ["tasks", tasksResult],
+    ["approvals", approvalsResult],
+    ["budget", budgetResult],
+    ["events", eventsResult],
+  ]);
+  const primaryError = firstError([
+    phasesResult,
+    tasksResult,
+    approvalsResult,
+    budgetResult,
+    eventsResult,
+  ]);
+  const primaryRecoverable =
+    primaryError === undefined ? undefined : recoverableError(primaryError);
+  const phases = phasesResult.ok ? phasesResult.data : undefined;
+  const tasks = tasksResult.ok ? tasksResult.data : undefined;
+  const approvals = approvalsResult.ok ? approvalsResult.data : undefined;
+  const budget = budgetResult.ok ? budgetResult.data : undefined;
+  const events = eventsResult.ok ? eventsResult.data : undefined;
+  const eventReplayError =
+    eventsResult.ok ? undefined : recoverableError(eventsResult.error);
+
+  const phaseModels = buildPhases({
+    planDetail,
+    ...(phases !== undefined ? { phases } : {}),
+    ...(tasks !== undefined ? { tasks } : {}),
+    ...(!phasesResult.ok ? { error: recoverableError(phasesResult.error) } : {}),
+  });
+  const taskModels = buildTaskSummaries({
+    ...(tasks !== undefined ? { tasks } : {}),
+    ...(phases !== undefined ? { phases } : {}),
+    ...(approvals !== undefined ? { approvals } : {}),
+    ...(budget !== undefined ? { budget } : {}),
+    ...(!tasksResult.ok ? { error: recoverableError(tasksResult.error) } : {}),
+  });
+  const eventModels = buildEventReplay({
+    ...(events !== undefined ? { events } : {}),
+    phases: phaseModels.data,
+    tasks: taskModels.data,
+    ...(!eventsResult.ok ? { error: recoverableError(eventsResult.error) } : {}),
+  });
+  const release = buildReleaseReadiness({
+    planId,
+    planDetail,
+    ...(events !== undefined ? { events } : {}),
+    ...(eventReplayError !== undefined ? { error: eventReplayError } : {}),
+  });
+  const cockpit = buildRunCockpit({
+    planDetail,
+    ...(phases !== undefined ? { phases } : {}),
+    ...(tasks !== undefined ? { tasks } : {}),
+    ...(approvals !== undefined ? { approvals } : {}),
+    ...(budget !== undefined ? { budget } : {}),
+    ...(events !== undefined ? { events } : {}),
+    ...(primaryRecoverable !== undefined ? { error: primaryRecoverable } : {}),
+  });
+  const budgetSnapshot = buildBudgetSnapshot({
+    ...(budget !== undefined ? { budget } : {}),
+    tasks: taskModels.data,
+    ...(!budgetResult.ok ? { error: recoverableError(budgetResult.error) } : {}),
+  });
+  const approvalsModel = buildApprovals({
+    ...(approvals !== undefined ? { approvals } : {}),
+    tasks: taskModels.data,
+    phases: phaseModels.data,
+    ...(!approvalsResult.ok ? { error: recoverableError(approvalsResult.error) } : {}),
+  });
+  const evidence = buildArtifactEvidence({
+    planId,
+    artifactIds: planDetail.artifactIds,
+    planDetail,
+    ...(events !== undefined ? { events } : {}),
+    ...(eventReplayError !== undefined ? { error: eventReplayError } : {}),
+  });
+
+  return {
+    planId,
+    state: stateFromErrorsAndData(errors, cockpit.data !== null, false),
+    errors,
+    endpointErrors,
+    lastUpdatedAt: nowIso(),
+    cockpit,
+    phases: phaseModels,
+    tasks: taskModels,
+    approvals: approvalsModel,
+    budget: budgetSnapshot,
+    events: eventModels,
+    evidence,
+    release,
+  };
 }
 
 /**
@@ -189,6 +554,278 @@ function RouteNotFound(): React.JSX.Element {
   );
 }
 
+function mergeRunsSnapshot(
+  previous: StoredLiveRunsResource,
+  next: LiveRunsSnapshot,
+): StoredLiveRunsResource {
+  const data =
+    next.data.length === 0 && next.errors.length > 0 && previous.data.length > 0
+      ? previous.data
+      : next.data;
+  return {
+    ...next,
+    data,
+    state: next.errors.length > 0 && data.length > 0 ? "partial" : next.state,
+    lastUpdatedAt: next.lastUpdatedAt ?? previous.lastUpdatedAt,
+    isLoading: false,
+    isRefreshing: false,
+  };
+}
+
+function preserveEnvelopeOnError<T>(
+  previous: ReadModelEnvelope<T> | null,
+  next: ReadModelEnvelope<T> | null,
+  preservePrevious: boolean,
+): ReadModelEnvelope<T> | null {
+  if (preservePrevious && previous !== null) {
+    return previous;
+  }
+  if (next === null || next.state !== "error") {
+    return next;
+  }
+  return previous ?? next;
+}
+
+export function mergeRunSnapshot(
+  previous: StoredLiveRunResource | undefined,
+  next: LiveRunSnapshot,
+): StoredLiveRunResource {
+  if (previous === undefined) {
+    return { ...next, isLoading: false, isRefreshing: false };
+  }
+
+  const planInputFailed = hasEndpointError(next.endpointErrors, "plan");
+  const cockpitInputFailed = hasAnyEndpointError(next.endpointErrors, [
+    "plan",
+    "phases",
+    "tasks",
+    "approvals",
+    "budget",
+    "events",
+  ]);
+  const phasesInputFailed =
+    planInputFailed || hasAnyEndpointError(next.endpointErrors, ["phases", "tasks"]);
+  const tasksInputFailed =
+    planInputFailed ||
+    hasAnyEndpointError(next.endpointErrors, ["tasks", "phases", "approvals", "budget"]);
+  const approvalsInputFailed =
+    planInputFailed ||
+    hasAnyEndpointError(next.endpointErrors, ["approvals", "tasks", "phases"]);
+  const budgetInputFailed =
+    planInputFailed || hasAnyEndpointError(next.endpointErrors, ["budget", "tasks"]);
+  const eventsInputFailed = planInputFailed || hasEndpointError(next.endpointErrors, "events");
+  const hasPreviousCockpit = previous.cockpit !== null && previous.cockpit.data !== null;
+  const hasFreshCockpit =
+    !cockpitInputFailed && next.cockpit !== null && next.cockpit.data !== null;
+  const cockpit =
+    cockpitInputFailed && hasPreviousCockpit
+      ? previous.cockpit
+      : hasFreshCockpit
+        ? next.cockpit
+        : (previous.cockpit ?? next.cockpit);
+  if (next.errors.length === 0) {
+    return { ...next, isLoading: false, isRefreshing: false };
+  }
+
+  return {
+    ...next,
+    state:
+      cockpit !== null && cockpit.data !== null ? "partial" : next.state,
+    lastUpdatedAt: next.lastUpdatedAt ?? previous.lastUpdatedAt,
+    cockpit,
+    phases: preserveEnvelopeOnError(previous.phases, next.phases, phasesInputFailed),
+    tasks: preserveEnvelopeOnError(previous.tasks, next.tasks, tasksInputFailed),
+    approvals: preserveEnvelopeOnError(
+      previous.approvals,
+      next.approvals,
+      approvalsInputFailed,
+    ),
+    budget: preserveEnvelopeOnError(previous.budget, next.budget, budgetInputFailed),
+    events: preserveEnvelopeOnError(previous.events, next.events, eventsInputFailed),
+    evidence: preserveEnvelopeOnError(previous.evidence, next.evidence, eventsInputFailed),
+    release: preserveEnvelopeOnError(previous.release, next.release, eventsInputFailed),
+    isLoading: false,
+    isRefreshing: false,
+  };
+}
+
+function liveRunsResource(
+  stored: StoredLiveRunsResource,
+  refresh: () => void,
+): LiveRunsResource {
+  return { ...stored, refresh };
+}
+
+function liveRunResource(
+  stored: StoredLiveRunResource,
+  refresh: () => void,
+): LiveRunResource {
+  return { ...stored, refresh };
+}
+
+function useLiveDataController(apiBaseUrl?: string): LiveDataContextValue | null {
+  const hasLiveApi = apiBaseUrl !== undefined && apiBaseUrl.trim() !== "";
+  const clientResult = useMemo<
+    | { client: DesktopApiClient; error: null }
+    | { client: null; error: LiveApiError | null }
+  >(() => {
+    if (!hasLiveApi) return { client: null, error: null };
+    try {
+      return {
+        client: createDesktopApiClient({ baseUrl: apiBaseUrl ?? "" }),
+        error: null,
+      };
+    } catch (err) {
+      return { client: null, error: liveErrorFromUnknown(err) };
+    }
+  }, [apiBaseUrl, hasLiveApi]);
+
+  const [runs, setRuns] = useState<StoredLiveRunsResource>(DISABLED_LIVE_RUNS);
+  const [runResources, setRunResources] = useState<
+    Readonly<Record<string, StoredLiveRunResource>>
+  >({});
+  const runResourcesRef = useRef(runResources);
+  const runsRequestId = useRef(0);
+  const runRequestIds = useRef<Record<string, number>>({});
+
+  useEffect(() => {
+    runResourcesRef.current = runResources;
+  }, [runResources]);
+
+  const refreshRuns = useCallback(() => {
+    if (!hasLiveApi) return;
+    if (clientResult.client === null) {
+      const error =
+        clientResult.error ??
+        liveErrorFromUnknown(new Error("API base URL is not configured."));
+      setRuns({
+        ...DISABLED_LIVE_RUNS,
+        state: error.kind,
+        errors: [error],
+      });
+      return;
+    }
+
+    const requestId = runsRequestId.current + 1;
+    runsRequestId.current = requestId;
+    setRuns((previous) => ({
+      ...previous,
+      state: "loading",
+      isLoading: previous.data.length === 0,
+      isRefreshing: previous.data.length > 0,
+    }));
+
+    void readLiveRunsSnapshot(clientResult.client).then((snapshot) => {
+      if (runsRequestId.current !== requestId) return;
+      setRuns((previous) => mergeRunsSnapshot(previous, snapshot));
+    });
+  }, [clientResult.client, clientResult.error, hasLiveApi]);
+
+  const refreshRun = useCallback(
+    (planId: string) => {
+      if (!hasLiveApi) return;
+      if (clientResult.client === null) {
+        const error =
+          clientResult.error ??
+          liveErrorFromUnknown(new Error("API base URL is not configured."));
+        setRunResources((previous) => ({
+          ...previous,
+          [planId]: {
+            ...disabledLiveRun(planId),
+            state: error.kind,
+            errors: [error],
+            endpointErrors: { plan: [error] },
+          },
+        }));
+        return;
+      }
+
+      const requestId = (runRequestIds.current[planId] ?? 0) + 1;
+      runRequestIds.current = { ...runRequestIds.current, [planId]: requestId };
+      const existingForRef = runResourcesRef.current[planId] ?? loadingLiveRun(planId);
+      runResourcesRef.current = {
+        ...runResourcesRef.current,
+        [planId]: {
+          ...existingForRef,
+          state: "loading",
+          isLoading: existingForRef.cockpit === null || existingForRef.cockpit.data === null,
+          isRefreshing:
+            existingForRef.cockpit !== null && existingForRef.cockpit.data !== null,
+        },
+      };
+      setRunResources((previous) => {
+        const existing = previous[planId] ?? loadingLiveRun(planId);
+        return {
+          ...previous,
+          [planId]: {
+            ...existing,
+            state: "loading",
+            isLoading: existing.cockpit === null || existing.cockpit.data === null,
+            isRefreshing: existing.cockpit !== null && existing.cockpit.data !== null,
+          },
+        };
+      });
+
+      void readLiveRunSnapshot(clientResult.client, planId).then((snapshot) => {
+        if (runRequestIds.current[planId] !== requestId) return;
+        setRunResources((previous) => ({
+          ...previous,
+          [planId]: mergeRunSnapshot(previous[planId], snapshot),
+        }));
+      });
+    },
+    [clientResult.client, clientResult.error, hasLiveApi],
+  );
+
+  const ensureRun = useCallback(
+    (planId: string) => {
+      if (!hasLiveApi) return;
+      if (runResourcesRef.current[planId] !== undefined) return;
+      refreshRun(planId);
+    },
+    [hasLiveApi, refreshRun],
+  );
+
+  const getRun = useCallback(
+    (planId: string): LiveRunResource => {
+      const stored =
+        runResources[planId] ??
+        (hasLiveApi ? loadingLiveRun(planId) : disabledLiveRun(planId));
+      return liveRunResource(stored, () => refreshRun(planId));
+    },
+    [hasLiveApi, refreshRun, runResources],
+  );
+
+  useEffect(() => {
+    setRunResources({});
+    runResourcesRef.current = {};
+    runRequestIds.current = {};
+    if (!hasLiveApi) {
+      setRuns(DISABLED_LIVE_RUNS);
+      return;
+    }
+    if (clientResult.error !== null) {
+      setRuns({
+        ...DISABLED_LIVE_RUNS,
+        state: clientResult.error.kind,
+        errors: [clientResult.error],
+      });
+      return;
+    }
+    refreshRuns();
+  }, [apiBaseUrl, clientResult.error, hasLiveApi, refreshRuns]);
+
+  return useMemo<LiveDataContextValue | null>(() => {
+    if (!hasLiveApi) return null;
+    return {
+      runs: liveRunsResource(runs, refreshRuns),
+      getRun,
+      ensureRun,
+      refreshRun,
+    };
+  }, [ensureRun, getRun, hasLiveApi, refreshRun, refreshRuns, runs]);
+}
+
 /**
  * The phase-0 route tree. Exported so tests can mount it inside a
  * static or memory router at a chosen location without going through
@@ -211,47 +848,51 @@ function RouteNotFound(): React.JSX.Element {
  *     fixture-driven route body. The legacy RunsPlaceholder export
  *     remains for compatibility, but the shell no longer mounts it.
  */
-export function AppRoutes({ bridge }: AppRoutesProps): React.JSX.Element {
+export function AppRoutes({ bridge, apiBaseUrl }: AppRoutesProps): React.JSX.Element {
+  const liveData = useLiveDataController(apiBaseUrl);
+
   return (
-    <Routes>
-      <Route element={<AppShellLayout />}>
-        <Route
-          index
-          element={<Navigate to={POST_ATTACH_LANDING_PATH} replace />}
-        />
-        <Route path={ROUTES.attach.path} element={<AttachRoute />} />
-        <Route path={ROUTES.runs.path} element={<RunsList />} />
-        <Route path={ROUTES["runs.new"].path} element={<NewSpec />} />
-        <Route
-          path={ROUTES.settings.path}
-          element={<Settings bridge={bridge} />}
-        />
-        <Route path="/runs/:planId" element={<RunDetailShellLayout />}>
-          <Route index element={<RunOverview />} />
-          <Route path="phases" element={<PlanPhases />} />
-          <Route path="tasks" element={<Tasks />} />
-          <Route path="tasks/:taskId" element={<TaskDetail />} />
+    <LiveDataProvider value={liveData}>
+      <Routes>
+        <Route element={<AppShellLayout />}>
           <Route
-            path="approvals"
-            element={<Approvals dataset={approvalsHappyPath} />}
+            index
+            element={<Navigate to={POST_ATTACH_LANDING_PATH} replace />}
           />
-          <Route path="budget" element={<Budget dataset={budgetHappyPath} />} />
+          <Route path={ROUTES.attach.path} element={<AttachRoute />} />
+          <Route path={ROUTES.runs.path} element={<RunsList />} />
+          <Route path={ROUTES["runs.new"].path} element={<NewSpec />} />
           <Route
-            path="evidence"
-            element={<Evidence dataset={evidenceHappyPath} />}
+            path={ROUTES.settings.path}
+            element={<Settings bridge={bridge} />}
           />
-          <Route
-            path="evidence/:artifactId"
-            element={<ArtifactDetail dataset={artifactDetailHappyPath} />}
-          />
-          <Route
-            path="release"
-            element={<Release dataset={releaseHappyPath} />}
-          />
+          <Route path="/runs/:planId" element={<RunDetailShellLayout />}>
+            <Route index element={<RunOverview />} />
+            <Route path="phases" element={<PlanPhases />} />
+            <Route path="tasks" element={<Tasks />} />
+            <Route path="tasks/:taskId" element={<TaskDetail />} />
+            <Route
+              path="approvals"
+              element={<Approvals dataset={approvalsHappyPath} />}
+            />
+            <Route path="budget" element={<Budget dataset={budgetHappyPath} />} />
+            <Route
+              path="evidence"
+              element={<Evidence dataset={evidenceHappyPath} />}
+            />
+            <Route
+              path="evidence/:artifactId"
+              element={<ArtifactDetail dataset={artifactDetailHappyPath} />}
+            />
+            <Route
+              path="release"
+              element={<Release dataset={releaseHappyPath} />}
+            />
+          </Route>
         </Route>
-      </Route>
-      <Route path="*" element={<RouteNotFound />} />
-    </Routes>
+        <Route path="*" element={<RouteNotFound />} />
+      </Routes>
+    </LiveDataProvider>
   );
 }
 
@@ -312,7 +953,9 @@ export function App({
   return (
     <div className="app-root" data-testid="app-root">
       <AttachScreen ctx={ctx} dispatch={dispatch} bridge={bridge} />
-      {showRouter ? postAttachRouter(<AppRoutes bridge={bridge} />) : null}
+      {showRouter ? (
+        postAttachRouter(<AppRoutes bridge={bridge} apiBaseUrl={ctx.baseUrl} />)
+      ) : null}
     </div>
   );
 }
