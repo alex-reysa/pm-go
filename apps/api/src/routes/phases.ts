@@ -14,6 +14,10 @@ import {
   planTasks,
   type PmGoDb,
 } from "@pm-go/db";
+import {
+  fastForwardMainViaUpdateRef,
+  WorktreeManagerError,
+} from "@pm-go/worktree-manager";
 
 import { toIso } from "../lib/timestamps.js";
 
@@ -21,11 +25,22 @@ import { toIso } from "../lib/timestamps.js";
  * Dependencies for the /phases route group. Temporal client + task queue
  * are used to start PhaseIntegrationWorkflow / PhaseAuditWorkflow; the
  * db is used for all GETs and state-machine precondition checks.
+ *
+ * `repoRoot` is consumed by `POST /:phaseId/override-audit` so the
+ * route can fast-forward `refs/heads/main` directly via
+ * `fastForwardMainViaUpdateRef` (a pure git shellout from
+ * `@pm-go/worktree-manager` — no Temporal activity required),
+ * mirroring `PhaseAuditWorkflow`'s happy path. Without this, override
+ * leaves main pointing at the pre-merge sha, so Phase N+1 task
+ * worktrees (cut from working HEAD) cannot see Phase N's work — i.e.
+ * multi-phase plans and override-audit were effectively mutually
+ * exclusive (bug #12).
  */
 export interface PhasesRouteDeps {
   temporal: TemporalClient;
   taskQueue: string;
   db: PmGoDb;
+  repoRoot: string;
 }
 
 // UUID-layout check (not strict v4). See artifacts.ts for rationale.
@@ -458,34 +473,46 @@ export function createPhasesRoute(deps: PhasesRouteDeps) {
       );
     }
 
-    const overriddenAt = new Date().toISOString();
-    await deps.db
-      .update(phaseAuditReports)
-      .set({
-        overrideReason: reason,
-        overriddenBy,
-        overriddenAt,
+    // Bug #12 fix: load the latest merge_run for the OVERRIDDEN phase
+    // BEFORE any mutations. We need `integrationHeadSha` + `baseSha`
+    // to fast-forward `refs/heads/main`, plus `postMergeSnapshotId`
+    // to stamp the next phase's `base_snapshot_id`. Ordering mirrors
+    // `PhaseAuditWorkflow` (apps/worker/src/workflows/phase-audit.ts:
+    // 142-145): advance main FIRST under optimistic locking, THEN
+    // mutate phase state. If FF fails, refuse the override with 409
+    // and leave the phase `blocked`. "Operator accepts this audit
+    // outcome" is not the same as "operator accepts a stale
+    // integration" — surface the conflict, don't paper over it.
+    const [latestMergeRunForOverridden] = await deps.db
+      .select({
+        id: mergeRuns.id,
+        baseSha: mergeRuns.baseSha,
+        integrationHeadSha: mergeRuns.integrationHeadSha,
+        postMergeSnapshotId: mergeRuns.postMergeSnapshotId,
       })
-      .where(eq(phaseAuditReports.id, latestAudit.id));
+      .from(mergeRuns)
+      .where(eq(mergeRuns.phaseId, phaseId))
+      .orderBy(desc(mergeRuns.startedAt))
+      .limit(1);
 
-    await deps.db
-      .update(phases)
-      .set({ status: "completed", completedAt: overriddenAt })
-      .where(eq(phases.id, phaseId));
+    if (
+      !latestMergeRunForOverridden ||
+      !latestMergeRunForOverridden.baseSha ||
+      !latestMergeRunForOverridden.integrationHeadSha
+    ) {
+      return c.json(
+        {
+          error:
+            `phase ${phaseId} has no merge_run with both baseSha + ` +
+            `integrationHeadSha; cannot fast-forward main on override. ` +
+            `Re-drive via /integrate to produce a merge_run first.`,
+        },
+        409,
+      );
+    }
 
-    // Mirror PhaseAuditWorkflow's happy path (apps/worker/src/workflows/phase-audit.ts):
-    // after marking the overridden phase completed, advance the next
-    // pending phase to `executing` so downstream flow continues without
-    // requiring a manual `psql UPDATE phases SET status='executing'`.
-    // Without this, plans stay stuck at phase_N+1.status='pending'
-    // indefinitely after an audit override.
-    //
-    // Snapshot stamping mirrors `stampPhaseBaseSnapshotId` in
-    // apps/worker/src/activities/integration.ts: read the latest
-    // merge_run for the OVERRIDDEN phase and, if its
-    // post_merge_snapshot_id is set, write it onto the next phase's
-    // base_snapshot_id BEFORE flipping status, so any observer that sees
-    // `executing` also sees a valid base_snapshot_id.
+    // Load next phase up-front so the FF + mutation sequence below
+    // does not interleave more selects between FF and the state flips.
     const [nextPhaseRow] = await deps.db
       .select({
         id: phases.id,
@@ -500,20 +527,57 @@ export function createPhasesRoute(deps: PhasesRouteDeps) {
       )
       .limit(1);
 
+    // Fast-forward `refs/heads/main` to the integration head with
+    // optimistic locking against `baseSha`. Mirrors PhaseAuditWorkflow
+    // line 142 exactly. This is a pure git shellout — no Temporal
+    // activity needed. On `non-fast-forward` or `main-advance-conflict`,
+    // refuse the override with 409 and leave phase=blocked so the
+    // operator can re-drive after resolving the ref conflict.
+    try {
+      await fastForwardMainViaUpdateRef({
+        repoRoot: deps.repoRoot,
+        newSha: latestMergeRunForOverridden.integrationHeadSha,
+        expectedCurrentSha: latestMergeRunForOverridden.baseSha,
+      });
+    } catch (err) {
+      if (err instanceof WorktreeManagerError) {
+        return c.json(
+          {
+            error:
+              `override-audit refused: cannot fast-forward main ` +
+              `(${err.code}). ${err.message}. Phase ${phaseId} ` +
+              `remains 'blocked'; re-drive after resolving the ref conflict.`,
+            code: err.code,
+          },
+          409,
+        );
+      }
+      throw err;
+    }
+
+    // FF succeeded — main is now at integrationHeadSha. From here on,
+    // mutate phase state in the same order as PhaseAuditWorkflow:
+    // (1) stamp the audit override fields, (2) advance the next phase
+    // (snapshot stamp BEFORE status flip), (3) mark this phase
+    // completed.
+    const overriddenAt = new Date().toISOString();
+    await deps.db
+      .update(phaseAuditReports)
+      .set({
+        overrideReason: reason,
+        overriddenBy,
+        overriddenAt,
+      })
+      .where(eq(phaseAuditReports.id, latestAudit.id));
+
+    // Mirror PhaseAuditWorkflow's happy path: advance the next pending
+    // phase to `executing`, stamping `base_snapshot_id` from the
+    // OVERRIDDEN phase's latest merge_run's `post_merge_snapshot_id`
+    // BEFORE the status flip so any observer that sees `executing`
+    // also sees a valid base_snapshot_id.
     let advancedNextPhaseId: string | null = null;
     if (nextPhaseRow && nextPhaseRow.status === "pending") {
-      const [latestMergeRunForOverridden] = await deps.db
-        .select({
-          id: mergeRuns.id,
-          postMergeSnapshotId: mergeRuns.postMergeSnapshotId,
-        })
-        .from(mergeRuns)
-        .where(eq(mergeRuns.phaseId, phaseId))
-        .orderBy(desc(mergeRuns.startedAt))
-        .limit(1);
-
       if (
-        latestMergeRunForOverridden &&
         latestMergeRunForOverridden.postMergeSnapshotId !== null &&
         latestMergeRunForOverridden.postMergeSnapshotId !== undefined
       ) {
@@ -532,6 +596,13 @@ export function createPhasesRoute(deps: PhasesRouteDeps) {
 
       advancedNextPhaseId = nextPhaseRow.id;
     }
+
+    // Mark the overridden phase completed last, mirroring the workflow
+    // (apps/worker/src/workflows/phase-audit.ts:171-174).
+    await deps.db
+      .update(phases)
+      .set({ status: "completed", completedAt: overriddenAt })
+      .where(eq(phases.id, phaseId));
 
     return c.json(
       {

@@ -50,6 +50,9 @@ importers:
       '@pm-go/repo-intelligence':
         specifier: workspace:*
         version: link:../../packages/repo-intelligence
+      '@pm-go/worktree-manager':
+        specifier: workspace:*
+        version: link:../../packages/worktree-manager
       '@temporalio/client':
         specifier: ^1.11.0
         version: 1.16.0

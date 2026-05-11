@@ -135,6 +135,7 @@ export function createApp(deps: AppDeps) {
       temporal: deps.temporal,
       taskQueue: deps.taskQueue,
       db: deps.db,
+      repoRoot: deps.repoRoot,
     }),
   );
   app.route("/merge-runs", createMergeRunsRoute({ db: deps.db }));

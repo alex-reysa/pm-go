@@ -1,5 +1,35 @@
 import { describe, expect, it, vi } from "vitest";
 
+// Bug #12 fix: the override-audit handler now calls
+// `fastForwardMainViaUpdateRef` from `@pm-go/worktree-manager` to advance
+// `refs/heads/main` before any DB mutations, mirroring
+// `PhaseAuditWorkflow:142`. Mock the entire module surface so unit tests
+// don't shell out to a real git repo. Individual tests below override
+// the mock via `fastForwardSpy.mockResolvedValueOnce(...)` /
+// `mockRejectedValueOnce(...)` to assert invocation args or simulate FF
+// failures.
+//
+// `vi.mock(...)` is hoisted to the top of the file, so the factory
+// can't reference module-scope `const` bindings declared below. Use
+// `vi.hoisted(...)` so the spy + error class are created on the same
+// hoisted timeline as the mock factory.
+const { fastForwardSpy, MockWorktreeManagerError } = vi.hoisted(() => {
+  const spy = vi.fn().mockResolvedValue({ headSha: "deadbeef" });
+  class WorktreeManagerErrorMock extends Error {
+    readonly code: string;
+    constructor(code: string, message: string) {
+      super(message);
+      this.name = "WorktreeManagerError";
+      this.code = code;
+    }
+  }
+  return { fastForwardSpy: spy, MockWorktreeManagerError: WorktreeManagerErrorMock };
+});
+vi.mock("@pm-go/worktree-manager", () => ({
+  fastForwardMainViaUpdateRef: fastForwardSpy,
+  WorktreeManagerError: MockWorktreeManagerError,
+}));
+
 import { createApp } from "../src/app.js";
 
 function makeMockTemporal() {
@@ -382,13 +412,29 @@ describe("POST /phases/:phaseId/override-audit (v0.8.2 Task 2.2)", () => {
     return db;
   }
 
+  // Helper merge_run row used by override-audit happy-path tests. Bug
+  // #12 fix: the handler now ALWAYS selects the merge_run (right after
+  // the audit lookup) so it can pass `integrationHeadSha`+`baseSha` to
+  // `fastForwardMainViaUpdateRef`. Refusing to FF main has the same
+  // semantics as refusing the override, so the merge_run row must be
+  // present in every happy-path fixture.
+  const HAPPY_MERGE_RUN = {
+    id: MERGE_RUN_ID,
+    baseSha: "a".repeat(40),
+    integrationHeadSha: "b".repeat(40),
+    postMergeSnapshotId: null,
+  };
+
   it("flips a 'blocked' phase to 'completed' when latest audit outcome is 'blocked'", async () => {
+    fastForwardSpy.mockClear();
     const { client } = makeMockTemporal();
     const updateCalls: Array<{ values: unknown }> = [];
     const db = makeOverrideAuditMockDb({
+      // Selects (post-fix order): phase, audit, merge_run, next phase.
       selectsInOrder: [
         [{ id: PHASE_ID, planId: PLAN_ID, index: 0, status: "blocked" }],
         [{ id: "audit-1", outcome: "blocked" }],
+        [HAPPY_MERGE_RUN],
         [], // no next phase — this is the last phase
       ],
       updateCalls,
@@ -413,16 +459,21 @@ describe("POST /phases/:phaseId/override-audit (v0.8.2 Task 2.2)", () => {
     expect(body.reason).toContain("operator-accepted");
     expect(body.overriddenBy).toBe("alex");
     expect(body.auditReportId).toBe("audit-1");
+    // Two mutations on the last-phase happy path: audit-report stamp +
+    // overridden phase -> completed.
     expect(updateCalls.length).toBe(2);
+    expect(fastForwardSpy).toHaveBeenCalledTimes(1);
   });
 
   it("flips a 'blocked' phase to 'completed' when latest audit outcome is 'changes_requested'", async () => {
+    fastForwardSpy.mockClear();
     const { client } = makeMockTemporal();
     const updateCalls: Array<{ values: unknown }> = [];
     const db = makeOverrideAuditMockDb({
       selectsInOrder: [
         [{ id: PHASE_ID, planId: PLAN_ID, index: 0, status: "blocked" }],
         [{ id: "audit-1", outcome: "changes_requested" }],
+        [HAPPY_MERGE_RUN],
         [], // no next phase
       ],
       updateCalls,
@@ -435,6 +486,7 @@ describe("POST /phases/:phaseId/override-audit (v0.8.2 Task 2.2)", () => {
     });
     expect(res.status).toBe(200);
     expect(updateCalls.length).toBe(2);
+    expect(fastForwardSpy).toHaveBeenCalledTimes(1);
   });
 
   it("refuses (409) when no audit report exists (v0.8.2.1 P1.6)", async () => {
@@ -486,22 +538,34 @@ describe("POST /phases/:phaseId/override-audit (v0.8.2 Task 2.2)", () => {
   // `completed`, the next phase (by index+1) must be advanced from
   // `pending` to `executing`, with `base_snapshot_id` stamped from the
   // OVERRIDDEN phase's latest merge_run's `post_merge_snapshot_id`.
+  //
+  // Bug #12 fix: post-fix update order is (1) audit-report override
+  // stamp, (2) next phase baseSnapshotId stamp, (3) next phase ->
+  // executing, (4) overridden phase -> completed. The overridden-phase
+  // completion moves LAST so the workflow ordering of "advance main +
+  // next phase before retiring the current one" is preserved.
   it("advances next pending phase to 'executing' and stamps base_snapshot_id from latest merge_run", async () => {
+    fastForwardSpy.mockClear();
     const { client } = makeMockTemporal();
     const updateCalls: Array<{ values: unknown }> = [];
     const NEXT_PHASE_ID = "b2c3d4e5-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
     const POST_MERGE_SNAPSHOT_ID = "c3d4e5f6-7a8b-4c9d-9e1f-2a3b4c5d6e7f";
+    const BASE_SHA = "a".repeat(40);
+    const HEAD_SHA = "b".repeat(40);
     const db = makeOverrideAuditMockDb({
+      // Selects (post-fix order): phase, audit, merge_run, next phase.
       selectsInOrder: [
         [{ id: PHASE_ID, planId: PLAN_ID, index: 0, status: "blocked" }],
         [{ id: "audit-1", outcome: "blocked" }],
-        [{ id: NEXT_PHASE_ID, status: "pending" }],
         [
           {
             id: MERGE_RUN_ID,
+            baseSha: BASE_SHA,
+            integrationHeadSha: HEAD_SHA,
             postMergeSnapshotId: POST_MERGE_SNAPSHOT_ID,
           },
         ],
+        [{ id: NEXT_PHASE_ID, status: "pending" }],
       ],
       updateCalls,
     });
@@ -522,40 +586,52 @@ describe("POST /phases/:phaseId/override-audit (v0.8.2 Task 2.2)", () => {
     expect(body.nextPhaseId).toBe(NEXT_PHASE_ID);
     expect(body.nextPhaseStatus).toBe("executing");
 
-    // 4 updates: phase_audit_reports + overridden phase status + next
-    // phase baseSnapshotId + next phase status.
+    // FF main was called once with the merge_run's head + base shas
+    // (mirrors PhaseAuditWorkflow:142).
+    expect(fastForwardSpy).toHaveBeenCalledTimes(1);
+    expect(fastForwardSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        newSha: HEAD_SHA,
+        expectedCurrentSha: BASE_SHA,
+      }),
+    );
+
+    // 4 updates: phase_audit_reports + next phase baseSnapshotId + next
+    // phase status + overridden phase status.
     expect(updateCalls.length).toBe(4);
 
-    // Order: audit override stamp, overridden phase -> completed,
-    // next phase baseSnapshotId stamp, next phase -> executing.
-    const overriddenPhaseUpdate = updateCalls[1]!.values as {
-      status: string;
-      completedAt: string;
-    };
-    expect(overriddenPhaseUpdate.status).toBe("completed");
-
-    const nextPhaseSnapshotUpdate = updateCalls[2]!.values as {
+    // Post-fix order: audit override stamp, next phase baseSnapshotId
+    // stamp, next phase -> executing, overridden phase -> completed.
+    const nextPhaseSnapshotUpdate = updateCalls[1]!.values as {
       baseSnapshotId: string;
     };
     expect(nextPhaseSnapshotUpdate.baseSnapshotId).toBe(POST_MERGE_SNAPSHOT_ID);
 
-    const nextPhaseStatusUpdate = updateCalls[3]!.values as {
+    const nextPhaseStatusUpdate = updateCalls[2]!.values as {
       status: string;
       startedAt: string;
     };
     expect(nextPhaseStatusUpdate.status).toBe("executing");
     expect(typeof nextPhaseStatusUpdate.startedAt).toBe("string");
+
+    const overriddenPhaseUpdate = updateCalls[3]!.values as {
+      status: string;
+      completedAt: string;
+    };
+    expect(overriddenPhaseUpdate.status).toBe("completed");
   });
 
   // Last-phase case: override returns without nextPhaseId fields and
   // does NOT mutate any other phase row.
   it("does not advance any next phase when overriding the last phase", async () => {
+    fastForwardSpy.mockClear();
     const { client } = makeMockTemporal();
     const updateCalls: Array<{ values: unknown }> = [];
     const db = makeOverrideAuditMockDb({
       selectsInOrder: [
         [{ id: PHASE_ID, planId: PLAN_ID, index: 0, status: "blocked" }],
         [{ id: "audit-1", outcome: "blocked" }],
+        [HAPPY_MERGE_RUN],
         [], // no row at (planId, index=1) — single-phase plan
       ],
       updateCalls,
@@ -576,7 +652,129 @@ describe("POST /phases/:phaseId/override-audit (v0.8.2 Task 2.2)", () => {
     expect(body.nextPhaseId).toBeUndefined();
     expect(body.nextPhaseStatus).toBeUndefined();
     // Only audit-report stamp + overridden phase status flip; no
-    // updates on any other phase row.
+    // updates on any other phase row. FF main still happens — last
+    // phase still needs to land on main.
     expect(updateCalls.length).toBe(2);
+    expect(fastForwardSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // Bug #12 acceptance test (a): happy-path fast-forwards `main` to the
+  // merge_run's `integration_head_sha` via `fastForwardMainViaUpdateRef`,
+  // optimistically locked against `base_sha`. Without this, the override
+  // path advances next-phase status without moving main, so the next
+  // phase's task worktrees (cut from working HEAD) cannot see Phase N's
+  // work.
+  it("calls fastForwardMainViaUpdateRef with merge_run's integrationHeadSha + baseSha on happy path (bug #12)", async () => {
+    fastForwardSpy.mockClear();
+    const { client } = makeMockTemporal();
+    const updateCalls: Array<{ values: unknown }> = [];
+    const BASE_SHA = "1".repeat(40);
+    const HEAD_SHA = "2".repeat(40);
+    const db = makeOverrideAuditMockDb({
+      selectsInOrder: [
+        [{ id: PHASE_ID, planId: PLAN_ID, index: 0, status: "blocked" }],
+        [{ id: "audit-1", outcome: "blocked" }],
+        [
+          {
+            id: MERGE_RUN_ID,
+            baseSha: BASE_SHA,
+            integrationHeadSha: HEAD_SHA,
+            postMergeSnapshotId: null,
+          },
+        ],
+        [], // last phase
+      ],
+      updateCalls,
+    });
+    const app = appWith(db, client);
+    const res = await app.request(`/phases/${PHASE_ID}/override-audit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "operator accepts blocked audit" }),
+    });
+    expect(res.status).toBe(200);
+    expect(fastForwardSpy).toHaveBeenCalledTimes(1);
+    const [ffArgs] = fastForwardSpy.mock.calls[0]!;
+    expect(ffArgs.newSha).toBe(HEAD_SHA);
+    expect(ffArgs.expectedCurrentSha).toBe(BASE_SHA);
+    expect(typeof ffArgs.repoRoot).toBe("string");
+  });
+
+  // Bug #12 acceptance test (b): when `fastForwardMainViaUpdateRef`
+  // throws a `WorktreeManagerError` (typically `non-fast-forward` or
+  // `main-advance-conflict`), the route must refuse the override with
+  // 409, surface the error code, and leave the phase `blocked` without
+  // mutating any DB rows. Mirrors `PhaseAuditWorkflow`'s "fail the
+  // whole audit if FF errors" semantics.
+  it("returns 409 and skips all mutations when FF main fails (bug #12)", async () => {
+    fastForwardSpy.mockClear();
+    fastForwardSpy.mockRejectedValueOnce(
+      new MockWorktreeManagerError(
+        "main-advance-conflict",
+        "main expected to be at aaa... but is at bbb...",
+      ),
+    );
+    const { client } = makeMockTemporal();
+    const updateCalls: Array<{ values: unknown }> = [];
+    const BASE_SHA = "a".repeat(40);
+    const HEAD_SHA = "b".repeat(40);
+    const db = makeOverrideAuditMockDb({
+      selectsInOrder: [
+        [{ id: PHASE_ID, planId: PLAN_ID, index: 0, status: "blocked" }],
+        [{ id: "audit-1", outcome: "blocked" }],
+        [
+          {
+            id: MERGE_RUN_ID,
+            baseSha: BASE_SHA,
+            integrationHeadSha: HEAD_SHA,
+            postMergeSnapshotId: null,
+          },
+        ],
+        [], // last phase
+      ],
+      updateCalls,
+    });
+    const app = appWith(db, client);
+    const res = await app.request(`/phases/${PHASE_ID}/override-audit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "operator accepts blocked audit" }),
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; code: string };
+    expect(body.code).toBe("main-advance-conflict");
+    expect(body.error).toContain("override-audit refused");
+    expect(body.error).toContain("main-advance-conflict");
+    // No DB mutations: audit row not stamped, phase stays `blocked`.
+    expect(updateCalls.length).toBe(0);
+    expect(fastForwardSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // Bug #12 follow-up: refuse override when no merge_run exists or
+  // `integrationHeadSha`/`baseSha` are null. Without these, we cannot
+  // FF main, and silently skipping FF would re-introduce the bug.
+  it("returns 409 when no merge_run with integrationHeadSha+baseSha exists (bug #12)", async () => {
+    fastForwardSpy.mockClear();
+    const { client } = makeMockTemporal();
+    const updateCalls: Array<{ values: unknown }> = [];
+    const db = makeOverrideAuditMockDb({
+      selectsInOrder: [
+        [{ id: PHASE_ID, planId: PLAN_ID, index: 0, status: "blocked" }],
+        [{ id: "audit-1", outcome: "blocked" }],
+        [], // no merge_run at all
+      ],
+      updateCalls,
+    });
+    const app = appWith(db, client);
+    const res = await app.request(`/phases/${PHASE_ID}/override-audit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "operator accepts blocked audit" }),
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("no merge_run");
+    expect(updateCalls.length).toBe(0);
+    expect(fastForwardSpy).not.toHaveBeenCalled();
   });
 });
