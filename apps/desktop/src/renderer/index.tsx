@@ -21,7 +21,7 @@
  *     want to write code that relies on a future CSP relaxation.
  *
  * Everything else (state machine, identity rendering, post-attach
- * placeholder route) lives in the sibling files under this
+ * phase-0 router) lives in the sibling files under this
  * directory.
  */
 
@@ -36,7 +36,12 @@ export { initialContext, reduce, runProbe } from "./attachMachine.js";
 export type { PmGoDesktopBridge, ProbeResult } from "./bridge.js";
 export { AttachScreen } from "./AttachScreen.js";
 export type { AttachScreenProps } from "./AttachScreen.js";
-export { App } from "./App.js";
+export {
+  App,
+  AppRoutes,
+  POST_ATTACH_LANDING_PATH,
+  shouldMountPostAttachRouter,
+} from "./App.js";
 export type { AppProps } from "./App.js";
 export { RunsPlaceholder } from "./RunsPlaceholder.js";
 

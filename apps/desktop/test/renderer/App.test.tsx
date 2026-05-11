@@ -1,46 +1,49 @@
 /**
- * Top-level component coverage for the post-attach route gating
- * (acceptance criterion 0003).
+ * Top-level component coverage for the post-attach router gate.
  *
  * We exercise `App` end-to-end through its bridge prop: the test
  * hands `App` a mocked `PmGoDesktopBridge` that drives the auto-
- * probe down a specific path, then asserts whether the
- * `RunsPlaceholder` mounts. Critically, the `foreign_service`
- * variant must NOT mount the placeholder even though the HTTP
+ * probe down a specific path, then asserts whether the phase-0
+ * router is allowed to mount. Critically, the `foreign_service`
+ * variant must NOT mount the route tree even though the HTTP
  * response was 2xx — that's the load-bearing claim of the gating
  * contract.
  *
- * Like `AttachScreen.test.tsx`, we use `renderToString` (with
- * `act` so the auto-probe effect drains in-test) to keep the test
- * harness DOM-free. `renderToString` runs effects via React's
- * server renderer just enough for the `useEffect` to flush via a
- * subsequent re-render pass.
+ * Like `AttachScreen.test.tsx`, we use `renderToStaticMarkup` to
+ * keep the test harness DOM-free. Server rendering does not run
+ * effects, so post-probe assertions drive the reducer directly.
  *
  * Note on the rendering approach: the actual first render emits the
- * initial state. To capture the post-probe state, we serialize the
- * App via a tiny harness component that mirrors `useReducer` after
- * the probe resolves. This is necessary because
+ * initial state. To capture the post-probe state, we drive the same
+ * reducer manually, then serialize the same AttachScreen + router
+ * gate that App uses. This is necessary because
  * `renderToStaticMarkup` doesn't flush async effects on its own.
  */
 
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { StaticRouter } from "react-router-dom/server.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Config } from "../../src/shared/config.js";
 import type { HealthEnvelope } from "../../src/shared/health.js";
-import { App } from "../../src/renderer/App.js";
+import {
+  App,
+  AppRoutes,
+  POST_ATTACH_LANDING_PATH,
+  shouldMountPostAttachRouter,
+} from "../../src/renderer/App.js";
 import { AttachScreen } from "../../src/renderer/AttachScreen.js";
 import type {
   AttachContext,
   AttachEvent,
 } from "../../src/renderer/attachMachine.js";
 import { initialContext, reduce, runProbe } from "../../src/renderer/attachMachine.js";
-import { RunsPlaceholder } from "../../src/renderer/RunsPlaceholder.js";
 import type {
   PmGoDesktopBridge,
   ProbeResult,
 } from "../../src/renderer/bridge.js";
+import { ROUTES } from "../../src/renderer/router/index.js";
 
 const ENVELOPE: HealthEnvelope = {
   status: "ok",
@@ -82,81 +85,106 @@ async function drivePostProbeContext(
 }
 
 function renderPostProbe(ctx: AttachContext, bridge: PmGoDesktopBridge): string {
-  // `App` chooses to render `<RunsPlaceholder />` iff
-  // `ctx.state === "connected" && ctx.envelope !== null`. We
-  // replicate that here so the test exercises *the gating predicate
-  // as App sees it* rather than a wholly parallel snapshot — if the
-  // gate changes in App, this helper has to change too, which is
-  // exactly the coupling the test should have.
+  // `App` chooses to render `<AppRoutes />` iff
+  // `shouldMountPostAttachRouter(ctx)` returns true. We replicate
+  // that render shape here because the server renderer cannot flush
+  // App's async probe effect, but the predicate and route tree are
+  // imported from App itself.
   const dispatch = vi.fn();
-  const showRunsRoute = ctx.state === "connected" && ctx.envelope !== null;
+  const showRouter = shouldMountPostAttachRouter(ctx);
   return renderToStaticMarkup(
     <div className="app-root" data-testid="app-root">
       <AttachScreen ctx={ctx} dispatch={dispatch} bridge={bridge} />
-      {showRunsRoute ? <RunsPlaceholder /> : null}
+      {showRouter ? (
+        <StaticRouter location={POST_ATTACH_LANDING_PATH}>
+          <AppRoutes bridge={bridge} />
+        </StaticRouter>
+      ) : null}
     </div>,
   );
 }
 
-describe("App — post-attach placeholder route gating", () => {
-  it("renders RunsPlaceholder when state is connected", async () => {
+describe("App — post-attach phase-0 router gating", () => {
+  it("renders the phase-0 router at the /runs landing route when state is connected", async () => {
     const bridge = makeBridge({ kind: "connected", envelope: ENVELOPE });
     const ctx = await drivePostProbeContext({ apiBaseUrl: BASE_URL }, bridge);
     expect(ctx.state).toBe("connected");
+    expect(shouldMountPostAttachRouter(ctx)).toBe(true);
+    expect(POST_ATTACH_LANDING_PATH).toBe(ROUTES.runs.path);
     const html = renderPostProbe(ctx, bridge);
-    expect(html).toMatch(/data-testid="runs-placeholder"/);
+    expect(html).toMatch(/data-testid="app-shell"/);
+    expect(html).toMatch(/data-current-route="runs"/);
+    expect(html).toMatch(/data-testid="runs-list-route"/);
     expect(html).toContain("Runs");
+    expect(html).not.toMatch(/Dashboard/i);
   });
 
-  it("does NOT render RunsPlaceholder for foreign_service even though HTTP was 2xx", async () => {
-    // Status 200 ⇒ `foreign_service`. The placeholder must NOT
+  it("does NOT render the route tree for foreign_service even though HTTP was 2xx", async () => {
+    // Status 200 => `foreign_service`. The route tree must NOT
     // appear; the operator should see the foreign-service remediation
     // instead. This is the most important regression guard in the
     // gating contract.
     const bridge = makeBridge({ kind: "foreign_service", status: 200 });
     const ctx = await drivePostProbeContext({ apiBaseUrl: BASE_URL }, bridge);
     expect(ctx.state).toBe("foreign_service");
+    expect(shouldMountPostAttachRouter(ctx)).toBe(false);
     const html = renderPostProbe(ctx, bridge);
-    expect(html).not.toMatch(/data-testid="runs-placeholder"/);
+    expect(html).not.toMatch(/data-testid="runs-list-route"/);
+    expect(html).not.toMatch(/data-testid="app-shell"/);
   });
 
-  it("does NOT render RunsPlaceholder for api_unreachable", async () => {
+  it("does NOT render the route tree for api_unreachable", async () => {
     const bridge = makeBridge({ kind: "api_unreachable" });
     const ctx = await drivePostProbeContext({ apiBaseUrl: BASE_URL }, bridge);
     expect(ctx.state).toBe("api_unreachable");
+    expect(shouldMountPostAttachRouter(ctx)).toBe(false);
     const html = renderPostProbe(ctx, bridge);
-    expect(html).not.toMatch(/data-testid="runs-placeholder"/);
+    expect(html).not.toMatch(/data-testid="runs-list-route"/);
+    expect(html).not.toMatch(/data-testid="app-shell"/);
   });
 
-  it("does NOT render RunsPlaceholder for api_error", async () => {
+  it("does NOT render the route tree for api_error", async () => {
     const bridge = makeBridge({ kind: "api_error", status: 500 });
     const ctx = await drivePostProbeContext({ apiBaseUrl: BASE_URL }, bridge);
     expect(ctx.state).toBe("api_error");
+    expect(shouldMountPostAttachRouter(ctx)).toBe(false);
     const html = renderPostProbe(ctx, bridge);
-    expect(html).not.toMatch(/data-testid="runs-placeholder"/);
+    expect(html).not.toMatch(/data-testid="runs-list-route"/);
+    expect(html).not.toMatch(/data-testid="app-shell"/);
   });
 
-  it("does NOT render RunsPlaceholder for not_configured (empty apiBaseUrl)", async () => {
-    // First-launch path: no config, no probe issued, RunsPlaceholder
+  it("does NOT render the route tree for not_configured (empty apiBaseUrl)", async () => {
+    // First-launch path: no config, no probe issued, route tree
     // stays hidden. Bridge is irrelevant — the auto-probe is skipped.
     const bridge = makeBridge({ kind: "connected", envelope: ENVELOPE });
     const ctx = await drivePostProbeContext({ apiBaseUrl: "" }, bridge);
     expect(ctx.state).toBe("not_configured");
+    expect(shouldMountPostAttachRouter(ctx)).toBe(false);
     const html = renderPostProbe(ctx, bridge);
-    expect(html).not.toMatch(/data-testid="runs-placeholder"/);
+    expect(html).not.toMatch(/data-testid="runs-list-route"/);
+    expect(html).not.toMatch(/data-testid="app-shell"/);
     // The probe was never dispatched against the bridge.
     expect(bridge.probeHealth).not.toHaveBeenCalled();
   });
 
-  it("does NOT render RunsPlaceholder while still probing", async () => {
+  it("does NOT render the route tree while still probing", async () => {
     // Snapshot the App's initial render — `useReducer`'s init makes
     // the state `probing`, and the auto-probe hasn't resolved yet.
     const bridge = makeBridge({ kind: "connected", envelope: ENVELOPE });
+    const postAttachRouter = vi.fn((routes: React.ReactNode) => (
+      <StaticRouter location={POST_ATTACH_LANDING_PATH}>{routes}</StaticRouter>
+    ));
     const html = renderToStaticMarkup(
-      <App bridge={bridge} initialConfig={{ apiBaseUrl: BASE_URL }} />,
+      <App
+        bridge={bridge}
+        initialConfig={{ apiBaseUrl: BASE_URL }}
+        postAttachRouter={postAttachRouter}
+      />,
     );
     expect(html).toMatch(/data-attach-state="probing"/);
-    expect(html).not.toMatch(/data-testid="runs-placeholder"/);
+    expect(html).not.toMatch(/data-testid="runs-list-route"/);
+    expect(html).not.toMatch(/data-testid="app-shell"/);
+    expect(postAttachRouter).not.toHaveBeenCalled();
   });
 });
 

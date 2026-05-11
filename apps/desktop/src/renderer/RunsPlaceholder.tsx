@@ -1,16 +1,14 @@
 /**
- * Post-attach placeholder route.
+ * Compatibility body for the phase-0 `/runs` route.
  *
- * This is the stub that the renderer mounts ONLY when the attach
- * state machine is in `connected`. The point of shipping it at this
- * stage is to prove out the gating discipline — every later feature
- * page (runs list, run detail, plan editor) will hang off the same
- * gate, so getting the contract right while there's nothing real to
- * lose matters more than the contents of the page.
+ * M1 mounted this stub directly behind the connected-state gate. M2
+ * keeps the export and its `runs-placeholder` test id for downstream
+ * compatibility, but the gate now mounts the full phase-0 route tree
+ * and this component is only the inert body of `/runs`.
  *
  * The component is intentionally inert: no fetches, no effects, no
- * conditional rendering. If you reach this component, the API is
- * attached. If you don't, you're still in {@link AttachScreen}.
+ * conditional rendering. Real runs-list data lands in a later
+ * milestone.
  */
 
 import React from "react";
