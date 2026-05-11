@@ -12,6 +12,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "devDependencies": {
+    "@pm-go/contracts": "workspace:*",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "electron": "^33.2.1",
