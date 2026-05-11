@@ -173,12 +173,29 @@ export function createTasksRoute(deps: TasksRouteDeps) {
       requestedBy,
     };
 
+    // Workflow id includes an execution-cycle counter so that re-running a
+    // task after a manual reset (e.g. flipping status back from a terminal
+    // state to `pending`) doesn't collide with the prior workflow's id in
+    // Temporal. The default reuse policy `ALLOW_DUPLICATE_FAILED_ONLY`
+    // rejects a fresh `start` when the prior workflow ended in COMPLETED,
+    // which made retries succeed inconsistently. Mirrors the cycle-suffix
+    // shape used by `/review` and `/fix` below. The counter is derived
+    // from the number of prior `implementer` agent_runs for this task so
+    // it is monotonic and survives API restarts.
+    const priorImplementerRuns = await deps.db
+      .select({ id: agentRuns.id })
+      .from(agentRuns)
+      .where(
+        and(eq(agentRuns.taskId, taskId), eq(agentRuns.role, "implementer")),
+      );
+    const execCycle = priorImplementerRuns.length + 1;
+
     const handle = await deps.temporal.workflow.start(
       "TaskExecutionWorkflow",
       {
         args: [input],
         taskQueue: deps.taskQueue,
-        workflowId: `task-exec-${taskId}`,
+        workflowId: `task-exec-${taskId}-${execCycle}`,
       },
     );
 
@@ -186,6 +203,7 @@ export function createTasksRoute(deps: TasksRouteDeps) {
       {
         taskId,
         workflowRunId: handle.firstExecutionRunId,
+        cycleNumber: execCycle,
       },
       202,
     );

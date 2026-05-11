@@ -65,6 +65,9 @@ describe("POST /tasks/:taskId/run", () => {
           phaseTitle: "Phase 0",
         },
       ],
+      // Second select counts prior implementer agent_runs → none yet,
+      // so the cycle suffix is `-1`.
+      [],
     ]);
     const app = createApp({
       temporal: client,
@@ -82,15 +85,17 @@ describe("POST /tasks/:taskId/run", () => {
     const payload = (await res.json()) as {
       taskId: string;
       workflowRunId: string;
+      cycleNumber: number;
     };
     expect(payload.taskId).toBe(taskId);
     expect(payload.workflowRunId).toBe("run-task-xyz");
+    expect(payload.cycleNumber).toBe(1);
 
     expect(start).toHaveBeenCalledWith(
       "TaskExecutionWorkflow",
       expect.objectContaining({
         taskQueue: APP_DEFAULTS.taskQueue,
-        workflowId: `task-exec-${taskId}`,
+        workflowId: `task-exec-${taskId}-1`,
         args: [
           {
             taskId,
@@ -100,6 +105,46 @@ describe("POST /tasks/:taskId/run", () => {
             requestedBy: "api",
           },
         ],
+      }),
+    );
+  });
+
+  it("appends a monotonic cycle suffix when prior implementer runs exist (safe re-run after manual reset)", async () => {
+    const { start, client } = makeMockTemporal();
+
+    const taskId = "11111111-2222-4333-8444-555555555555";
+    const phaseId = "22222222-3333-4444-8555-666666666666";
+    // Two prior implementer agent_runs → the new workflowId must carry
+    // cycle suffix `-3` so it does not collide with the COMPLETED
+    // `task-exec-<id>-2` left in Temporal by the previous attempt.
+    const db = makeMockDbForLookup([
+      [
+        {
+          phaseId,
+          phaseStatus: "executing",
+          phaseTitle: "Phase 0",
+        },
+      ],
+      [{ id: "run-1" }, { id: "run-2" }],
+    ]);
+    const app = createApp({ temporal: client, db, ...APP_DEFAULTS });
+
+    const res = await app.request(`/tasks/${taskId}/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(202);
+    const payload = (await res.json()) as {
+      taskId: string;
+      cycleNumber: number;
+    };
+    expect(payload.cycleNumber).toBe(3);
+    expect(start).toHaveBeenCalledWith(
+      "TaskExecutionWorkflow",
+      expect.objectContaining({
+        workflowId: `task-exec-${taskId}-3`,
       }),
     );
   });
