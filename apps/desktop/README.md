@@ -187,9 +187,10 @@ apps/desktop/
   local reconstruction.
 - **Manual refresh behavior:** M3 refresh is explicit and user-driven.
   The refresh action re-runs the relevant live query, updates the local
-  cache only after a valid response is parsed, and reports stale/error
-  state through the bridge. Desktop does not poll, retry in the
-  background, or synthesize missing server state during M3.
+  view state only after a valid response is parsed, and reports
+  stale/error state in the renderer route that owns the request. Desktop
+  does not poll, retry in the background, or synthesize missing server
+  state during M3.
 - **JSON event replay:** Workflow event replay is stored as JSON event
   records returned by the API and cached in memory with the rest of the
   run snapshot. Desktop may parse those records for display, filtering,

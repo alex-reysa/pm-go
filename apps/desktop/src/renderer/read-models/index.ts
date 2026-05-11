@@ -248,7 +248,9 @@ export function buildRunCockpit(
   const attention = buildAttention({
     approvals: input.approvals,
     phases,
+    phasesAvailable: input.phases !== undefined || plan.phases.length > 0,
     tasks,
+    tasksAvailable: input.tasks !== undefined || plan.tasks.length > 0,
     release,
   });
   const blocker = describeBlocker(plan.status, phases, tasks, release);
@@ -1107,7 +1109,9 @@ function taskBudgetSpend(
 function buildAttention(input: {
   approvals: readonly ApprovalRequest[] | undefined;
   phases: readonly (PhaseListItem | ContractPhase)[];
+  phasesAvailable: boolean;
   tasks: readonly (TaskListItem | ContractTask)[];
+  tasksAvailable: boolean;
   release: ReleaseReadinessViewModel;
 }): RunAttention {
   return {
@@ -1121,7 +1125,7 @@ function buildAttention(input: {
           ),
         ])
       : limited(input.approvals.filter((approval) => approval.status === "pending").length),
-    blockedTasks: input.tasks.length === 0
+    blockedTasks: !input.tasksAvailable
       ? limited<number>(null, [
           limitation(
             "run-list-attention-unavailable",
@@ -1131,7 +1135,7 @@ function buildAttention(input: {
           ),
         ])
       : limited(input.tasks.filter((task) => task.status === "blocked").length),
-    failedTasks: input.tasks.length === 0
+    failedTasks: !input.tasksAvailable
       ? limited<number>(null, [
           limitation(
             "run-list-attention-unavailable",
@@ -1141,7 +1145,7 @@ function buildAttention(input: {
           ),
         ])
       : limited(input.tasks.filter((task) => task.status === "failed").length),
-    blockedPhases: input.phases.length === 0
+    blockedPhases: !input.phasesAvailable
       ? limited<number>(null, [
           limitation(
             "run-list-attention-unavailable",

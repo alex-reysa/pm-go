@@ -333,6 +333,44 @@ describe("desktop live read models", () => {
     expect(evidence.data.artifactContents[0]?.body).toBe("# Release\n");
   });
 
+  it("treats explicit empty phase and task collections as zero attention counts", () => {
+    const emptyPlan: ContractPlan = {
+      ...plan,
+      phases: [],
+      tasks: [],
+    };
+    const emptyPlanDetail: PlanDetailPayload = {
+      ...planDetail,
+      plan: emptyPlan,
+    };
+
+    const cockpit = buildRunCockpit({
+      planDetail: emptyPlanDetail,
+      phases: [],
+      tasks: [],
+      approvals: [],
+    });
+
+    expect(cockpit.data?.attention.blockedTasks.value).toBe(0);
+    expect(cockpit.data?.attention.failedTasks.value).toBe(0);
+    expect(cockpit.data?.attention.blockedPhases.value).toBe(0);
+    expect(
+      cockpit.data?.attention.blockedTasks.limitations.map((item) => item.code),
+    ).not.toContain("run-list-attention-unavailable");
+
+    const missingCollections = buildRunCockpit({
+      planDetail: emptyPlanDetail,
+      approvals: [],
+    });
+
+    expect(missingCollections.data?.attention.blockedTasks.value).toBeNull();
+    expect(
+      missingCollections.data?.attention.blockedTasks.limitations.map(
+        (item) => item.code,
+      ),
+    ).toContain("run-list-attention-unavailable");
+  });
+
   it("includes fetched artifacts even when no artifact id list or event references them", () => {
     const fetchedOnlyArtifactId = "55555555-5555-4555-8555-555555555555";
 
