@@ -165,24 +165,26 @@ apps/desktop/
 
 ## M3 decisions
 
-- **API client location:** Desktop keeps its HTTP client in
-  `apps/desktop/src/main/apiClient.ts` for M3. Renderer code asks the
-  preload bridge for run data; it does not call the API directly, and
-  no shared `@pm-go/api-client` package is introduced until a later
-  milestone proves the Desktop and TUI clients have the same shape.
-- **Query and cache strategy:** M3 uses a plain local query/cache layer
-  in the Desktop main process: request helpers fetch JSON, normalize it
-  to renderer DTOs, and retain the latest successful snapshot in memory
-  per query key. No React Query, IndexedDB, SQLite, or durable cache is
-  added for this milestone. A failed refresh leaves the last good
-  snapshot visible with an error state attached so the renderer can
-  recover without inventing fallback data.
+- **API client location:** Desktop keeps the M3 read-only HTTP client in
+  `apps/desktop/src/renderer/api/client.ts`. The client is renderer-owned
+  because M3 only reads pm-go API resources and normalizes them into
+  route-facing DTOs; no mutation path, filesystem access, or privileged
+  Electron capability is exposed through it. No shared `@pm-go/api-client`
+  package is introduced until Desktop and TUI clients prove they share the
+  same contract shape.
+- **Query and cache strategy:** M3 uses plain renderer-side request
+  helpers and read-model builders. Request helpers fetch JSON, classify
+  recoverable failures, and pass typed payloads to read-model functions.
+  No React Query, IndexedDB, SQLite, or durable cache is added for this
+  milestone. Later route work may retain the latest successful response in
+  component state so a failed refresh can show stale/error state without
+  inventing fallback data.
 - **Fixture-to-live boundary:** Fixtures remain renderer-only seed data
-  for unimplemented views. When a live endpoint exists, the main process
-  owns the fetch and the fixture path is disabled for that surface; if an
-  endpoint is missing, the view is documented as fixture-backed or
-  deferred instead of mixing live payloads with partial local
-  reconstruction.
+  for unimplemented views. When a live endpoint exists, the renderer API
+  client owns the fetch path and the fixture path is disabled for that
+  surface; if an endpoint is missing, the view is documented as
+  fixture-backed or deferred instead of mixing live payloads with partial
+  local reconstruction.
 - **Manual refresh behavior:** M3 refresh is explicit and user-driven.
   The refresh action re-runs the relevant live query, updates the local
   cache only after a valid response is parsed, and reports stale/error
@@ -204,3 +206,10 @@ apps/desktop/
   fixture-backed states and wait for the API contract rather than
   bypassing the API with local filesystem reads, inferred mutations, or
   renderer-owned domain state.
+- **M3 Phase 0 verification:** After integrating the renderer API client,
+  read models, package manifest, lockfile, and README decisions on
+  `dogfood/desktop-mvp`, the operator ran
+  `pnpm --filter @pm-go/desktop typecheck` and
+  `pnpm --filter @pm-go/desktop test` in the writable repository on May
+  11, 2026. Typecheck passed, and the desktop test suite passed with 25
+  files and 171 tests.
