@@ -135,3 +135,30 @@ apps/desktop/
 - Config read/write at `app.getPath('userData')/config.json`.
 - Renderer test harness (`jsdom` + Testing Library) for the first
   React component.
+
+## M2 decisions
+
+- **Router choice:** React Router v6 via `react-router-dom`. The
+  renderer uses `HashRouter` by default because Electron loads the
+  bundle from `file://`, while tests can inject static or memory
+  routers. React Router keeps the nested `/runs/:planId/...` route
+  tree explicit without adding another routing dependency.
+- **Fixture module location:** mock renderer data lives under
+  `apps/desktop/src/renderer/fixtures/`.
+- **Drawer toggle implementation:** `EventDrawerProvider` owns the
+  collapsed-by-default open state, `EventDrawerToggle` flips it, and
+  `RunDetailShell` mounts the toggle plus drawer only for route ids in
+  `DRAWER_ALLOWED_ROUTE_IDS`. `AppShell` passes `null` for top-level
+  routes so Attach, Runs List, New Spec, and Settings never show the
+  drawer affordance.
+- **Inspector allowed routes:** `INSPECTOR_ALLOWED_ROUTE_IDS` contains
+  `run.overview`, `run.phases`, `run.tasks`, `run.taskDetail`,
+  `run.approvals`, `run.budget`, `run.evidence`,
+  `run.artifactDetail`, and `run.release`. The top-level `attach`,
+  `runs`, `runs.new`, and `settings` routes are intentionally absent.
+- **Confirmation modal component:** shared mutating-action confirms use
+  `ConfirmationModal`.
+- **Markdown rendering:** M2 renders Markdown-like fixture content as
+  inert preformatted text only. No raw HTML execution, remote resource
+  loading, or Markdown runtime dependency is introduced before live
+  artifact rendering lands.
