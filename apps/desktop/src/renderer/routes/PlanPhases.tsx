@@ -63,9 +63,20 @@ function describePhaseCounts(phase: PhaseSummary): string {
   return entries.map(([status, count]) => `${count} ${status}`).join(" · ");
 }
 
+function comparePhaseDependencyOrder(
+  left: PhaseSummary,
+  right: PhaseSummary,
+): number {
+  const indexDelta = left.index - right.index;
+  if (indexDelta !== 0) {
+    return indexDelta;
+  }
+  return left.id.localeCompare(right.id);
+}
+
 export function PlanPhases(props: PlanPhasesProps): React.JSX.Element {
   const dataset = props.dataset ?? phasesHappyPath;
-  const phases = dataset.data;
+  const phases = [...dataset.data].sort(comparePhaseDependencyOrder);
   const errorMessage = dataset.state === "error" ? dataset.error.message : null;
   const isEmpty = dataset.state === "empty" || phases.length === 0;
 

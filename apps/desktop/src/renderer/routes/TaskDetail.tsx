@@ -218,6 +218,15 @@ export function TaskDetail(props: TaskDetailProps): React.JSX.Element {
     pendingAction !== null ? ACTION_LABELS[pendingAction] : "";
   const pendingDisabledReason =
     pendingAction !== null ? disabledReasonFor(task, pendingAction) : null;
+  const fixDisabledReason = disabledReasonFor(task, "task.fix");
+  const fixCycleCopy =
+    task.latestReviewReport !== null
+      ? `Fix cycle: review cycle #${task.latestReviewReport.cycleNumber} · ${task.status}`
+      : `Fix cycle: no review cycle yet · ${task.status}`;
+  const fixStateCopy =
+    fixDisabledReason === null
+      ? "Fix action available."
+      : `Fix action unavailable: ${fixDisabledReason}`;
 
   const closeModal = (): void => setPendingAction(null);
   const onConfirm = (): void => {
@@ -322,6 +331,69 @@ export function TaskDetail(props: TaskDetailProps): React.JSX.Element {
         aria-labelledby="task-detail-review-title"
       >
         <h2 id="task-detail-review-title">Latest review / fix state</h2>
+        <p
+          className="task-detail__status-state"
+          data-testid="task-detail-status-state"
+        >
+          {`Task status: ${task.status} · Review: ${task.reviewState ?? "none"} · Approval: ${task.approvalStatus ?? "none"}`}
+        </p>
+        {task.latestAgentRun !== null ? (
+          <p
+            className="task-detail__agent-run"
+            data-testid="task-detail-latest-agent-run"
+          >
+            {`Latest agent run: ${task.latestAgentRun.role} · ${task.latestAgentRun.outcome} · started ${task.latestAgentRun.startedAt} · completed ${task.latestAgentRun.completedAt ?? "in progress"} · cost $${task.latestAgentRun.costUsd.toFixed(2)}`}
+          </p>
+        ) : (
+          <p
+            className="task-detail__agent-run"
+            data-testid="task-detail-latest-agent-run"
+          >
+            Latest agent run: none
+          </p>
+        )}
+        {task.latestLease !== null ? (
+          <>
+            <p
+              className="task-detail__lease"
+              data-testid="task-detail-latest-lease"
+            >
+              {`Lease: ${task.latestLease.branchName} · base ${task.latestLease.baseSha} · ${task.latestLease.releasedAt === null ? "active" : `released ${task.latestLease.releasedAt}`}`}
+            </p>
+            <p
+              className="task-detail__worktree"
+              data-testid="task-detail-worktree"
+            >
+              {`Worktree: ${task.latestLease.worktreePath}`}
+            </p>
+          </>
+        ) : task.worktreePath !== null ? (
+          <p
+            className="task-detail__worktree"
+            data-testid="task-detail-worktree"
+          >
+            {`Worktree: ${task.worktreePath}`}
+          </p>
+        ) : (
+          <p
+            className="task-detail__worktree"
+            data-testid="task-detail-worktree"
+          >
+            Lease/worktree: none
+          </p>
+        )}
+        <p
+          className="task-detail__fix-cycle"
+          data-testid="task-detail-fix-cycle"
+        >
+          {fixCycleCopy}
+        </p>
+        <p
+          className="task-detail__fix-state"
+          data-testid="task-detail-fix-state"
+        >
+          {fixStateCopy}
+        </p>
         {task.latestReviewReport !== null ? (
           <>
             <p className="task-detail__review-cycle">

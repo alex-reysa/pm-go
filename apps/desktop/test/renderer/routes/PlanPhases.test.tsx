@@ -77,4 +77,35 @@ describe("PlanPhases route", () => {
     const errorHtml = renderPlanPhases(<PlanPhases dataset={phasesErrorState} />);
     expect(errorHtml).toContain('data-testid="plan-phases-error"');
   });
+
+  it("renders phases in dependency order when the dataset arrives shuffled", () => {
+    const [phaseZero, phaseOne, phaseTwo] = phasesHappyPath.data;
+    if (
+      phaseZero === undefined ||
+      phaseOne === undefined ||
+      phaseTwo === undefined
+    ) {
+      throw new Error("Expected happy-path phases fixture to contain 3 phases.");
+    }
+
+    const shuffledDataset = {
+      ...phasesHappyPath,
+      data: [phaseTwo, phaseZero, phaseOne],
+    };
+    const html = renderPlanPhases(<PlanPhases dataset={shuffledDataset} />);
+
+    const phaseZeroIndex = html.indexOf(
+      `data-testid="plan-phases-row-${phaseZero.id}"`,
+    );
+    const phaseOneIndex = html.indexOf(
+      `data-testid="plan-phases-row-${phaseOne.id}"`,
+    );
+    const phaseTwoIndex = html.indexOf(
+      `data-testid="plan-phases-row-${phaseTwo.id}"`,
+    );
+
+    expect(phaseZeroIndex).toBeGreaterThan(-1);
+    expect(phaseOneIndex).toBeGreaterThan(phaseZeroIndex);
+    expect(phaseTwoIndex).toBeGreaterThan(phaseOneIndex);
+  });
 });

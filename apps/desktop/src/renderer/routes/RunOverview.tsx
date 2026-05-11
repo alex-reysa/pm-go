@@ -38,7 +38,7 @@ import {
   type ReleaseView,
   phasesHappyPath,
   planHappyPath,
-  releaseHappyPath,
+  releaseEmptyState,
 } from "../fixtures/index.js";
 
 export interface RunOverviewProps {
@@ -115,7 +115,10 @@ function describeNextAction(plan: PlanDetail, release: ReleaseView): string {
   if (plan.status === "released") {
     return "No action required.";
   }
-  if (release.completionAuditOutcome === "pass") {
+  if (
+    plan.status === "completed" &&
+    release.completionAuditOutcome === "pass"
+  ) {
     return "Release the plan.";
   }
   if (plan.status === "completed") {
@@ -137,12 +140,23 @@ function describeNextAction(plan: PlanDetail, release: ReleaseView): string {
  */
 const EMPTY_PLAN_COPY = "This plan has no decomposition yet.";
 
+function defaultReleaseDatasetFor(
+  plan: PlanDetail,
+): FixtureDataset<ReleaseView> {
+  return {
+    ...releaseEmptyState,
+    data: {
+      ...releaseEmptyState.data,
+      planId: plan.id,
+    },
+  };
+}
+
 export function RunOverview(props: RunOverviewProps): React.JSX.Element {
   const planDataset = props.planDataset ?? planHappyPath;
   const phasesDataset = props.phasesDataset ?? phasesHappyPath;
-  const releaseDataset = props.releaseDataset ?? releaseHappyPath;
-
   const plan = planDataset.data;
+  const releaseDataset = props.releaseDataset ?? defaultReleaseDatasetFor(plan);
   const phases = phasesDataset.data;
   const release = releaseDataset.data;
 

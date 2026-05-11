@@ -7,7 +7,9 @@ import { RunDetailShell } from "../../../src/renderer/layout/RunDetailShell.js";
 import {
   phasesErrorState,
   planErrorState,
+  planHappyPath,
   releaseErrorState,
+  releaseHappyPath,
 } from "../../../src/renderer/fixtures/index.js";
 import { RunOverview } from "../../../src/renderer/routes/RunOverview.js";
 
@@ -86,5 +88,37 @@ describe("RunOverview route", () => {
     expect(html).toContain('data-testid="run-overview-phases-error"');
     expect(html).toContain('data-testid="run-overview-release-error"');
     expect(html).toContain('data-testid="run-overview-current-state"');
+  });
+
+  it("does not recommend release while the plan is still executing", () => {
+    const html = renderOverview(
+      <RunOverview
+        planDataset={planHappyPath}
+        releaseDataset={releaseHappyPath}
+      />,
+    );
+
+    expect(html).toContain(
+      "Next action: Wait for the active task to finish.",
+    );
+    expect(html).not.toContain("Next action: Release the plan.");
+  });
+
+  it("only recommends release for a completed plan with a passing audit", () => {
+    const completedPlanDataset = {
+      ...planHappyPath,
+      data: {
+        ...planHappyPath.data,
+        status: "completed" as const,
+      },
+    };
+    const html = renderOverview(
+      <RunOverview
+        planDataset={completedPlanDataset}
+        releaseDataset={releaseHappyPath}
+      />,
+    );
+
+    expect(html).toContain("Next action: Release the plan.");
   });
 });

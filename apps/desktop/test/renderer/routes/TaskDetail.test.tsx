@@ -70,6 +70,16 @@ describe("TaskDetail route", () => {
     expect(html).toContain('data-testid="task-detail-file-scope"');
     expect(html).toContain('data-testid="task-detail-acceptance"');
     expect(html).toContain('data-testid="task-detail-review"');
+    expect(html).toContain('data-testid="task-detail-status-state"');
+    expect(html).toContain('data-testid="task-detail-latest-agent-run"');
+    expect(html).toContain("Latest agent run: implementer");
+    expect(html).toContain('data-testid="task-detail-latest-lease"');
+    expect(html).toContain("Lease: task-route-shell");
+    expect(html).toContain('data-testid="task-detail-worktree"');
+    expect(html).toContain('data-testid="task-detail-fix-cycle"');
+    expect(html).toContain("Fix cycle: review cycle #1");
+    expect(html).toContain('data-testid="task-detail-fix-state"');
+    expect(html).toContain("Fix action unavailable:");
     expect(html).toContain('data-testid="task-detail-actions"');
     expect(html).toContain('data-testid="task-detail-open-inspector"');
     expect(html).toContain('data-testid="event-drawer-toggle"');
