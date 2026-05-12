@@ -21,6 +21,8 @@ interface StubCall {
   pathname: string;
   search: string;
   accept: string;
+  contentType: string;
+  body: unknown;
 }
 
 interface StubResult {
@@ -47,6 +49,8 @@ function stubRequest(handler: StubHandler): {
       pathname: url.pathname,
       search: url.search,
       accept: headers.get("accept") ?? "",
+      contentType: headers.get("content-type") ?? "",
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
     });
 
     const result = handler(method, url, init);
@@ -184,7 +188,7 @@ describe("Desktop API base URLs", () => {
 });
 
 describe("Desktop API read methods", () => {
-  it("exposes read-only endpoints for cockpit data without mutation methods", async () => {
+  it("exposes read endpoints for cockpit data", async () => {
     const { request, calls } = stubRequest((_method, url) => {
       if (url.pathname === "/plans" && url.search === "") {
         return { body: { plans: [] } };
@@ -244,20 +248,6 @@ describe("Desktop API read methods", () => {
     });
     const api = createDesktopApiClient({ baseUrl: "http://localhost:3001", request });
 
-    for (const key of [
-      "runTask",
-      "reviewTask",
-      "fixTask",
-      "integratePhase",
-      "auditPhase",
-      "completePlan",
-      "releasePlan",
-      "approveTask",
-      "approvePlan",
-    ]) {
-      expect(api).not.toHaveProperty(key);
-    }
-
     await api.listPlans();
     await api.getPlan("plan-1");
     await api.listPhases("plan-1");
@@ -291,6 +281,143 @@ describe("Desktop API read methods", () => {
     ]);
     expect(calls.every((call) => call.method === "GET")).toBe(true);
     expect(calls.every((call) => call.accept === "application/json")).toBe(true);
+  });
+
+  it("posts every M4 mutating action to the documented endpoint", async () => {
+    const approval = {
+      id: "approval-1",
+      planId: "plan-1",
+      subject: "plan",
+      riskBand: "high",
+      status: "approved",
+      requestedAt: "2026-05-12T00:00:00.000Z",
+    };
+    const { request, calls } = stubRequest((_method, url) => {
+      if (url.pathname === "/tasks/task-1/run") {
+        return { body: { taskId: "task-1", workflowRunId: "run-1", cycleNumber: 1 } };
+      }
+      if (url.pathname === "/tasks/task-1/review") {
+        return { body: { taskId: "task-1", workflowRunId: "review-1", cycleNumber: 2 } };
+      }
+      if (url.pathname === "/tasks/task-1/fix") {
+        return {
+          body: {
+            taskId: "task-1",
+            workflowRunId: "fix-1",
+            reviewReportId: "review-report-1",
+            cycleNumber: 2,
+          },
+        };
+      }
+      if (url.pathname === "/tasks/task-1/approve") {
+        return { body: { taskId: "task-1", approval } };
+      }
+      if (url.pathname === "/tasks/task-1/override-review") {
+        return {
+          body: {
+            taskId: "task-1",
+            previousStatus: "blocked",
+            newStatus: "ready_to_merge",
+            policyDecisionId: "policy-1",
+            overriddenBy: "operator",
+            reason: "accepted false positive",
+          },
+        };
+      }
+      if (url.pathname === "/phases/phase-1/integrate") {
+        return { body: { phaseId: "phase-1", workflowRunId: "integrate-1", mergeRunIndex: 1 } };
+      }
+      if (url.pathname === "/phases/phase-1/audit") {
+        return { body: { phaseId: "phase-1", workflowRunId: "audit-1", auditIndex: 1 } };
+      }
+      if (url.pathname === "/phases/phase-1/override-audit") {
+        return {
+          body: {
+            phaseId: "phase-1",
+            previousStatus: "blocked",
+            newStatus: "completed",
+            auditReportId: "audit-report-1",
+            reason: "operator accepted",
+            overriddenAt: "2026-05-12T00:00:00.000Z",
+          },
+        };
+      }
+      if (url.pathname === "/plans/plan-1/approve") {
+        return { body: { planId: "plan-1", approval } };
+      }
+      if (url.pathname === "/plans/plan-1/approve-all-pending") {
+        return {
+          body: {
+            planId: "plan-1",
+            approvedCount: 1,
+            approvedIds: ["approval-1"],
+            skippedCount: 1,
+            skipped: [{ id: "approval-2", taskId: null, reason: "riskBand=catastrophic" }],
+          },
+        };
+      }
+      if (url.pathname === "/plans/plan-1/complete") {
+        return { body: { planId: "plan-1", workflowRunId: "complete-1", auditIndex: 3 } };
+      }
+      if (url.pathname === "/plans/plan-1/release") {
+        return { body: { planId: "plan-1", workflowRunId: "release-1", releaseIndex: 1 } };
+      }
+      return { status: 500, body: { error: "unhandled" } };
+    });
+    const api = createDesktopApiClient({ baseUrl: "http://localhost:3001", request });
+
+    await api.runTask("task-1", { requestedBy: "desktop" });
+    await api.reviewTask("task-1");
+    await api.fixTask("task-1");
+    await api.approveTask("task-1", { approvedBy: "operator" });
+    await api.overrideReview("task-1", {
+      reason: "accepted false positive",
+      overriddenBy: "operator",
+    });
+    await api.integratePhase("phase-1");
+    await api.auditPhase("phase-1");
+    await api.overrideAudit("phase-1", {
+      reason: "operator accepted",
+      overriddenBy: "operator",
+    });
+    await api.approvePlan("plan-1", { approvedBy: "operator" });
+    await api.approveAllPending("plan-1", {
+      reason: "bulk accept safe rows",
+      approvedBy: "operator",
+    });
+    await api.completePlan("plan-1", { requestedBy: "desktop" });
+    await api.releasePlan("plan-1");
+
+    expect(calls.map((call) => `${call.method} ${call.pathname}`)).toEqual([
+      "POST /tasks/task-1/run",
+      "POST /tasks/task-1/review",
+      "POST /tasks/task-1/fix",
+      "POST /tasks/task-1/approve",
+      "POST /tasks/task-1/override-review",
+      "POST /phases/phase-1/integrate",
+      "POST /phases/phase-1/audit",
+      "POST /phases/phase-1/override-audit",
+      "POST /plans/plan-1/approve",
+      "POST /plans/plan-1/approve-all-pending",
+      "POST /plans/plan-1/complete",
+      "POST /plans/plan-1/release",
+    ]);
+    expect(calls[0]?.body).toEqual({ requestedBy: "desktop" });
+    expect(calls[1]?.body).toBeNull();
+    expect(calls[4]?.body).toEqual({
+      reason: "accepted false positive",
+      overriddenBy: "operator",
+    });
+    expect(calls[9]?.body).toEqual({
+      reason: "bulk accept safe rows",
+      approvedBy: "operator",
+    });
+    expect(calls.every((call) => call.accept === "application/json")).toBe(true);
+    expect(
+      calls
+        .filter((call) => call.body !== null)
+        .every((call) => call.contentType.includes("application/json")),
+    ).toBe(true);
   });
 });
 

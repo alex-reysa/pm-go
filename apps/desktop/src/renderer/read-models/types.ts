@@ -212,8 +212,15 @@ export interface ActionAvailability {
     | "task.overrideReview"
     | "phase.integrate"
     | "phase.audit"
+    | "phase.overrideAudit"
+    | "plan.approve"
+    | "plan.approveAllPending"
     | "plan.complete"
     | "plan.release";
+  subjectType: "task" | "phase" | "plan" | "approval";
+  subjectId: UUID;
+  method: "POST";
+  endpoint: string;
   enabled: boolean | null;
   reason: string | null;
   requiresConfirmation: true;
@@ -271,6 +278,7 @@ export interface PhaseViewModel {
   taskCountsByStatus: LimitedValue<TaskCountsByStatus>;
   latestMergeRun: MergeRunProjection | null;
   latestPhaseAudit: PhaseAuditReportProjection | null;
+  availableActions: ActionAvailability[];
   raw: {
     list: PhaseListItem | ContractPhase;
     detail?: PhaseDetailPayload;
@@ -344,6 +352,7 @@ export interface ApprovalQueueItemViewModel {
   phaseTitle: LimitedValue<string>;
   isBulkEligible: LimitedValue<boolean>;
   bulkSkippedReason: string | null;
+  availableActions: ActionAvailability[];
   raw: ApprovalRequest;
 }
 

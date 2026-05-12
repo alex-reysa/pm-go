@@ -40,10 +40,16 @@ export type {
   TaskSummaryViewModel,
   WorkflowEvent,
 } from "./types.js";
+export {
+  actionAvailabilityKey,
+  buildApprovalActionAvailability,
+  buildPhaseActionAvailability,
+  buildPlanActionAvailability,
+  buildTaskActionAvailability,
+} from "./actionAvailability.js";
 
 import type {
   AcceptanceCriterion,
-  ActionAvailability,
   AgentRun,
   ApprovalQueueItemViewModel,
   ApprovalRequest,
@@ -87,6 +93,12 @@ import type {
   UUID,
   WorkflowEvent,
 } from "./types.js";
+import {
+  buildApprovalActionAvailability,
+  buildPhaseActionAvailability,
+  buildPlanActionAvailability,
+  buildTaskActionAvailability,
+} from "./actionAvailability.js";
 
 export interface BuildRunSummariesInput {
   readonly plans?: readonly PlanListItem[];
@@ -254,7 +266,13 @@ export function buildRunCockpit(
     release,
   });
   const blocker = describeBlocker(plan.status, phases, tasks, release);
-  const actions = buildPlanActions(plan.status, phases, release);
+  const actions = buildPlanActionAvailability({
+    planId: plan.id,
+    planStatus: plan.status,
+    phases,
+    release,
+    ...(input.approvals !== undefined ? { approvals: input.approvals } : {}),
+  });
   const limitations = uniqueLimitations([
     ...phaseCount.limitations,
     ...taskCount.limitations,
@@ -331,6 +349,12 @@ export function buildPhases(
       taskCountsByStatus: limited(taskCountsByPhase?.get(phase.id) ?? {}, countLimitations),
       latestMergeRun: detail?.latestMergeRun ?? null,
       latestPhaseAudit: detail?.latestPhaseAudit ?? null,
+      availableActions: buildPhaseActionAvailability({
+        phase,
+        ...(rawTasks !== undefined
+          ? { tasks: rawTasks.filter((task) => task.phaseId === phase.id) }
+          : {}),
+      }),
       raw: detail === undefined ? { list: phase } : { list: phase, detail },
     };
   });
@@ -594,6 +618,7 @@ export function buildApprovals(
         : limited(phase.title),
       isBulkEligible: limited<boolean>(null, [bulkLimitation]),
       bulkSkippedReason: input.bulkSkippedReasons?.get(approval.id) ?? null,
+      availableActions: buildApprovalActionAvailability({ approval }),
       raw: approval,
     };
   });
@@ -955,113 +980,13 @@ function buildTaskSummary(
     reviewState,
     branchName: limited(branchName ?? null, branchLimitations),
     budgetSpend,
-    availableActions: buildTaskActions(task, ctx.phase, approvalStatus.value),
+    availableActions: buildTaskActionAvailability({
+      task,
+      phase: ctx.phase,
+      approvalStatus: approvalStatus.value,
+    }),
     raw: task,
   };
-}
-
-function buildTaskActions(
-  task: TaskListItem | ContractTask,
-  phase: PhaseListItem | ContractPhase | null,
-  approvalStatus: ApprovalStatus | null,
-): ActionAvailability[] {
-  const serverAuthority = limitation(
-    "task-actions-server-authority",
-    "Desktop only mirrors simple action affordances; API mutations remain authoritative.",
-    "buildTaskActions",
-    "availableActions",
-  );
-  const phaseMissing = phase === null
-    ? [
-        limitation(
-          "partial-api-payload",
-          "Owning phase was not supplied; phase-gated task actions cannot be decided.",
-          "buildTaskActions",
-          "phase",
-        ),
-      ]
-    : [];
-  return [
-    action(
-      "task.run",
-      phase === null ? null : phase.status === "executing" && !["running", "ready_to_merge", "merged"].includes(task.status),
-      phase === null
-        ? "Owning phase is unavailable."
-        : phase.status === "executing"
-          ? null
-          : `Owning phase is ${phase.status}.`,
-      false,
-      [serverAuthority, ...phaseMissing],
-    ),
-    action(
-      "task.review",
-      task.status === "in_review",
-      task.status === "in_review" ? null : `Task is ${task.status}.`,
-      false,
-      [serverAuthority],
-    ),
-    action(
-      "task.fix",
-      task.status === "fixing",
-      task.status === "fixing" ? null : `Task is ${task.status}.`,
-      false,
-      [serverAuthority],
-    ),
-    action(
-      "task.approve",
-      approvalStatus === null ? null : approvalStatus === "pending",
-      approvalStatus === null
-        ? "Approval rows are unavailable."
-        : approvalStatus === "pending"
-          ? null
-          : `Approval is ${approvalStatus}.`,
-      false,
-      [serverAuthority],
-    ),
-    action(
-      "task.overrideReview",
-      task.status === "blocked" || task.status === "fixing",
-      task.status === "blocked" || task.status === "fixing"
-        ? null
-        : `Task is ${task.status}.`,
-      true,
-      [serverAuthority],
-    ),
-  ];
-}
-
-function buildPlanActions(
-  status: string,
-  phases: readonly (PhaseListItem | ContractPhase)[],
-  release: ReleaseReadinessViewModel,
-): ActionAvailability[] {
-  const serverAuthority = limitation(
-    "task-actions-server-authority",
-    "Desktop mirrors only shallow action gates; API mutations remain authoritative.",
-    "buildPlanActions",
-    "actions",
-  );
-  const allPhasesCompleted = phases.length > 0 && phases.every((phase) => phase.status === "completed");
-  return [
-    action(
-      "plan.complete",
-      allPhasesCompleted,
-      allPhasesCompleted ? null : "Not every phase is completed.",
-      false,
-      [serverAuthority],
-    ),
-    action(
-      "plan.release",
-      release.state === "ready_to_release",
-      release.state === "ready_to_release"
-        ? null
-        : release.state === "release_evidence_present"
-          ? "Release evidence already exists."
-          : "Completion audit is not ready for release.",
-      false,
-      [serverAuthority],
-    ),
-  ];
 }
 
 function taskBudgetSpend(
@@ -1472,24 +1397,6 @@ function errorLimitation(error: RecoverableReadError): Limitation {
 
 function limited<T>(value: T | null, limitations: Limitation[] = []): LimitedValue<T> {
   return { value, limitations: uniqueLimitations(limitations) };
-}
-
-function action(
-  actionKind: ActionAvailability["action"],
-  enabled: boolean | null,
-  reason: string | null,
-  requiresReason: boolean,
-  limitations: Limitation[],
-): ActionAvailability {
-  return {
-    action: actionKind,
-    enabled,
-    reason,
-    requiresConfirmation: true,
-    requiresReason,
-    pending: false,
-    limitations: uniqueLimitations(limitations),
-  };
 }
 
 function compact<T>(values: readonly (T | null | undefined)[]): T[] {

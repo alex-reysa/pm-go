@@ -117,6 +117,70 @@ export interface ReplayedEvents {
   lastEventId: UUID | null;
 }
 
+export interface TaskWorkflowMutationResult {
+  taskId: UUID;
+  workflowRunId: string;
+  cycleNumber: number;
+  reviewReportId?: UUID;
+}
+
+export interface PhaseWorkflowMutationResult {
+  phaseId: UUID;
+  workflowRunId: string;
+  mergeRunIndex?: number;
+  auditIndex?: number;
+}
+
+export interface PlanWorkflowMutationResult {
+  planId: UUID;
+  workflowRunId: string;
+  auditIndex?: number;
+  releaseIndex?: number;
+}
+
+export interface TaskApprovalMutationResult {
+  taskId: UUID;
+  approval: ApprovalRequest;
+}
+
+export interface PlanApprovalMutationResult {
+  planId: UUID;
+  approval: ApprovalRequest;
+}
+
+export interface OverrideReviewMutationResult {
+  taskId: UUID;
+  previousStatus: string;
+  newStatus: string;
+  policyDecisionId: UUID;
+  overriddenBy?: string;
+  reason: string;
+}
+
+export interface OverrideAuditMutationResult {
+  phaseId: UUID;
+  previousStatus: string;
+  newStatus: string;
+  auditReportId: UUID;
+  reason: string;
+  overriddenBy?: string;
+  overriddenAt: string;
+  nextPhaseId?: UUID;
+  nextPhaseStatus?: string;
+}
+
+export interface ApproveAllPendingResult {
+  planId: UUID;
+  approvedCount: number;
+  approvedIds: UUID[];
+  skippedCount: number;
+  skipped: Array<{
+    id: UUID;
+    taskId: UUID | null;
+    reason: string;
+  }>;
+}
+
 export type ArtifactRead =
   | {
       artifactId: UUID;
@@ -166,6 +230,27 @@ export interface DesktopApiClient {
   replayEvents(planId: UUID, sinceEventId?: UUID): Promise<ReplayedEvents>;
   createEventStreamUrl(planId: UUID, sinceEventId?: UUID): string;
   readArtifact(artifactId: UUID): Promise<ArtifactRead>;
+  runTask(taskId: UUID, input?: { requestedBy?: string }): Promise<TaskWorkflowMutationResult>;
+  reviewTask(taskId: UUID): Promise<TaskWorkflowMutationResult>;
+  fixTask(taskId: UUID): Promise<TaskWorkflowMutationResult>;
+  approveTask(taskId: UUID, input?: { approvedBy?: string }): Promise<TaskApprovalMutationResult>;
+  overrideReview(
+    taskId: UUID,
+    input: { reason: string; overriddenBy?: string },
+  ): Promise<OverrideReviewMutationResult>;
+  integratePhase(phaseId: UUID): Promise<PhaseWorkflowMutationResult>;
+  auditPhase(phaseId: UUID): Promise<PhaseWorkflowMutationResult>;
+  overrideAudit(
+    phaseId: UUID,
+    input: { reason: string; overriddenBy?: string },
+  ): Promise<OverrideAuditMutationResult>;
+  approvePlan(planId: UUID, input?: { approvedBy?: string }): Promise<PlanApprovalMutationResult>;
+  approveAllPending(
+    planId: UUID,
+    input: { reason: string; approvedBy?: string },
+  ): Promise<ApproveAllPendingResult>;
+  completePlan(planId: UUID, input?: { requestedBy?: string }): Promise<PlanWorkflowMutationResult>;
+  releasePlan(planId: UUID): Promise<PlanWorkflowMutationResult>;
 }
 
 export interface CreateDesktopApiClientOptions {
@@ -287,6 +372,26 @@ export function createDesktopApiClient(
     return body as T;
   }
 
+  async function postJson<T>(
+    segments: readonly string[],
+    body?: Record<string, unknown>,
+  ): Promise<T> {
+    const init: RequestInit = {
+      method: "POST",
+      headers: body === undefined
+        ? { accept: "application/json" }
+        : {
+            accept: "application/json",
+            "content-type": "application/json",
+          },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    };
+    const res = await send(segments, init);
+    const parsed = await parseJsonSafe(res);
+    if (!res.ok) throw apiErrorFromResponse(res, parsed);
+    return parsed as T;
+  }
+
   return {
     baseUrl,
     async probeHealth() {
@@ -406,6 +511,54 @@ export function createDesktopApiClient(
         throw apiErrorFromResponse(res, body);
       }
       return parseArtifactResponse(artifactId, res);
+    },
+    async runTask(taskId, input) {
+      return postJson<TaskWorkflowMutationResult>(["tasks", taskId, "run"], input);
+    },
+    async reviewTask(taskId) {
+      return postJson<TaskWorkflowMutationResult>(["tasks", taskId, "review"]);
+    },
+    async fixTask(taskId) {
+      return postJson<TaskWorkflowMutationResult>(["tasks", taskId, "fix"]);
+    },
+    async approveTask(taskId, input) {
+      return postJson<TaskApprovalMutationResult>(["tasks", taskId, "approve"], input);
+    },
+    async overrideReview(taskId, input) {
+      return postJson<OverrideReviewMutationResult>([
+        "tasks",
+        taskId,
+        "override-review",
+      ], input);
+    },
+    async integratePhase(phaseId) {
+      return postJson<PhaseWorkflowMutationResult>(["phases", phaseId, "integrate"]);
+    },
+    async auditPhase(phaseId) {
+      return postJson<PhaseWorkflowMutationResult>(["phases", phaseId, "audit"]);
+    },
+    async overrideAudit(phaseId, input) {
+      return postJson<OverrideAuditMutationResult>([
+        "phases",
+        phaseId,
+        "override-audit",
+      ], input);
+    },
+    async approvePlan(planId, input) {
+      return postJson<PlanApprovalMutationResult>(["plans", planId, "approve"], input);
+    },
+    async approveAllPending(planId, input) {
+      return postJson<ApproveAllPendingResult>([
+        "plans",
+        planId,
+        "approve-all-pending",
+      ], input);
+    },
+    async completePlan(planId, input) {
+      return postJson<PlanWorkflowMutationResult>(["plans", planId, "complete"], input);
+    },
+    async releasePlan(planId) {
+      return postJson<PlanWorkflowMutationResult>(["plans", planId, "release"]);
     },
   };
 }

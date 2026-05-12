@@ -214,3 +214,29 @@ apps/desktop/
   `pnpm --filter @pm-go/desktop test` in the writable repository on May
   11, 2026. Typecheck passed, and the desktop test suite passed with 25
   files and 171 tests.
+
+## M4 decisions
+
+- **Mutation transport location:** M4 extends the renderer-owned
+  `apps/desktop/src/renderer/api/client.ts` client with explicit
+  mutating methods for the supported API routes. Desktop still talks
+  only to the pm-go HTTP API; no Temporal, Postgres, Docker, git, or
+  worktree access is introduced.
+- **Action availability shape:** Route-facing action rows now carry
+  the action kind, subject type/id, literal `POST` method, endpoint,
+  enabled state, disabled reason, reason requirement, confirmation
+  requirement, and per-action pending flag. The endpoint travels with
+  the action row so confirmation UI can render the exact API call
+  without duplicating route-to-endpoint logic.
+- **Client-side authority boundary:** Availability builders mirror only
+  shallow state gates from the API read model. Every action carries a
+  server-authority limitation because the API remains the source of
+  truth for `409`, `403`, `404`, and server-side policy refusals.
+- **Pending-state key:** Pending state is keyed as
+  `<action>:<subjectId>`, e.g. `task.run:<taskId>`. This supports the
+  M4 requirement that two different rows can mutate independently
+  without a global "everything is busy" flag.
+- **Reason gates:** Override-review, override-audit, and
+  approve-all-pending are marked `requiresReason: true` in the action
+  model before route UI wiring. Submit-time textarea validation remains
+  route/modal work in the next M4 slice.
