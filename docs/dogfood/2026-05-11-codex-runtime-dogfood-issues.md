@@ -512,3 +512,118 @@ origin)
   `PM_GO_CLAUDE_BINARY` set (didn't help, but harmless).
 - Health endpoint OK.
 - `pm-go stop` to tear down when convenient.
+
+## 2026-05-12 Bug #22 fix — typed evidence refs (sub-agent orchestrated)
+
+After memory bug #1's actual root cause was found in commit `c57567e`
+(released integration worktree being recreated for the completion
+auditor), the next failure mode was the schema mismatch the auditor's
+own output produces: it emits `review:<uuid>`, `policy:<uuid>`,
+`mergerun:<uuid>`, `commit:<sha>`, `diff:<sha>..<sha>` evidence refs
+while `CompletionChecklistItem.evidenceArtifactIds` accepts only bare
+UUIDs.
+
+Spec landed first: `docs/specs/completion-audit-evidence-refs.md`
+(commit `1406a99`). It picks the typed-ref direction over normalizing
+prefixes away — the kind information is meaningful and `commit:` /
+`diff:` have no honest bare-UUID representation.
+
+### Orchestration shape
+
+This fix was implemented via a sub-agent workflow with Planner /
+Developer / Auditor / Reviewer personas and a `.dogfood-logs/
+bug22-state.md` workflow file. The orchestrator (the main Claude
+thread) delegated each task to a scoped sub-agent and did not edit
+any source file directly. Sub-agents reported raw test output and
+`git diff --name-only` after every step.
+
+### Tasks shipped in commit `ee762ca`
+
+- T1: `EvidenceRef` type + widen `CompletionChecklistItem
+  .evidenceArtifactIds` from `UUID[]` to `EvidenceRef[]`
+  (`packages/contracts/src/review.ts`).
+- T2: TypeBox union with `UuidSchema` first (legacy hot path), then
+  five typed-prefix UUID variants reusing one `UUID_PATTERN_BODY`
+  constant, then `commit:[0-9a-f]{40}` and
+  `diff:[0-9a-f]{40}\.\.[0-9a-f]{40}`.
+- T3: Contract accept/reject tests — every typed form, mixed
+  arrays, explicit legacy bare-UUID regression, and seven
+  malformed-prefix reject cases (`mergerun:notauuid`, `commit:abc`,
+  uppercase hex, `diff:<sha>` no range, truncated second SHA,
+  unknown prefix `policydecision:`, empty kind `:<uuid>`).
+- T4: Fixture rotation — `completion-audit-report.json` gains
+  `commit:<auditedHeadSha>` and `mergerun:<the-fixture's-mergeRunId>`;
+  `phase-audit-report.json` gains `mergerun:<the-fixture's-mergeRunId>`.
+  Both fixtures retain bare UUIDs elsewhere in the checklist for
+  legacy regression coverage.
+- T5: `packages/planner/prompts/completion-auditor.v1.md` now lists
+  the seven accepted typed forms and the spec rule "evidence refs
+  must be drawn from IDs and SHAs present in the prompt or from the
+  audited diff range." Phase auditor prompt intentionally
+  untouched.
+- T6: Executor regression test inside
+  `packages/executor-claude/test/claude-completion-auditor-options
+  .test.ts` feeds a `CompletionAuditReport` payload through the
+  Claude SDK mock with `review:`/`policy:`/`mergerun:`/`commit:`/
+  `diff:` refs plus one bare UUID; asserts the runner returns
+  successfully and the refs round-trip untouched.
+
+### Validation
+
+- contracts: 130/130 tests, 0 typecheck errors.
+- executor-claude: 128/128 tests, 0 typecheck errors.
+- planner: 69/69 tests, 0 typecheck errors.
+- worker: 127/127 tests (1 pre-existing integration-only skip), 0
+  typecheck errors.
+- Workspace-wide `pnpm test` green across every package
+  (contracts/runtime-detector/db/desktop/executor-claude/orchestrator/
+  policy-engine/repo-intelligence/tui/worktree-manager/observability/
+  executor-process/planner/api/worker/cli).
+
+### Coherence notes from the Reviewer
+
+- Fixture typed refs tie back to fixture-local state: `commit:` uses
+  the same SHA already present as `auditedHeadSha`; `mergerun:` uses
+  the same UUID already present as `mergeRunId`.
+- The schema's union puts `UuidSchema` first so legacy payloads
+  short-circuit on the cheapest match.
+- The diagnostic emission path added in commit `c57567e` is
+  unchanged — malformed refs still hit
+  `formatValidationErrorSummary` with field path + offending value.
+- No DB migration: checklist payload is JSON.
+- Non-goals upheld: no second `evidenceRefs` field, no synthetic
+  artifact rows for commits/diffs, release eligibility logic
+  untouched.
+
+### Notable observation surfaced by sub-agents
+
+The executor-claude tests import `@pm-go/contracts` via the package's
+compiled `dist/` (workspace dep). When the contract schema changes
+in `packages/contracts/src/`, downstream package tests will continue
+to see the old validator until `pnpm --filter @pm-go/contracts
+build` (or `pnpm -r build`) runs. This is normal dev-loop discipline,
+not a reliability bug — the Reviewer's final pass ran `pnpm -r
+build` then re-ran the executor-claude suite from a clean state and
+got the same 128/128 result.
+
+### Deferred follow-up
+
+Manual operator re-run of `POST /plans/73bd9a65-…/complete` against
+the live stack to confirm the failure mode is gone end-to-end. The
+new schema accepts the diagnostic payload from the prior crash, so
+this is expected to either return `pass` or surface substantive
+findings rather than a schema rejection.
+
+### Bug list state after this commit
+
+- #1: RESOLVED in `c57567e` (worktree recreation).
+- #14: RESOLVED in `d37174d` (API exposes `failureReason`).
+- #17: RESOLVED in `5d70bf9` (`--runtime claude` refused up front).
+- #18: RESOLVED in `a61fa06` (`pm-go ps` tracks standalone drive).
+- #22: RESOLVED in `ee762ca` (this commit).
+- Still open: #2 (no re-fix endpoint for `ready_to_merge`), #3
+  (`pm-go ps` state-file drift edges), #4 (mystery source-tree
+  revert), #5 (per-task review approves contract drift), #6–#13
+  (Desktop M0/M1 dogfood findings as appropriate per item), #15
+  (`merge_runs.started_at == completed_at`), #16 (supervisor log
+  buffering), #20 (no `/merge-runs/:id/recover` endpoint).
