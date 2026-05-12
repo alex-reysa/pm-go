@@ -1008,6 +1008,9 @@ export interface DriveCliDeps {
   log: (line: string) => void
   errLog: (line: string) => void
   buildDriveDeps: () => DriveDeps
+  runDriveImpl?: (options: DriveOptions, deps: DriveDeps) => Promise<number>
+  onStart?: () => Promise<void>
+  onExit?: () => Promise<void>
 }
 
 /**
@@ -1028,5 +1031,10 @@ export async function driveCli(cliDeps: DriveCliDeps): Promise<number> {
   }
 
   const deps = cliDeps.buildDriveDeps()
-  return runDrive(parsed.options, deps)
+  await cliDeps.onStart?.()
+  try {
+    return await (cliDeps.runDriveImpl ?? runDrive)(parsed.options, deps)
+  } finally {
+    await cliDeps.onExit?.()
+  }
 }

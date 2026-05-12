@@ -471,11 +471,19 @@ async function main(): Promise<number> {
         console.log(DRIVE_USAGE)
         return 0
       }
+      const statePath = defaultStateFilePath()
       const driveCliDeps: DriveCliDeps = {
         argv: rest,
         log: (l) => console.log(l),
         errLog: (l) => console.error(l),
         buildDriveDeps: () => buildProductionDriveDeps(),
+        onStart: () =>
+          productionWriteInstanceState(statePath, {
+            label: 'drive',
+            pid: process.pid,
+            startedAt: new Date().toISOString(),
+          }),
+        onExit: () => productionRemoveInstanceStateEntry(statePath, 'drive'),
       }
       return driveCli(driveCliDeps)
     }
@@ -1244,8 +1252,8 @@ function defaultStateFilePath(): string {
  *
  * `writeInstanceState` appends, deduping by `label` so a second boot
  * doesn't double up. `removeInstanceState` deletes the file outright
- * (atomic on a single FS) — a future T1a impl can refine this to a
- * write-then-rename if it ever needs partial removal.
+ * for full supervisor shutdowns; standalone roles use
+ * `removeInstanceStateEntry` so sibling process entries stay visible.
  */
 async function readInstanceStateEntries(filePath: string): Promise<InstanceStateEntry[]> {
   try {
@@ -1273,6 +1281,23 @@ async function productionWriteInstanceState(
   // accumulating dead siblings.
   const next = existing.filter((e) => e.label !== entry.label)
   next.push(entry)
+  const body = `${JSON.stringify(next, null, 2)}\n`
+  await mkdir(path.dirname(filePath), { recursive: true })
+  const tmp = `${filePath}.tmp`
+  await writeFile(tmp, body, 'utf8')
+  await rename(tmp, filePath)
+}
+
+async function productionRemoveInstanceStateEntry(
+  filePath: string,
+  label: InstanceStateEntry['label'],
+): Promise<void> {
+  const existing = await readInstanceStateEntries(filePath)
+  const next = existing.filter((e) => e.label !== label)
+  if (next.length === 0) {
+    await productionRemoveInstanceState(filePath)
+    return
+  }
   const body = `${JSON.stringify(next, null, 2)}\n`
   await mkdir(path.dirname(filePath), { recursive: true })
   const tmp = `${filePath}.tmp`

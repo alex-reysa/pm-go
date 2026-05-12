@@ -927,6 +927,55 @@ describe('driveCli', () => {
     // Both error message and usage are echoed.
     assert.ok(errs.some((l) => l.includes('--plan')))
   })
+
+  it('runs process-state hooks around a valid standalone drive', async () => {
+    const events: string[] = []
+    const code = await driveCli({
+      argv: ['--plan', PLAN_ID],
+      log: () => undefined,
+      errLog: () => undefined,
+      buildDriveDeps: () => makeDeps(makeState()),
+      runDriveImpl: async () => {
+        events.push('drive')
+        return 0
+      },
+      onStart: async () => {
+        events.push('start')
+      },
+      onExit: async () => {
+        events.push('exit')
+      },
+    })
+
+    assert.strictEqual(code, 0)
+    assert.deepStrictEqual(events, ['start', 'drive', 'exit'])
+  })
+
+  it('removes the process-state entry when standalone drive throws', async () => {
+    const events: string[] = []
+    await assert.rejects(
+      () =>
+        driveCli({
+          argv: ['--plan', PLAN_ID],
+          log: () => undefined,
+          errLog: () => undefined,
+          buildDriveDeps: () => makeDeps(makeState()),
+          runDriveImpl: async () => {
+            events.push('drive')
+            throw new Error('boom')
+          },
+          onStart: async () => {
+            events.push('start')
+          },
+          onExit: async () => {
+            events.push('exit')
+          },
+        }),
+      /boom/,
+    )
+
+    assert.deepStrictEqual(events, ['start', 'drive', 'exit'])
+  })
 })
 
 // ---------------------------------------------------------------------------

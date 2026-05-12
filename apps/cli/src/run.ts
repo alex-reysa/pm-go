@@ -98,6 +98,8 @@ export interface InstanceStateEntry {
   label: InstanceStateLabel
   /** OS PID of the process. */
   pid: number
+  /** ISO timestamp when this process entry was recorded. */
+  startedAt?: string
 }
 
 /**
