@@ -418,3 +418,97 @@ runtime-comparison story stays in one place.
   not relaunched because the next action would be a plan release, not
   new phase work — held for explicit operator/user direction per the
   "stop at next stable boundary" rule.
+
+## 2026-05-12 Overnight Self-Improvement Session
+
+After M3 was functionally complete, the operator authorized an
+overnight autonomous session ("I trust you, no more questions").
+Strategy: push M3 to origin, then prefer landing pm-go reliability
+fixes over kicking off another long-running plan that would also
+need supervised recovery. M4 spec was written but not started — a
+new dogfood run hits the completion-auditor trap, contract-drift
+risk on integration, and a 4–8h runtime that wouldn't finish in
+the supervised window anyway.
+
+### Shipped this session (all on `dogfood/desktop-mvp`, pushed to
+origin)
+
+1. `e68fb19 → e70c754` — M3 fast-forwarded to `main` (73 commits
+   from M0/M1/M2/M3 work + the renderer-test contract-drift fix).
+2. `89eab7c` — `dogfood/desktop-mvp` fast-forwarded to match main
+   plus the dogfood doc commit.
+3. `d37174d fix(api): expose merge_run.failureReason on GET /phases
+   and /merge-runs` — bug #14 was a real bug, just not where I
+   thought: persistence works (8222 chars of validation log were in
+   the row all along), but the API route serializers dropped the
+   field. Tests added.
+4. `5d70bf9 fix(cli): refuse --runtime claude up front instead of
+   crashing the worker` — supervisor refuses the broken runtime mode
+   with a clear pointer at `--runtime sdk`, instead of letting the
+   worker crash a few seconds after boot. Escape hatch
+   `PM_GO_ALLOW_CLAUDE_CLI_RUNNER=1` for when the CLI runner ships.
+   Tests added.
+5. `c316055 docs(desktop/specs): add M4 operator-actions spec` —
+   ready to feed into `pm-go decompose` or `pm-go implement` when
+   the operator returns.
+6. `b584e5b feat(executor-claude): allow PM_GO_CLAUDE_BINARY to
+   override SDK binary path` — additive helper that threads
+   `pathToClaudeCodeExecutable` into every `query()` call from the
+   `PM_GO_CLAUDE_BINARY` env var. **Attempted fix for bug #1
+   (completion-auditor SDK trap)** but verification showed the SDK
+   still raises "binary not found" with the option set to the exact
+   path it reports — the SDK's binary detection fails at a layer
+   below the public option. The plumbing stays in place for when
+   the SDK is fixed or a different working binary path is
+   identified. Tests added.
+
+### Memory bug list updates
+
+- #17 (`--runtime claude` crash) → RESOLVED in `5d70bf9`.
+- #19 (`failure_reason` always NULL) → CORRECTED. Persistence works;
+  the API was hiding the field. RESOLVED in `d37174d`.
+- #1 (completion-auditor SDK trap) → PARTIAL FIX in `b584e5b`. Env
+  var override plumbed, but the underlying SDK detection is broken
+  at a deeper layer. Still open.
+- #18 (`pm-go ps` not tracking standalone drive) → still open. Fix
+  is a few lines in `apps/cli/src/index.ts` `case 'drive'` to
+  write/remove a `drive` entry in the state file, but I left it
+  alone to keep the night's diffs small and reviewable.
+- #20 (no recovery endpoint for merge-run failure) → still open.
+
+### Plan 73bd9a65 final state
+
+- All deliverables on main: yes (origin/main = `e70c754`).
+- Plan row status: still `approved`. Completion auditor was
+  retried with the binary override set; it failed identically
+  (workflow run `019e1980-c503-77da-84ee-34b9a6042bc9` × 4
+  retries). Plan row will remain `approved` until either the SDK
+  trap is fixed or the row is hand-flipped to `completed` via SQL
+  (cosmetic — main has the actual code).
+
+### M4 readiness
+
+- Spec at `docs/desktop/specs/M4-desktop-operator-actions.md`.
+- 4–8 tasks / 1–2 phases ceiling baked in.
+- Same constraint frame as M3: attach-first, API-authoritative,
+  no Postgres/Temporal/Docker/worktree mutation from Desktop.
+- Validation commands matched to M3's (avoiding the known-bad
+  `pnpm test --filter <pkg>` shape).
+- Suggested kickoff once the operator is awake:
+
+      pm-go run --runtime sdk --skip-docker --skip-migrate &
+      pm-go implement \
+        --spec docs/desktop/specs/M4-desktop-operator-actions.md \
+        --approve all
+
+- Expect to need to recover at least once around the
+  completion-auditor crash (per item #1) — the M3 recipe still
+  applies and is now easier to trigger because the failure-reason
+  field is visible in the API.
+
+### Stack state at end of session
+
+- supervisor 58901 / worker / api running with
+  `PM_GO_CLAUDE_BINARY` set (didn't help, but harmless).
+- Health endpoint OK.
+- `pm-go stop` to tear down when convenient.
