@@ -4,17 +4,16 @@
  *
  * The SDK auto-detects its bundled native binary inside
  * `node_modules/.pnpm/@anthropic-ai+claude-agent-sdk-<platform>-<arch>@<v>/...`
- * by default. The auto-detection has been observed to fail on macOS
- * checkouts whose absolute path contains spaces or other unusual
- * characters — the SDK reports "Claude Code native binary not found at
- * <path>" with `existsSync(<path>) === true`. Symptom: the
- * CompletionAuditWorkflow fails 4 times in a row and the plan row stays
- * at `approved` instead of `released`.
+ * by default. The SDK also reports the same "Claude Code native binary
+ * not found at <path>" message for any `ENOENT` raised by `spawn()`;
+ * for example, a missing `cwd` can look like a missing binary even when
+ * `existsSync(<path>) === true`. Symptom: the CompletionAuditWorkflow
+ * fails 4 times in a row and the plan row stays at `approved` instead
+ * of `released`.
  *
  * `PM_GO_CLAUDE_BINARY=/abs/path/to/claude` opts into an explicit
- * override that the SDK threads through a different code path; setting
- * it to the very same path the auto-detect error reported has been
- * observed to make the call succeed.
+ * override that the SDK threads through a different code path. It is a
+ * binary-path escape hatch, not a fix for missing worktree/cwd state.
  *
  * No env var set → returns an empty object so existing callers keep
  * the SDK's default behavior. The override is therefore strictly

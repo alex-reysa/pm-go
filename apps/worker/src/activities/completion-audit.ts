@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync, statSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -97,10 +98,19 @@ export function createCompletionAuditActivities(
       // Final phase's integration worktree path. The lease may be
       // released by the time the completion audit runs; the row still
       // carries the path.
-      const worktreePath = await resolveIntegrationWorktreePathForMergeRun(
+      const integrationWorktree = await resolveIntegrationWorktreeForMergeRun(
         db,
         input.finalMergeRun,
       );
+      const worktreePath = integrationWorktree.worktreePath;
+      if (input.finalMergeRun.integrationHeadSha !== undefined) {
+        await ensureCompletionAuditWorktree({
+          repoRoot: integrationWorktree.repoRoot,
+          worktreePath,
+          integrationHeadSha: input.finalMergeRun.integrationHeadSha,
+          mergeRunId: input.finalMergeRun.id,
+        });
+      }
 
       const evidence = await buildCompletionAuditEvidenceImpl(db, {
         planId: input.plan.id,
@@ -483,20 +493,31 @@ async function emitArtifactPersisted(
 // Helpers — shared with other activities / workflows
 // ---------------------------------------------------------------------------
 
-async function resolveIntegrationWorktreePathForMergeRun(
+interface ResolvedIntegrationWorktree {
+  repoRoot: string;
+  worktreePath: string;
+}
+
+async function resolveIntegrationWorktreeForMergeRun(
   db: PmGoDb,
   mergeRun: StoredMergeRun,
-): Promise<string> {
+): Promise<ResolvedIntegrationWorktree> {
   if (mergeRun.integrationLeaseId) {
     const [lease] = await db
-      .select({ worktreePath: worktreeLeases.worktreePath })
+      .select({
+        repoRoot: worktreeLeases.repoRoot,
+        worktreePath: worktreeLeases.worktreePath,
+      })
       .from(worktreeLeases)
       .where(eq(worktreeLeases.id, mergeRun.integrationLeaseId))
       .limit(1);
-    if (lease) return lease.worktreePath;
+    if (lease) return lease;
   }
   const [lease] = await db
-    .select({ worktreePath: worktreeLeases.worktreePath })
+    .select({
+      repoRoot: worktreeLeases.repoRoot,
+      worktreePath: worktreeLeases.worktreePath,
+    })
     .from(worktreeLeases)
     .where(
       and(
@@ -510,7 +531,55 @@ async function resolveIntegrationWorktreePathForMergeRun(
       `resolveIntegrationWorktreePathForMergeRun: no integration lease for merge_run ${mergeRun.id}`,
     );
   }
-  return lease.worktreePath;
+  return lease;
+}
+
+async function ensureCompletionAuditWorktree(input: {
+  repoRoot: string;
+  worktreePath: string;
+  integrationHeadSha: string;
+  mergeRunId: string;
+}): Promise<void> {
+  if (existsSync(input.worktreePath)) {
+    const stat = statSync(input.worktreePath);
+    if (!stat.isDirectory()) {
+      throw new Error(
+        `ensureCompletionAuditWorktree: path exists but is not a directory: ${input.worktreePath}`,
+      );
+    }
+    try {
+      await execFileAsync("git", [
+        "-C",
+        input.worktreePath,
+        "rev-parse",
+        "--is-inside-work-tree",
+      ]);
+    } catch (err) {
+      throw new Error(
+        `ensureCompletionAuditWorktree: path exists but is not a git worktree for merge_run ${input.mergeRunId}: ${extractStderrTail(err)}`,
+      );
+    }
+    return;
+  }
+
+  await mkdir(path.dirname(input.worktreePath), { recursive: true });
+
+  try {
+    await execFileAsync("git", ["-C", input.repoRoot, "worktree", "prune"]);
+    await execFileAsync("git", [
+      "-C",
+      input.repoRoot,
+      "worktree",
+      "add",
+      "--detach",
+      input.worktreePath,
+      input.integrationHeadSha,
+    ]);
+  } catch (err) {
+    throw new Error(
+      `ensureCompletionAuditWorktree: failed to recreate integration worktree for merge_run ${input.mergeRunId} at ${input.integrationHeadSha}: ${extractStderrTail(err)}`,
+    );
+  }
 }
 
 async function buildCompletionAuditEvidenceImpl(
@@ -679,6 +748,18 @@ async function captureDiffSummary(
   } catch {
     return "";
   }
+}
+
+function extractStderrTail(err: unknown): string {
+  if (err && typeof err === "object") {
+    const maybeStderr = (err as { stderr?: unknown }).stderr;
+    if (typeof maybeStderr === "string" && maybeStderr.length > 0) {
+      return maybeStderr.trim().split(/\r?\n/).slice(-3).join("\n");
+    }
+    const maybeMessage = (err as { message?: unknown }).message;
+    if (typeof maybeMessage === "string") return maybeMessage;
+  }
+  return String(err);
 }
 
 async function reconstructPlan(

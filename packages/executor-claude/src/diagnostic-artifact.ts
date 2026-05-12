@@ -27,6 +27,7 @@ export interface RunnerDiagnosticArtifact {
   role: RunnerDiagnosticRole;
   schemaRef: string;
   validationErrorSummary: string;
+  validationIssues?: RunnerValidationIssue[];
   /**
    * The raw `structured_output` payload from the SDK, sanitized below.
    * This is intentionally `unknown` — callers that persist it should
@@ -37,6 +38,12 @@ export interface RunnerDiagnosticArtifact {
   sdkResultSubtype?: string;
   sessionId?: string;
   createdAt: string;
+}
+
+export interface RunnerValidationIssue {
+  path: string;
+  message: string;
+  value: unknown;
 }
 
 export type RunnerDiagnosticSink = (
@@ -53,6 +60,7 @@ export function buildSchemaValidationDiagnostic(input: {
   role: RunnerDiagnosticRole;
   schemaRef: string;
   validationErrorSummary: string;
+  validationIssues?: RunnerValidationIssue[];
   rawPayload: unknown;
   sdkResultSubtype?: string;
   sessionId?: string;
@@ -65,6 +73,13 @@ export function buildSchemaValidationDiagnostic(input: {
     sanitizedStructuredOutput: sanitizePayload(input.rawPayload),
     createdAt: new Date().toISOString(),
   };
+  if (input.validationIssues !== undefined && input.validationIssues.length > 0) {
+    artifact.validationIssues = input.validationIssues.map((issue) => ({
+      path: issue.path,
+      message: issue.message,
+      value: sanitizePayload(issue.value),
+    }));
+  }
   if (input.sdkResultSubtype !== undefined) {
     artifact.sdkResultSubtype = input.sdkResultSubtype;
   }
@@ -72,6 +87,20 @@ export function buildSchemaValidationDiagnostic(input: {
     artifact.sessionId = input.sessionId;
   }
   return artifact;
+}
+
+export function formatValidationErrorSummary(
+  baseMessage: string,
+  issues: RunnerValidationIssue[] | undefined,
+): string {
+  if (!issues || issues.length === 0) return baseMessage;
+  const rendered = issues
+    .map((issue) => {
+      const value = truncateForSummary(stringifyForSummary(sanitizePayload(issue.value)));
+      return `${issue.path}: ${issue.message}; offending value=${value}`;
+    })
+    .join(" | ");
+  return `${baseMessage}: ${rendered}`;
 }
 
 /**
@@ -104,6 +133,19 @@ const FORBIDDEN_KEYS: ReadonlySet<string> = new Set([
 
 export function sanitizePayload(value: unknown): unknown {
   return sanitizeInner(value, new WeakSet());
+}
+
+function stringifyForSummary(value: unknown): string {
+  if (value === undefined) return "undefined";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function truncateForSummary(value: string): string {
+  return value.length > 240 ? `${value.slice(0, 237)}...` : value;
 }
 
 function sanitizeInner(

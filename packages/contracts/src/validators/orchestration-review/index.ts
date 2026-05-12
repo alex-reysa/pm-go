@@ -29,3 +29,4 @@ export * from "./risk.js";
 export * from "./spec-decomposition.js";
 export * from "./task-budget.js";
 export * from "./task.js";
+export * from "./validation-issues.js";

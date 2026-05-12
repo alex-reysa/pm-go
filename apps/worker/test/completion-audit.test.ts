@@ -1,6 +1,8 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApplicationFailure } from "@temporalio/activity";
@@ -20,6 +22,7 @@ import {
 import { createCompletionAuditActivities } from "../src/activities/completion-audit.js";
 
 type Db = Parameters<typeof createCompletionAuditActivities>[0]["db"];
+const execFileAsync = promisify(execFile);
 
 const PLAN_ID = "11111111-1111-4111-8111-111111111111";
 const PHASE_ID = "22222222-2222-4222-8222-222222222222";
@@ -192,14 +195,39 @@ function makeRunnerReturning(
   return { run: vi.fn().mockResolvedValue({ report, agentRun }) };
 }
 
+async function git(args: string[], cwd?: string): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, {
+    cwd,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "pm-go test",
+      GIT_AUTHOR_EMAIL: "pm-go@example.test",
+      GIT_COMMITTER_NAME: "pm-go test",
+      GIT_COMMITTER_EMAIL: "pm-go@example.test",
+    },
+  });
+  return String(stdout).trim();
+}
+
+async function createRepoWithCommit(repoRoot: string): Promise<string> {
+  await git(["init"], repoRoot);
+  await git(["config", "user.name", "pm-go test"], repoRoot);
+  await git(["config", "user.email", "pm-go@example.test"], repoRoot);
+  await writeFile(path.join(repoRoot, "README.md"), "hello\n", "utf8");
+  await git(["add", "README.md"], repoRoot);
+  await git(["commit", "-m", "initial"], repoRoot);
+  return git(["rev-parse", "HEAD"], repoRoot);
+}
+
 describe("createCompletionAuditActivities.runCompletionAuditor", () => {
   it("translates CompletionAuditValidationError → ApplicationFailure.nonRetryable", async () => {
     // Sequence: (1) repo_snapshots lookup → [{headSha}], (2) worktree lease
-    // lookup → [{worktreePath}], (3+) evidence assembly → [].
+    // lookup → [{repoRoot, worktreePath}], (3+) evidence assembly → [].
     const { db } = makeDbMock({
       selectSequence: [
         [{ headSha: "a".repeat(40) }],
-        [{ worktreePath: "/tmp/worktree" }],
+        [{ repoRoot: process.cwd(), worktreePath: process.cwd() }],
       ],
     });
     const runner = makeRunnerThrowing(
@@ -227,7 +255,7 @@ describe("createCompletionAuditActivities.runCompletionAuditor", () => {
     const { db } = makeDbMock({
       selectSequence: [
         [{ headSha: "a".repeat(40) }],
-        [{ worktreePath: "/tmp/worktree" }],
+        [{ repoRoot: process.cwd(), worktreePath: process.cwd() }],
       ],
     });
     const err = new Error("network blip");
@@ -248,6 +276,50 @@ describe("createCompletionAuditActivities.runCompletionAuditor", () => {
     } catch (caught) {
       expect(caught).toBe(err);
       expect(caught).not.toBeInstanceOf(ApplicationFailure);
+    }
+  });
+
+  it("recreates a released integration worktree at the audited head before running", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "pm-go-completion-worktree-"));
+    try {
+      const repoRoot = path.join(tempDir, "repo");
+      const worktreePath = path.join(tempDir, "integration", PLAN_ID, "phase-0");
+      await mkdir(repoRoot, { recursive: true });
+      const headSha = await createRepoWithCommit(repoRoot);
+      const report = { ...makeReport(), auditedHeadSha: headSha };
+      const runner = makeRunnerReturning(report, makeAgentRun());
+      const { db } = makeDbMock({
+        selectSequence: [
+          [{ headSha }],
+          [{ repoRoot, worktreePath }],
+        ],
+      });
+      const activities = createCompletionAuditActivities({
+        db,
+        completionAuditorRunner: runner,
+        artifactDir: "/tmp/ignored",
+      });
+
+      await activities.runCompletionAuditor({
+        plan: makePlan(),
+        finalPhase: makePhase(),
+        finalMergeRun: {
+          ...makeMergeRun(),
+          integrationHeadSha: headSha,
+        },
+      });
+
+      await expect(git(["-C", worktreePath, "rev-parse", "HEAD"])).resolves.toBe(
+        headSha,
+      );
+      expect(runner.run).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseSha: headSha,
+          worktreePath,
+        }),
+      );
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
     }
   });
 

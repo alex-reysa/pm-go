@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   buildSchemaValidationDiagnostic,
+  formatValidationErrorSummary,
   safeInvokeDiagnosticSink,
   sanitizePayload,
   type RunnerDiagnosticArtifact,
@@ -26,6 +27,40 @@ describe("buildSchemaValidationDiagnostic", () => {
     expect(artifact.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
+  it("includes sanitized validation issues when provided", () => {
+    const artifact = buildSchemaValidationDiagnostic({
+      role: "completion-auditor",
+      schemaRef: "CompletionAuditReport@1",
+      validationErrorSummary: "bad payload",
+      validationIssues: [
+        {
+          path: "$.checklist[0].evidenceArtifactIds[0]",
+          message: "Expected string to match uuid format",
+          value: "review:not-a-uuid",
+        },
+        {
+          path: "$.apiKey",
+          message: "Unexpected property",
+          value: { apiKey: "sk-secret" },
+        },
+      ],
+      rawPayload: {},
+    });
+
+    expect(artifact.validationIssues).toEqual([
+      {
+        path: "$.checklist[0].evidenceArtifactIds[0]",
+        message: "Expected string to match uuid format",
+        value: "review:not-a-uuid",
+      },
+      {
+        path: "$.apiKey",
+        message: "Unexpected property",
+        value: { apiKey: "<redacted>" },
+      },
+    ]);
+  });
+
   it("omits sdkResultSubtype and sessionId when not provided", () => {
     const artifact = buildSchemaValidationDiagnostic({
       role: "phase-auditor",
@@ -35,6 +70,22 @@ describe("buildSchemaValidationDiagnostic", () => {
     });
     expect(artifact.sdkResultSubtype).toBeUndefined();
     expect(artifact.sessionId).toBeUndefined();
+  });
+});
+
+describe("formatValidationErrorSummary", () => {
+  it("adds field path, constraint, and offending value", () => {
+    const summary = formatValidationErrorSummary("schema failed", [
+      {
+        path: "$.summary.openFindingIds[0]",
+        message: "Expected string",
+        value: 123,
+      },
+    ]);
+
+    expect(summary).toContain("$.summary.openFindingIds[0]");
+    expect(summary).toContain("Expected string");
+    expect(summary).toContain("offending value=123");
   });
 });
 

@@ -23,8 +23,10 @@ import {
 } from "./errors.js";
 import {
   buildSchemaValidationDiagnostic,
+  formatValidationErrorSummary,
   safeInvokeDiagnosticSink,
   type RunnerDiagnosticSink,
+  type RunnerValidationIssue,
 } from "./diagnostic-artifact.js";
 import type { AgentRunFailureSink } from "./index.js";
 import { findForbiddenBashPatternAgainst } from "./implementer-runner.js";
@@ -269,9 +271,16 @@ export function createClaudePhaseAuditorRunner(
       // pattern. Keeps vitest from eagerly resolving the contracts
       // package entry when only stub-runner tests are loaded.
       const contractsModule: string = "@pm-go/contracts";
-      const { PhaseAuditReportJsonSchema, validatePhaseAuditReport } =
-        (await import(contractsModule)) as {
+      const {
+        PhaseAuditReportJsonSchema,
+        collectSchemaValidationIssues,
+        validatePhaseAuditReport,
+      } = (await import(contractsModule)) as {
           PhaseAuditReportJsonSchema: Record<string, unknown>;
+          collectSchemaValidationIssues: (
+            schema: Record<string, unknown>,
+            value: unknown,
+          ) => RunnerValidationIssue[];
           validatePhaseAuditReport: (v: unknown) => boolean;
         };
 
@@ -447,12 +456,19 @@ export function createClaudePhaseAuditorRunner(
         throw new PhaseAuditValidationError(message, reportPayload);
       }
       if (!validatePhaseAuditReport(reportPayload)) {
-        const message =
-          "createClaudePhaseAuditorRunner: structured_output failed PhaseAuditReport schema validation";
+        const validationIssues = collectSchemaValidationIssues(
+          PhaseAuditReportJsonSchema,
+          reportPayload,
+        );
+        const message = formatValidationErrorSummary(
+          "createClaudePhaseAuditorRunner: structured_output failed PhaseAuditReport schema validation",
+          validationIssues,
+        );
         const artifact = buildSchemaValidationDiagnostic({
           role: "phase-auditor",
           schemaRef: "PhaseAuditReport@1",
           validationErrorSummary: message,
+          validationIssues,
           rawPayload: reportPayload,
           ...(sdkResultSubtype !== undefined ? { sdkResultSubtype } : {}),
           ...(sessionId !== undefined ? { sessionId } : {}),

@@ -23,8 +23,10 @@ import {
 } from "./errors.js";
 import {
   buildSchemaValidationDiagnostic,
+  formatValidationErrorSummary,
   safeInvokeDiagnosticSink,
   type RunnerDiagnosticSink,
+  type RunnerValidationIssue,
 } from "./diagnostic-artifact.js";
 import type { AgentRunFailureSink } from "./index.js";
 import { findForbiddenBashPatternAgainst } from "./implementer-runner.js";
@@ -108,9 +110,14 @@ export function createClaudeCompletionAuditorRunner(
       const contractsModule: string = "@pm-go/contracts";
       const {
         CompletionAuditReportJsonSchema,
+        collectSchemaValidationIssues,
         validateCompletionAuditReport,
       } = (await import(contractsModule)) as {
         CompletionAuditReportJsonSchema: Record<string, unknown>;
+        collectSchemaValidationIssues: (
+          schema: Record<string, unknown>,
+          value: unknown,
+        ) => RunnerValidationIssue[];
         validateCompletionAuditReport: (v: unknown) => boolean;
       };
 
@@ -288,12 +295,19 @@ export function createClaudeCompletionAuditorRunner(
         throw new CompletionAuditValidationError(message, reportPayload);
       }
       if (!validateCompletionAuditReport(reportPayload)) {
-        const message =
-          "createClaudeCompletionAuditorRunner: structured_output failed CompletionAuditReport schema validation";
+        const validationIssues = collectSchemaValidationIssues(
+          CompletionAuditReportJsonSchema,
+          reportPayload,
+        );
+        const message = formatValidationErrorSummary(
+          "createClaudeCompletionAuditorRunner: structured_output failed CompletionAuditReport schema validation",
+          validationIssues,
+        );
         const artifact = buildSchemaValidationDiagnostic({
           role: "completion-auditor",
           schemaRef: "CompletionAuditReport@1",
           validationErrorSummary: message,
+          validationIssues,
           rawPayload: reportPayload,
           ...(sdkResultSubtype !== undefined ? { sdkResultSubtype } : {}),
           ...(sessionId !== undefined ? { sessionId } : {}),

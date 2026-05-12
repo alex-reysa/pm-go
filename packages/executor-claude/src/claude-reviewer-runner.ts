@@ -19,8 +19,10 @@ import {
 } from "./errors.js";
 import {
   buildSchemaValidationDiagnostic,
+  formatValidationErrorSummary,
   safeInvokeDiagnosticSink,
   type RunnerDiagnosticSink,
+  type RunnerValidationIssue,
 } from "./diagnostic-artifact.js";
 import type { AgentRunFailureSink } from "./index.js";
 import {
@@ -101,10 +103,16 @@ export function createClaudeReviewerRunner(
       // indirection: keeps vitest from eagerly resolving the contracts
       // package entry when only the stub runner is under test.
       const contractsModule: string = "@pm-go/contracts";
-      const { ReviewReportJsonSchema, validateReviewReport } = (await import(
-        contractsModule
-      )) as {
+      const {
+        ReviewReportJsonSchema,
+        collectSchemaValidationIssues,
+        validateReviewReport,
+      } = (await import(contractsModule)) as {
         ReviewReportJsonSchema: Record<string, unknown>;
+        collectSchemaValidationIssues: (
+          schema: Record<string, unknown>,
+          value: unknown,
+        ) => RunnerValidationIssue[];
         validateReviewReport: (v: unknown) => boolean;
       };
 
@@ -282,12 +290,19 @@ export function createClaudeReviewerRunner(
         throw new ReviewValidationError(message, reportPayload);
       }
       if (!validateReviewReport(reportPayload)) {
-        const message =
-          "createClaudeReviewerRunner: structured_output failed ReviewReport schema validation";
+        const validationIssues = collectSchemaValidationIssues(
+          ReviewReportJsonSchema,
+          reportPayload,
+        );
+        const message = formatValidationErrorSummary(
+          "createClaudeReviewerRunner: structured_output failed ReviewReport schema validation",
+          validationIssues,
+        );
         const artifact = buildSchemaValidationDiagnostic({
           role: "reviewer",
           schemaRef: "ReviewReport@1",
           validationErrorSummary: message,
+          validationIssues,
           rawPayload: reportPayload,
           ...(sdkResultSubtype !== undefined ? { sdkResultSubtype } : {}),
           ...(sessionId !== undefined ? { sessionId } : {}),

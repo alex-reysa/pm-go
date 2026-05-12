@@ -110,6 +110,8 @@ describe("createClaudeReviewerRunner — onSchemaValidationFailure sink (v0.8.2 
     expect(a.schemaRef).toBe("ReviewReport@1");
     expect(a.sessionId).toBe("session-abc");
     expect(a.sdkResultSubtype).toBe("success");
+    expect(a.validationErrorSummary).toContain("offending value=");
+    expect(a.validationIssues?.length).toBeGreaterThan(0);
     const payload = a.sanitizedStructuredOutput as Record<string, unknown>;
     expect(payload.apiKey).toBe("<redacted>");
     expect(payload.taskId).toBe(taskFixture.id);
