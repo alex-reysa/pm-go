@@ -3,6 +3,8 @@ import path from "node:path";
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
+import { claudeBinaryOption } from "./claude-binary-option.js";
+
 import type {
   AgentRun,
   AgentStopReason,
@@ -148,6 +150,7 @@ export function createClaudeReviewerRunner(
             canUseTool: async (tool, toolInput) => {
               return gateReviewerToolUse(tool, toolInput, cwd);
             },
+            ...claudeBinaryOption(),
           },
         });
 

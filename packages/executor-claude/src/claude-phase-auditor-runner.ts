@@ -3,6 +3,8 @@ import path from "node:path";
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
+import { claudeBinaryOption } from "./claude-binary-option.js";
+
 import type {
   AcceptanceCriterion,
   AgentRun,
@@ -314,6 +316,7 @@ export function createClaudePhaseAuditorRunner(
             canUseTool: async (tool, toolInput) => {
               return gateAuditorToolUse(tool, toolInput, cwd);
             },
+            ...claudeBinaryOption(),
           },
         });
 

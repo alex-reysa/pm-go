@@ -5,6 +5,8 @@ import { promisify } from "node:util";
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
+import { claudeBinaryOption } from "./claude-binary-option.js";
+
 import type {
   AgentRun,
   AgentStopReason,
@@ -132,6 +134,7 @@ export function createClaudeImplementerRunner(
             canUseTool: async (tool, toolInput) => {
               return gateToolUse(tool, toolInput, cwd, input.task);
             },
+            ...claudeBinaryOption(),
           },
         });
 
