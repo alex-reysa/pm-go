@@ -394,4 +394,100 @@ describe("createClaudeCompletionAuditorRunner — host-id rewriting", () => {
     expect(agentRun.riskLevel).toBe("high");
     expect(agentRun.outputFormatSchemaRef).toBe("CompletionAuditReport@1");
   });
+
+  it("accepts a structured CompletionAuditReport whose checklist carries every typed EvidenceRef prefix plus a legacy bare UUID", async () => {
+    // All five spec-mandated typed prefixes (review:/policy:/mergerun:/commit:/diff:)
+    // plus one bare UUID for the legacy artifact-ref path. The runner must
+    // validate this payload and return the host-rewritten report — proving
+    // that EvidenceRef validation reaches the normal persistence path.
+    const REVIEW_REF = "review:aaaa1111-2222-4333-8444-555566667777";
+    const POLICY_REF = "policy:bbbb1111-2222-4333-8444-555566667777";
+    const MERGERUN_REF = "mergerun:cccc1111-2222-4333-8444-555566667777";
+    const COMMIT_SHA = "1234567890abcdef1234567890abcdef12345678";
+    const COMMIT_REF = `commit:${COMMIT_SHA}`;
+    const DIFF_BASE_SHA = "abcdef1234567890abcdef1234567890abcdef12";
+    const DIFF_HEAD_SHA = "fedcba0987654321fedcba0987654321fedcba09";
+    const DIFF_REF = `diff:${DIFF_BASE_SHA}..${DIFF_HEAD_SHA}`;
+    const LEGACY_BARE_UUID = "dddd1111-2222-4333-8444-555566667777";
+
+    const evidenceArtifactIds = [
+      REVIEW_REF,
+      POLICY_REF,
+      MERGERUN_REF,
+      COMMIT_REF,
+      DIFF_REF,
+      LEGACY_BARE_UUID,
+    ];
+
+    const COLLIDING_ID = "deadbeef-dead-4bee-8aaa-000000000021";
+    const WRONG_PLAN_ID = "deadbeef-dead-4bee-8aaa-000000000022";
+    const WRONG_PHASE_ID = "deadbeef-dead-4bee-8aaa-000000000023";
+    const WRONG_MERGE_RUN_ID = "deadbeef-dead-4bee-8aaa-000000000024";
+    const WRONG_AUDITOR_RUN_ID = "deadbeef-dead-4bee-8aaa-000000000025";
+    const WRONG_HEAD_SHA = "0000000000000000000000000000000000000000";
+
+    queryMock.mockReturnValueOnce(
+      (async function* () {
+        yield {
+          type: "result" as const,
+          subtype: "success" as const,
+          session_id: "sess-typed-refs",
+          total_cost_usd: 0,
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+          structured_output: {
+            id: COLLIDING_ID,
+            planId: WRONG_PLAN_ID,
+            finalPhaseId: WRONG_PHASE_ID,
+            mergeRunId: WRONG_MERGE_RUN_ID,
+            auditorRunId: WRONG_AUDITOR_RUN_ID,
+            auditedHeadSha: WRONG_HEAD_SHA,
+            outcome: "pass",
+            checklist: [
+              {
+                id: "check-typed-evidence-refs",
+                title: "Typed and legacy evidence refs are accepted",
+                status: "passed",
+                evidenceArtifactIds,
+              },
+            ],
+            findings: [],
+            summary: {
+              acceptanceCriteriaPassed: [],
+              acceptanceCriteriaMissing: [],
+              openFindingIds: [],
+              unresolvedPolicyDecisionIds: [],
+            },
+            createdAt: "2026-05-12T00:00:00.000Z",
+          },
+        };
+      })(),
+    );
+
+    const runner = createClaudeCompletionAuditorRunner({ apiKey: "test-key" });
+    const input = buildInput();
+    const { report, agentRun } = await runner.run(input);
+
+    // Host-id rewriting still applies — mirrors the sibling test above.
+    expect(report.id).not.toBe(COLLIDING_ID);
+    expect(report.auditorRunId).not.toBe(WRONG_AUDITOR_RUN_ID);
+    expect(agentRun.id).not.toBe(WRONG_AUDITOR_RUN_ID);
+    expect(report.planId).toBe(input.plan.id);
+    expect(report.finalPhaseId).toBe(input.finalPhase.id);
+    expect(report.mergeRunId).toBe(input.finalMergeRun.id);
+    expect(report.auditedHeadSha).toBe(input.finalMergeRun.integrationHeadSha);
+    expect(report.auditorRunId).toBe(agentRun.id);
+    expect(agentRun.role).toBe("auditor");
+
+    // The whole point of the test: every typed prefix + the legacy bare UUID
+    // round-trips through validation untouched (evidence refs are not rewritten).
+    expect(report.checklist).toHaveLength(1);
+    expect(report.checklist[0]!.evidenceArtifactIds).toEqual(
+      evidenceArtifactIds,
+    );
+  });
 });

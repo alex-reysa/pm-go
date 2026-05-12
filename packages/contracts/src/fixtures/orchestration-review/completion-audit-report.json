@@ -11,7 +11,10 @@
       "id": "check-acceptance-criteria",
       "title": "All required acceptance criteria verified",
       "status": "passed",
-      "evidenceArtifactIds": ["11112222-3333-4444-8555-666677778888"],
+      "evidenceArtifactIds": [
+        "11112222-3333-4444-8555-666677778888",
+        "commit:5f02c30a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e"
+      ],
       "relatedTaskIds": ["cccccccc-dddd-4eee-8fff-000000000000"],
       "notes": "pnpm --filter @pm-go/contracts test exited zero on the merged SHA."
     },
@@ -19,7 +22,7 @@
       "id": "check-risk-mitigations",
       "title": "Identified risks have active mitigations",
       "status": "passed",
-      "evidenceArtifactIds": ["22223333-4444-4555-8666-777788889999"]
+      "evidenceArtifactIds": ["mergerun:7a6b5c4d-3e2f-4a1b-8c0d-9e8f7a6b5c4d"]
     },
     {
       "id": "check-performance-smoke",

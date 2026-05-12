@@ -31,7 +31,7 @@
       "id": "check-phase-merge-run-cited",
       "title": "Report cites the exact MergeRun that produced the audited head",
       "status": "passed",
-      "evidenceArtifactIds": ["55556666-7777-4888-8999-000011112222"]
+      "evidenceArtifactIds": ["mergerun:7a6b5c4d-3e2f-4a1b-8c0d-9e8f7a6b5c4d"]
     }
   ],
   "findings": [],

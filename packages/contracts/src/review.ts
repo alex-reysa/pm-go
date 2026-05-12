@@ -1,5 +1,21 @@
 import type { UUID } from "./plan.js";
 
+/**
+ * Typed reference to an evidence record used by completion and phase audits.
+ *
+ * Accepted forms:
+ * - `artifact:<uuid>` (rows in `artifacts`)
+ * - `review:<uuid>` (rows in `review_reports`)
+ * - `phase-audit:<uuid>` (rows in `phase_audit_reports`)
+ * - `mergerun:<uuid>` (rows in `merge_runs`)
+ * - `policy:<uuid>` (rows in `policy_decisions`)
+ * - `commit:<40-hex-sha>` (audited commit)
+ * - `diff:<40-hex-sha>..<40-hex-sha>` (git diff range)
+ *
+ * Bare UUID values remain valid and are interpreted as legacy artifact refs.
+ */
+export type EvidenceRef = string;
+
 export type FindingSeverity = "low" | "medium" | "high";
 export type ReviewOutcome = "pass" | "changes_requested" | "blocked";
 export type ReviewCheckStatus = "passed" | "failed" | "not_verified" | "waived";
@@ -52,7 +68,7 @@ export interface CompletionChecklistItem {
   id: string;
   title: string;
   status: ReviewCheckStatus;
-  evidenceArtifactIds: UUID[];
+  evidenceArtifactIds: EvidenceRef[];
   relatedTaskIds?: UUID[];
   notes?: string;
 }

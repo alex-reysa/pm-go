@@ -41,6 +41,18 @@ The host rewrites `id`, `auditorRunId`, `planId`, `finalPhaseId`, `mergeRunId`, 
 
 Every `CompletionChecklistItem` MUST populate `id`, `title`, `status`, `evidenceArtifactIds`. Every `ReviewFinding` MUST populate `id`, `severity`, `title`, `summary`, `filePath`, `confidence`, `suggestedFixDirection`.
 
+`evidenceArtifactIds` accepts the following typed reference forms:
+
+- `artifact:<uuid>` — row in the `artifacts` table
+- `review:<uuid>` — row in `review_reports`
+- `phase-audit:<uuid>` — row in `phase_audit_reports`
+- `mergerun:<uuid>` — row in `merge_runs`
+- `policy:<uuid>` — row in `policy_decisions`
+- `commit:<40-hex-sha>` — an audited commit
+- `diff:<40-hex-sha>..<40-hex-sha>` — a git diff range
+
+Evidence refs must be drawn from IDs and SHAs present in the prompt or from the audited diff range. Bare UUIDs remain accepted as legacy artifact refs, but new output should prefer the typed forms above.
+
 ## Required checklist items
 
 You MUST emit these six items (from `docs/specs/completion-audit.md`). Add more only for cross-cutting concerns that do not fit.

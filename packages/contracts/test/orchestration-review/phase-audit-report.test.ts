@@ -72,4 +72,20 @@ describe("validatePhaseAuditReport", () => {
     };
     expect(validatePhaseAuditReport(extra)).toBe(false);
   });
+
+  it("accepts bare-UUID checklist evidenceArtifactIds (legacy regression)", () => {
+    // Explicit regression: the existing fixture's checklist items use bare
+    // UUIDs for `evidenceArtifactIds`. After the EvidenceRef widening (bug
+    // #22), the legacy bare-UUID form must remain valid for both phase and
+    // completion audit reports. This assertion documents that invariant
+    // independently of the broader "accepts the realistic `pass` fixture"
+    // test so a regression here surfaces with an unambiguous failure.
+    const checklist = (fixture as { checklist: Array<{ evidenceArtifactIds: string[] }> })
+      .checklist;
+    const bareUuidEntries = checklist
+      .flatMap((item) => item.evidenceArtifactIds)
+      .filter((ref) => !ref.includes(":"));
+    expect(bareUuidEntries.length).toBeGreaterThan(0);
+    expect(validatePhaseAuditReport(fixture)).toBe(true);
+  });
 });
